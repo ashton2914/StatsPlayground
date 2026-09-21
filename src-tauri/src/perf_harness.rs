@@ -37,12 +37,15 @@ use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
+use crate::services::project_service::{
+    seed_project_persistence_stress_project, seed_save_project, with_open_perf_observer,
+    OpenPerfMetrics, ProjectService,
+};
 #[cfg(test)]
 use crate::services::row_order_update_boundary::execute_global_row_order_update_for_test;
 use crate::services::row_order_update_boundary::{
     full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
 };
-use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
 use crate::services::table_delta_mutation::{
@@ -54,6 +57,12 @@ use crate::state::AppState;
 const DEFAULT_CALCULATED_CHAIN_DEPTH: usize = 5;
 const CALCULATED_MEDIAN_THRESHOLD_MS: u128 = 2_000;
 const CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER: u64 = 2;
+const PREPARE_OPEN_FIXTURE_FLAG: &str = "--prepare-open-fixture";
+const PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG: &str = "--prepare-open-string-stress-fixture";
+const PROJECT_STRING_STRESS_ROWS: usize = 300_000;
+const PROJECT_STRING_STRESS_BYTES: usize = 256;
+const PROJECT_STRING_STRESS_COLUMNS: usize = 5;
+const PROJECT_SAVE_HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +73,9 @@ enum Operation {
     Graph,
     TimeSeriesGraph,
     Save,
+    Open,
+    SaveStringStress,
+    OpenStringStress,
     Datalink,
     Calculated,
     TableNavigation,
@@ -151,6 +163,10 @@ struct PerformanceReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     save_stage_ms: Option<SaveStageReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    open_stage_ms: Option<OpenStageReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_table_restore: Option<OpenTableRestoreReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     process_memory: Option<ProcessMemoryReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     graph_new: Option<GraphNewPerformanceReport>,
@@ -183,6 +199,19 @@ struct PerformanceReport {
         skip_serializing_if = "Option::is_none"
     )]
     table_mutation: Option<TableMutationPerformanceReport>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenTableRestoreReport {
+    json_parse_ns: u128,
+    validation_conversion_ns: u128,
+    appender_create_ns: u128,
+    appender_append_ns: u128,
+    appender_flush_ns: u128,
+    finalize_ns: u128,
+    appender_create_count: usize,
+    rows: usize,
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
@@ -530,6 +559,14 @@ struct SaveStageReport {
     replacement: u128,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenStageReport {
+    archive_read_parse: u128,
+    table_restore: u128,
+    finalize: u128,
+}
+
 #[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProcessMemoryReport {
@@ -817,6 +854,7 @@ where
         payload_stdout: false,
     };
     let mut args = args.into_iter();
+    let mut rows_explicit = false;
     let mut runs_explicit = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -833,7 +871,10 @@ where
                 let artifacts = args.next().ok_or_else(|| AppError::InvalidParam("missing CSV artifact directory".into()))?;
                 options.graph_new_csv = Some((source, artifacts));
             }
-            "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
+            "--rows" => {
+                options.rows = parse_positive_usize(&flag, args.next())?;
+                rows_explicit = true;
+            }
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
             "--runs" => {
@@ -866,6 +907,9 @@ where
                     "graph" => Operation::Graph,
                     "time-series-graph" | "time_series_graph" => Operation::TimeSeriesGraph,
                     "save" => Operation::Save,
+                    "open" => Operation::Open,
+                    "save-string-stress" => Operation::SaveStringStress,
+                    "open-string-stress" => Operation::OpenStringStress,
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
                     "table-navigation" => Operation::TableNavigation,
@@ -907,6 +951,13 @@ where
         }
     }
 
+    if matches!(
+        options.operation,
+        Operation::SaveStringStress | Operation::OpenStringStress
+    ) && !rows_explicit
+    {
+        options.rows = PROJECT_STRING_STRESS_ROWS;
+    }
     if options.operation == Operation::TableNavigation && options.position_percent.is_none() {
         return Err(AppError::InvalidParam(
             "table-navigation requires --position-percent".into(),
@@ -1067,6 +1118,8 @@ fn execute_table_navigation(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -1850,6 +1903,8 @@ fn execute_graph_new_runs_with_config(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: Some(GraphNewPerformanceReport {
             machine_memory_metric: "process RSS is OS working-set bytes when available, otherwise null (including macOS); accountedMemoryBytes is graph-owned in-memory tile accounting only",
@@ -2239,6 +2294,8 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2342,6 +2399,8 @@ fn execute_time_series_graph(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2368,6 +2427,25 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     }
     if options.operation == Operation::Save {
         return execute_save(options);
+    }
+    if options.operation == Operation::Open {
+        return execute_open(options);
+    }
+    if options.operation == Operation::SaveStringStress {
+        return execute_save_with_fixture(
+            options,
+            ProjectPersistenceFixture::StringStress {
+                string_bytes: PROJECT_STRING_STRESS_BYTES,
+            },
+        );
+    }
+    if options.operation == Operation::OpenStringStress {
+        return execute_open_with_fixture(
+            options,
+            ProjectPersistenceFixture::StringStress {
+                string_bytes: PROJECT_STRING_STRESS_BYTES,
+            },
+        );
     }
     if options.operation == Operation::Datalink {
         return execute_datalink(options);
@@ -2445,6 +2523,13 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             unreachable!("time series graph operation is handled by execute_time_series_graph")
         }
         Operation::Save => unreachable!("save is handled before this branch"),
+        Operation::Open => unreachable!("open is handled before this branch"),
+        Operation::SaveStringStress => {
+            unreachable!("string-stress save is handled before this branch")
+        }
+        Operation::OpenStringStress => {
+            unreachable!("string-stress open is handled before this branch")
+        }
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
         Operation::Calculated => unreachable!("calculated is handled before this branch"),
         Operation::TableNavigation => {
@@ -2491,6 +2576,8 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2690,7 +2777,9 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
         chunks: None, transferred_bytes: Some(tabulate.tile_payload_bytes.iter().sum()),
         projection_passes: None, invalid_x_count: None, archive_bytes: 0,
         max_retained_batch_bytes: None, max_encoded_batch_bytes: None,
-        max_combined_batch_bytes: None, save_stage_ms: None, process_memory: None,
+        max_combined_batch_bytes: None, save_stage_ms: None, open_stage_ms: None,
+        open_table_restore: None,
+        process_memory: None,
         graph_new: None, chain_depth: None, runs_ms: None, median_ms: None,
         process_memory_method: process_memory_method(), physical_input_bytes: None,
         calculated_result_bytes: None, memory_budget_bytes: None,
@@ -2796,6 +2885,8 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: Some(options.chain_depth),
@@ -3184,6 +3275,8 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3202,11 +3295,382 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
     })
 }
 
+fn empty_project_save_request() -> SaveProjectRequest {
+    SaveProjectRequest {
+        file_path: None,
+        graph_builders_new: Vec::new(),
+        graph_new_folders: std::collections::HashMap::new(),
+        history: Vec::new(),
+        snapshots: Vec::new(),
+        graph_builders: Vec::new(),
+        fit_y_by_x: Vec::new(),
+        fit_models: Vec::new(),
+        reports: Vec::new(),
+        distributions: Vec::new(),
+        analyses: Vec::new(),
+        tabulates: Vec::new(),
+        folders: Vec::new(),
+        table_folders: std::collections::HashMap::new(),
+        graph_folders: std::collections::HashMap::new(),
+        fit_y_by_x_folders: std::collections::HashMap::new(),
+        fit_model_folders: std::collections::HashMap::new(),
+        report_folders: std::collections::HashMap::new(),
+        distribution_folders: std::collections::HashMap::new(),
+        analysis_folders: std::collections::HashMap::new(),
+        tabulate_folders: std::collections::HashMap::new(),
+        dataset_filters: std::collections::HashMap::new(),
+        workflows: Vec::new(),
+        logical_folders: Vec::new(),
+        workflow_runs: Vec::new(),
+        table_transforms: Vec::new(),
+        table_transform_bindings: Vec::new(),
+    }
+}
+
+struct OwnedBenchmarkArchive {
+    path: std::path::PathBuf,
+}
+
+impl OwnedBenchmarkArchive {
+    fn new(path: std::path::PathBuf) -> Result<Self, AppError> {
+        let temp_dir = std::env::temp_dir();
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if path.parent() != Some(temp_dir.as_path())
+            || file_name.is_none_or(|name| {
+                !name.starts_with("stats_playground_save_current_")
+                    || !name.ends_with(".spprj")
+            })
+        {
+            return Err(AppError::InvalidParam(
+                "benchmark archive must use the owned temporary path pattern".into(),
+            ));
+        }
+        Ok(Self { path })
+    }
+
+    fn path_string(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+}
+
+impl Drop for OwnedBenchmarkArchive {
+    fn drop(&mut self) {
+        remove_benchmark_artifacts(&self.path_string());
+    }
+}
+
+fn new_owned_benchmark_archive() -> Result<OwnedBenchmarkArchive, AppError> {
+    OwnedBenchmarkArchive::new(std::env::temp_dir().join(format!(
+        "stats_playground_save_current_{}.spprj",
+        uuid::Uuid::new_v4()
+    )))
+}
+
+#[derive(Clone, Copy)]
+enum ProjectPersistenceFixture {
+    Baseline { columns: usize },
+    StringStress { string_bytes: usize },
+}
+
+impl ProjectPersistenceFixture {
+    fn columns(self) -> usize {
+        match self {
+            Self::Baseline { columns } => columns,
+            Self::StringStress { .. } => PROJECT_STRING_STRESS_COLUMNS,
+        }
+    }
+
+    fn prepare_flag(self) -> &'static str {
+        match self {
+            Self::Baseline { .. } => PREPARE_OPEN_FIXTURE_FLAG,
+            Self::StringStress { .. } => PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG,
+        }
+    }
+
+    #[cfg(not(test))]
+    fn fixture_parameter(self) -> usize {
+        match self {
+            Self::Baseline { columns } => columns,
+            Self::StringStress { string_bytes } => string_bytes,
+        }
+    }
+}
+
+fn prepare_open_fixture_at_path(
+    archive_path: &str,
+    rows: usize,
+    fixture: ProjectPersistenceFixture,
+) -> Result<(), AppError> {
+    if std::path::Path::new(archive_path).exists() {
+        return Err(AppError::FileIO(
+            "open benchmark fixture path already exists".into(),
+        ));
+    }
+    let state = AppState::new()?;
+    ProjectService::new(&state).create_project("Open Baseline", archive_path)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    match fixture {
+        ProjectPersistenceFixture::Baseline { columns } => db.seed_benchmark_table(
+            "save-current-baseline",
+            "Save Current Baseline",
+            rows,
+            columns,
+        )?,
+        ProjectPersistenceFixture::StringStress { string_bytes } => {
+            db.seed_project_persistence_stress_table("save-current-baseline", rows, string_bytes)?
+        }
+    }
+    drop(db);
+    ProjectService::new(&state).save_project(empty_project_save_request(), None)?;
+    Ok(())
+}
+
+fn run_open_fixture_child(
+    args: &[String],
+    fixture_kind: ProjectPersistenceFixture,
+) -> Result<(), AppError> {
+    if args.len() != 4 {
+        return Err(AppError::InvalidParam(format!(
+            "{} requires path, rows, and fixture parameter",
+            fixture_kind.prepare_flag()
+        )));
+    }
+    let rows = parse_positive_usize("--rows", Some(args[2].clone()))?;
+    let fixture_parameter = parse_positive_usize("--fixture-parameter", Some(args[3].clone()))?;
+    let fixture = match fixture_kind {
+        ProjectPersistenceFixture::Baseline { .. } => ProjectPersistenceFixture::Baseline {
+            columns: fixture_parameter,
+        },
+        ProjectPersistenceFixture::StringStress { .. } => ProjectPersistenceFixture::StringStress {
+            string_bytes: fixture_parameter,
+        },
+    };
+    prepare_open_fixture_at_path(&args[1], rows, fixture)
+}
+
+#[cfg(test)]
+fn prepare_open_fixture_isolated(
+    archive_path: &str,
+    rows: usize,
+    fixture: ProjectPersistenceFixture,
+) -> Result<(), AppError> {
+    prepare_open_fixture_at_path(archive_path, rows, fixture)
+}
+
+#[cfg(not(test))]
+fn prepare_open_fixture_isolated(
+    archive_path: &str,
+    rows: usize,
+    fixture: ProjectPersistenceFixture,
+) -> Result<(), AppError> {
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg(fixture.prepare_flag())
+        .arg(archive_path)
+        .arg(rows.to_string())
+        .arg(fixture.fixture_parameter().to_string())
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(AppError::FileIO(format!(
+            "open benchmark fixture child failed with status {status}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_open_row_count(actual: usize, expected: usize) -> Result<usize, AppError> {
+    if actual != expected {
+        return Err(AppError::Database(format!(
+            "opened row count mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(actual)
+}
+
+fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
+    let columns = options.columns;
+    execute_open_with_fixture(options, ProjectPersistenceFixture::Baseline { columns })
+}
+
+fn execute_open_with_fixture(
+    options: Options,
+    fixture: ProjectPersistenceFixture,
+) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    let setup_started = Instant::now();
+    let archive = new_owned_benchmark_archive()?;
+    let archive_path = archive.path_string();
+    prepare_open_fixture_isolated(&archive_path, options.rows, fixture)?;
+    let archive_bytes = std::fs::metadata(&archive_path)?.len();
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let state = AppState::new()?;
+    let observed_perf = std::sync::Arc::new(std::sync::Mutex::new(OpenPerfMetrics::default()));
+    let observed_perf_capture = std::sync::Arc::clone(&observed_perf);
+    let (open_result, process_memory) = measure_peak_working_set_during(|| {
+        with_open_perf_observer(
+            move |metrics| {
+                if let Ok(mut slot) = observed_perf_capture.lock() {
+                    *slot = metrics;
+                }
+            },
+            || ProjectService::new(&state).open_project(&archive_path, None),
+        )
+    });
+    let observed_perf = observed_perf.lock().map(|slot| *slot).unwrap_or_default();
+    let operation_ms = observed_perf.total_ms;
+
+    let benchmark_result = match open_result {
+        Ok(_) => {
+            let result_rows = state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?
+                .get_dataset_meta("save-current-baseline")?
+                .row_count;
+            let result_rows = usize::try_from(result_rows)
+                .map_err(|_| AppError::Database("opened row count is out of range".into()))?;
+            let result_rows = validate_open_row_count(result_rows, options.rows)?;
+            if let ProjectPersistenceFixture::StringStress { string_bytes } = fixture {
+                state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .validate_project_persistence_stress_table(
+                        "save-current-baseline",
+                        options.rows,
+                        string_bytes,
+                    )?;
+            }
+            Ok(result_rows)
+        }
+        Err(error) => Err(error),
+    };
+
+    let result_rows = benchmark_result?;
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: fixture.columns(),
+        operation: options.operation,
+        setup_ms,
+        operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows,
+        selected_columns: 0,
+        query_ms: None,
+        encode_ms: None,
+        stdout_write_ms: None,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: None,
+        source_rows: None,
+        chunks: None,
+        transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
+        archive_bytes,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        open_stage_ms: Some(OpenStageReport {
+            archive_read_parse: observed_perf.archive_read_parse_ms,
+            table_restore: observed_perf.table_restore_ms,
+            finalize: observed_perf.finalize_ms,
+        }),
+        open_table_restore: Some(OpenTableRestoreReport {
+            json_parse_ns: observed_perf.table_restore_detail.json_parse_ns,
+            validation_conversion_ns: observed_perf
+                .table_restore_detail
+                .validation_conversion_ns,
+            appender_create_ns: observed_perf.table_restore_detail.appender_create_ns,
+            appender_append_ns: observed_perf.table_restore_detail.appender_append_ns,
+            appender_flush_ns: observed_perf.table_restore_detail.appender_flush_ns,
+            finalize_ns: observed_perf.table_restore_detail.finalize_ns,
+            appender_create_count: observed_perf.table_restore_detail.appender_create_count,
+            rows: observed_perf.table_restore_detail.rows,
+        }),
+        process_memory,
+        graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: process_memory_method(),
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: match fixture {
+            ProjectPersistenceFixture::Baseline { .. } => None,
+            ProjectPersistenceFixture::StringStress { .. } => Some(true),
+        },
+        qualification_failure: None,
+        machine: None,
+        tabulate: None,
+        table_mutation: None,
+    })
+}
+
 fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
+    let columns = options.columns;
+    execute_save_with_fixture(options, ProjectPersistenceFixture::Baseline { columns })
+}
+
+fn string_stress_save_qualification(
+    expected_rows: usize,
+    actual_rows: usize,
+    metrics: crate::models::save::SavePerfMetrics,
+) -> (Option<bool>, Option<String>) {
+    let mut failures = Vec::new();
+    if actual_rows != expected_rows {
+        failures.push(format!(
+            "string-stress save expected {expected_rows} rows, got {actual_rows}"
+        ));
+    }
+    if metrics.max_retained_batch_bytes > PROJECT_SAVE_HARD_BATCH_BYTES {
+        failures.push(format!(
+            "string-stress retained batch peak {} exceeds {}",
+            metrics.max_retained_batch_bytes, PROJECT_SAVE_HARD_BATCH_BYTES
+        ));
+    }
+    if metrics.max_combined_batch_bytes > PROJECT_SAVE_HARD_BATCH_BYTES {
+        failures.push(format!(
+            "string-stress combined batch peak {} exceeds {}",
+            metrics.max_combined_batch_bytes, PROJECT_SAVE_HARD_BATCH_BYTES
+        ));
+    }
+
+    if failures.is_empty() {
+        (Some(true), None)
+    } else {
+        (Some(false), Some(failures.join("; ")))
+    }
+}
+
+fn execute_save_with_fixture(
+    options: Options,
+    fixture: ProjectPersistenceFixture,
+) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     let setup_started = Instant::now();
     let state = AppState::new()?;
-    let archive_path = seed_save_project(&state, options.rows, options.columns)?;
+    let archive_path = match fixture {
+        ProjectPersistenceFixture::Baseline { columns } => {
+            seed_save_project(&state, options.rows, columns)?
+        }
+        ProjectPersistenceFixture::StringStress { string_bytes } => {
+            seed_project_persistence_stress_project(&state, options.rows, string_bytes)?
+        }
+    };
     let setup_ms = setup_started.elapsed().as_millis();
 
     let history = vec![serde_json::json!({
@@ -3307,10 +3771,16 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
 
     remove_benchmark_artifacts(&archive_path);
     let (archive_bytes, result_rows, save_perf_metrics) = save_metrics_result?;
+    let (qualification_passed, qualification_failure) = match fixture {
+        ProjectPersistenceFixture::Baseline { .. } => (None, None),
+        ProjectPersistenceFixture::StringStress { .. } => {
+            string_stress_save_qualification(options.rows, result_rows, save_perf_metrics)
+        }
+    };
 
     Ok(PerformanceReport {
         rows: options.rows,
-        columns: options.columns,
+        columns: fixture.columns(),
         operation: options.operation,
         setup_ms,
         operation_ms,
@@ -3347,6 +3817,8 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
             validation: save_perf_metrics.validation_ms,
             replacement: save_perf_metrics.replacement_ms,
         }),
+        open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3357,8 +3829,8 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         calculated_result_bytes: None,
         memory_budget_bytes: None,
         memory_growth_budget_multiplier: None,
-        qualification_passed: None,
-        qualification_failure: None,
+        qualification_passed,
+        qualification_failure,
         machine: None,
         tabulate: None,
         table_mutation: None,
@@ -3394,6 +3866,23 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args
+        .first()
+        .is_some_and(|arg| arg == PREPARE_OPEN_FIXTURE_FLAG)
+    {
+        return run_open_fixture_child(&args, ProjectPersistenceFixture::Baseline { columns: 1 })
+            .map_err(|error| error.to_string());
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG)
+    {
+        return run_open_fixture_child(
+            &args,
+            ProjectPersistenceFixture::StringStress { string_bytes: 1 },
+        )
+        .map_err(|error| error.to_string());
+    }
     let mutation_child =
         take_mutation_child_request(&mut args).map_err(|error| error.to_string())?;
     if let Some(request) = &mutation_child {
@@ -5165,6 +5654,117 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_accepts_project_open_operation() {
+        let options = parse_args(
+            [
+                "--rows",
+                "100",
+                "--columns",
+                "4",
+                "--operation",
+                "open",
+            ]
+            .map(String::from),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(options.operation).unwrap(),
+            serde_json::json!("open")
+        );
+    }
+
+    #[test]
+    fn performance_cli_accepts_dedicated_string_stress_operations() {
+        for (argument, expected) in [
+            ("save-string-stress", Operation::SaveStringStress),
+            ("open-string-stress", Operation::OpenStringStress),
+        ] {
+            let options = parse_args(["--operation", argument].map(String::from)).unwrap();
+
+            assert_eq!(options.rows, 300_000);
+            assert_eq!(options.operation, expected);
+        }
+    }
+
+    #[test]
+    fn string_stress_save_is_bounded_and_open_restores_exact_values() {
+        const TEST_ROWS: usize = 4_097;
+        const HARD_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+
+        let save = execute(
+            parse_args(
+                [
+                    "--rows",
+                    &TEST_ROWS.to_string(),
+                    "--operation",
+                    "save-string-stress",
+                ]
+                .map(String::from),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(save.result_rows, TEST_ROWS);
+        assert!(save.max_retained_batch_bytes.unwrap() <= HARD_BATCH_BYTES);
+        assert!(save.max_combined_batch_bytes.unwrap() <= HARD_BATCH_BYTES);
+
+        let open = execute(
+            parse_args(
+                [
+                    "--rows",
+                    &TEST_ROWS.to_string(),
+                    "--operation",
+                    "open-string-stress",
+                ]
+                .map(String::from),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(open.result_rows, TEST_ROWS);
+        assert_eq!(open.qualification_passed, Some(true));
+    }
+
+    #[test]
+    fn string_stress_save_qualification_rejects_wrong_row_count() {
+        let (passed, failure) = string_stress_save_qualification(
+            300_000,
+            299_999,
+            crate::models::save::SavePerfMetrics {
+                max_retained_batch_bytes: 4 * 1024 * 1024,
+                max_combined_batch_bytes: 8 * 1024 * 1024,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(passed, Some(false));
+        assert!(failure
+            .as_deref()
+            .is_some_and(|message| message.contains("expected 300000 rows, got 299999")));
+    }
+
+    #[test]
+    fn string_stress_save_qualification_rejects_combined_cap_violation() {
+        let (passed, failure) = string_stress_save_qualification(
+            300_000,
+            300_000,
+            crate::models::save::SavePerfMetrics {
+                max_retained_batch_bytes: 4 * 1024 * 1024,
+                max_combined_batch_bytes: 8 * 1024 * 1024 + 1,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(passed, Some(false));
+        assert!(
+            failure.as_deref().is_some_and(
+                |message| message.contains("combined batch peak 8388609 exceeds 8388608")
+            )
+        );
+    }
+
+    #[test]
     fn performance_cli_measures_current_project_save() {
         let report = execute(Options {
             rows: 300_000,
@@ -5183,6 +5783,60 @@ mod tests {
 
         assert_eq!(report.result_rows, 300_000);
         assert!(report.archive_bytes > 0);
+    }
+
+    #[test]
+    fn performance_cli_measures_complete_project_open() {
+        let report = execute(Options {
+            rows: 1_000,
+            columns: 4,
+            operation: Operation::Open,
+            graph_new_rows: None,
+            graph_new_overlay_groups: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.result_rows, 1_000);
+        assert!(report.archive_bytes > 0);
+        assert!(report.process_memory.is_some());
+        let stages = report.open_stage_ms.expect("open stage timings");
+        assert!(
+            stages.archive_read_parse + stages.table_restore + stages.finalize
+                <= report.operation_ms
+        );
+        let detail = report
+            .open_table_restore
+            .expect("streamed table restore component timings");
+        assert!(detail.json_parse_ns > 0);
+        assert!(detail.validation_conversion_ns > 0);
+        assert!(detail.appender_append_ns > 0);
+        assert!(detail.appender_create_count > 0);
+        assert_eq!(detail.rows, 1_000);
+    }
+
+    #[test]
+    fn project_open_benchmark_rejects_incomplete_restore() {
+        let error = validate_open_row_count(999, 1_000).unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::Database(_)));
+    }
+
+    #[test]
+    fn open_fixture_guard_cleans_archive_on_drop() {
+        let archive_path = owned_archive_path();
+        std::fs::write(&archive_path, b"archive").unwrap();
+
+        {
+            let _guard = OwnedBenchmarkArchive::new(archive_path.clone()).unwrap();
+        }
+
+        assert!(!archive_path.exists());
     }
 
     #[test]

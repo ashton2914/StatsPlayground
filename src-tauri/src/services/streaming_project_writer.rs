@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::engine::duckdb_engine::ArchiveKeysetReadPlan;
+use crate::engine::duckdb_engine::{ArchiveCursor, ArchiveKeysetReadPlan};
 use crate::error::AppError;
 use crate::models::save::{
     SavePerfMetrics, SavePhase, SaveProgress, SaveProgressCallback, SaveSnapshot, SaveWriteResult,
@@ -27,7 +27,7 @@ const TARGET_BATCH_BYTES: usize = 6 * 1024 * 1024;
 const HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MIN_TARGET_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const TARGET_BATCH_SAFETY_MARGIN_BYTES: usize = 128 * 1024;
-const ROW_LIMIT_PER_BATCH: usize = 4096;
+const MAX_ROWS_PER_BATCH: usize = 4_096;
 const ENCODED_CHUNK_TARGET_BYTES: usize = 4 * 1024 * 1024;
 const PROGRESS_MIN_INTERVAL_MS: u64 = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(PROGRESS_MIN_INTERVAL_MS);
@@ -390,11 +390,10 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             db.archive_unified_history()?
         };
         if !history_timeline.datasets.is_empty() {
-            bundle.manifest.history_timeline = Some(
-                crate::services::table_history_archive::HistoryTimelineRef {
+            bundle.manifest.history_timeline =
+                Some(crate::services::table_history_archive::HistoryTimelineRef {
                     timeline_file: "history/timeline.v2.json".into(),
-                },
-            );
+                });
             bundle.manifest.delta_history = None;
         }
 
@@ -485,8 +484,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
         table_transform_docs: &[crate::services::table_transform_domain::TableTransformDefinition],
-        history_timeline:
-            &crate::services::table_history_archive::HistoryTimelineArchive,
+        history_timeline: &crate::services::table_history_archive::HistoryTimelineArchive,
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -622,9 +620,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 None
             );
 
-            let mut next_row_id = 0i64;
+            let mut cursor: Option<ArchiveCursor> = None;
             let mut first_row = true;
-            let mut encoded_rows = Vec::new();
             let mut target_batch_bytes = TARGET_BATCH_BYTES;
 
             loop {
@@ -635,10 +632,10 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                         .db
                         .lock()
                         .map_err(|e| AppError::Database(e.to_string()))?;
-                    db.read_archive_keyset_batch(
+                    db.read_archive_cursor_batch(
                         &plan,
-                        next_row_id,
-                        ROW_LIMIT_PER_BATCH,
+                        cursor,
+                        MAX_ROWS_PER_BATCH,
                         target_batch_bytes,
                         HARD_BATCH_BYTES,
                     )?
@@ -659,33 +656,47 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 );
 
                 let encode_started = Instant::now();
-                encoded_rows.clear();
                 let rows_allocation_bytes =
                     batch.rows.capacity().saturating_mul(std::mem::size_of::<
                         crate::engine::duckdb_engine::ArchiveBatchRow,
                     >());
                 let mut remaining_retained = batch.retained_bytes_estimate;
-                let mut batch_peak_combined = 0usize;
-                let mut batch_peak_encoded = 0usize;
+                let encoded_budget = ENCODED_CHUNK_TARGET_BYTES
+                    .min(HARD_BATCH_BYTES.saturating_sub(remaining_retained));
+                let mut encoded_rows = Vec::with_capacity(encoded_budget);
+                let mut batch_peak_encoded = encoded_rows.capacity();
+                let mut batch_peak_combined =
+                    combined_batch_allocation_estimate(remaining_retained, batch_peak_encoded);
+                if batch_peak_combined > HARD_BATCH_BYTES {
+                    return Err(AppError::InvalidParam(format!(
+                        "archive batch allocation exceeds hard cap: {batch_peak_combined} > {HARD_BATCH_BYTES}"
+                    )));
+                }
                 let mut embedded_zip_write_ms = 0u128;
+                let next_cursor = batch.next_cursor;
                 for row in batch.rows {
+                    let encoded_capacity = encoded_rows.capacity();
+                    let mut row_writer =
+                        BoundedEncodedWriter::new(&mut zip, &mut encoded_rows, encoded_capacity);
                     if !first_row {
-                        encoded_rows.push(b',');
+                        row_writer.write_all(b",")?;
                     }
                     first_row = false;
 
                     write_streamed_row(
-                        &mut encoded_rows,
+                        &mut row_writer,
                         row.row_id,
                         &row.values,
                         &column_write_modes,
                     )?;
+                    embedded_zip_write_ms =
+                        embedded_zip_write_ms.saturating_add(row_writer.sink_write_ms());
+                    drop(row_writer);
 
-                    let pre_flush_encoded_capacity = encoded_rows.capacity();
-                    batch_peak_encoded = batch_peak_encoded.max(pre_flush_encoded_capacity);
+                    batch_peak_encoded = batch_peak_encoded.max(encoded_rows.capacity());
                     let projected_with_both_buffers = combined_batch_allocation_estimate(
                         remaining_retained,
-                        pre_flush_encoded_capacity,
+                        encoded_rows.capacity(),
                     );
                     batch_peak_combined = batch_peak_combined.max(projected_with_both_buffers);
 
@@ -703,10 +714,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                         perf.zip_write_ms = perf.zip_write_ms.saturating_add(write_elapsed_ms);
                         embedded_zip_write_ms =
                             embedded_zip_write_ms.saturating_add(write_elapsed_ms);
-                        encoded_rows = Vec::new();
+                        encoded_rows.clear();
                     }
-
-                    next_row_id = row.row_id;
 
                     rows_written = rows_written.saturating_add(1);
                     dispatcher.update_table(SaveProgress {
@@ -722,6 +731,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                         )),
                     });
                 }
+                cursor = next_cursor;
 
                 perf.batch_encode_ms = perf.batch_encode_ms.saturating_add(
                     encode_started
@@ -736,14 +746,13 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 perf.max_combined_batch_bytes =
                     perf.max_combined_batch_bytes.max(batch_peak_combined);
                 target_batch_bytes =
-                    adaptive_target_batch_bytes(target_batch_bytes, batch.retained_bytes_estimate);
+                    adaptive_target_batch_bytes(target_batch_bytes, batch_peak_combined);
 
                 let write_started = Instant::now();
                 zip.write_all(&encoded_rows)?;
                 perf.zip_write_ms = perf
                     .zip_write_ms
                     .saturating_add(write_started.elapsed().as_millis());
-                encoded_rows = Vec::new();
             }
 
             zip.write_all(b"]}")?;
@@ -1114,6 +1123,77 @@ fn combined_batch_allocation_estimate(remaining_retained: usize, encoded_capacit
     remaining_retained.saturating_add(encoded_capacity)
 }
 
+struct BoundedEncodedWriter<'a, W: Write> {
+    sink: &'a mut W,
+    buffer: &'a mut Vec<u8>,
+    capacity_limit: usize,
+    direct: bool,
+    sink_write_ms: u128,
+}
+
+impl<'a, W: Write> BoundedEncodedWriter<'a, W> {
+    fn new(sink: &'a mut W, buffer: &'a mut Vec<u8>, capacity_limit: usize) -> Self {
+        Self {
+            sink,
+            buffer,
+            capacity_limit,
+            direct: false,
+            sink_write_ms: 0,
+        }
+    }
+
+    fn sink_write_ms(&self) -> u128 {
+        self.sink_write_ms
+    }
+
+    fn write_to_sink(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let started = Instant::now();
+        self.sink.write_all(bytes)?;
+        self.sink_write_ms = self
+            .sink_write_ms
+            .saturating_add(started.elapsed().as_millis());
+        Ok(())
+    }
+
+    fn flush_buffer_to_sink(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let started = Instant::now();
+        self.sink.write_all(self.buffer.as_slice())?;
+        self.sink_write_ms = self
+            .sink_write_ms
+            .saturating_add(started.elapsed().as_millis());
+        self.buffer.clear();
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for BoundedEncodedWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.direct {
+            self.write_to_sink(bytes)?;
+            return Ok(bytes.len());
+        }
+
+        let required_len = self.buffer.len().saturating_add(bytes.len());
+        if required_len <= self.capacity_limit {
+            self.buffer.extend_from_slice(bytes);
+            return Ok(bytes.len());
+        }
+
+        self.flush_buffer_to_sink()?;
+        self.direct = true;
+        self.write_to_sink(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_buffer_to_sink()?;
+        self.sink.flush()
+    }
+}
+
 fn replace_archive_atomically_os(
     temp_path: &Path,
     destination_path: &Path,
@@ -1264,7 +1344,12 @@ mod tests {
 
     use crate::error::AppError;
     use crate::models::project::ProjectInfo;
-    use crate::models::save::{SavePhase, SaveProgress, SaveProjectRequest, SaveSnapshot};
+    use crate::models::save::{
+        SavePerfMetrics, SavePhase, SaveProgress, SaveProjectRequest, SaveSnapshot,
+    };
+    use crate::services::archive_cell::{
+        reset_tagged_value_to_json_call_count, tagged_value_to_json_call_count,
+    };
     use crate::services::project_service::ProjectService;
     use crate::services::spprj_archive;
     use crate::services::workflow_domain;
@@ -1272,8 +1357,8 @@ mod tests {
 
     use super::{
         combined_batch_allocation_estimate, install_save_test_hook, remaining_retained_after_row,
-        ArchiveReplacer, ProgressDispatcher, SaveFailurePoint, StreamingProjectWriter,
-        HARD_BATCH_BYTES, HEARTBEAT_INTERVAL,
+        with_save_perf_observer, ArchiveReplacer, ProgressDispatcher, SaveFailurePoint,
+        StreamingProjectWriter, HARD_BATCH_BYTES, HEARTBEAT_INTERVAL,
     };
 
     #[derive(Default)]
@@ -2368,6 +2453,156 @@ mod tests {
     }
 
     #[test]
+    fn streaming_save_honors_byte_budget_with_bounded_row_batches() {
+        let state = AppState::new().unwrap();
+        let archive = temp_path("byte-budget");
+        let dataset = seed_benchmark_dataset(&state, 20_000);
+        let snapshot = save_snapshot(&archive, vec![dataset]);
+
+        let observed = Arc::new(Mutex::new(SavePerfMetrics::default()));
+        let captured = Arc::clone(&observed);
+        let fetched_batches = Arc::new(AtomicUsize::new(0));
+        let counted_batches = Arc::clone(&fetched_batches);
+        install_save_test_hook(Some(Box::new(move |point, _| {
+            if point == SaveFailurePoint::BetweenBatches {
+                counted_batches.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        })));
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        with_save_perf_observer(
+            move |metrics| *captured.lock().unwrap() = metrics,
+            || writer.write(&snapshot, &archive, None),
+        )
+        .unwrap();
+        install_save_test_hook(None);
+
+        assert_eq!(
+            spprj_archive::count_project_rows_streaming(archive.to_str().unwrap()).unwrap(),
+            20_000
+        );
+        assert_eq!(fetched_batches.load(Ordering::SeqCst), 5);
+        let metrics = *observed.lock().unwrap();
+        assert!(metrics.max_retained_batch_bytes <= HARD_BATCH_BYTES);
+        assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+        std::fs::remove_file(archive).unwrap();
+    }
+
+    #[test]
+    fn streaming_save_streams_encoded_expansion_without_exceeding_combined_cap() {
+        let state = AppState::new().unwrap();
+        let archive = temp_path("encoded-expansion");
+        let value = "\0".repeat(2 * 1024 * 1024);
+        let dataset = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "encoded-expansion",
+                "Encoded Expansion",
+                &["value".to_string()],
+                &["VARCHAR".to_string()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO \"dataset_encoded_expansion\" (\"_row_id\", \"value\")
+                     VALUES (1, ?)",
+                    params![&value],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 1 WHERE id = 'encoded-expansion'",
+                    [],
+                )
+                .unwrap();
+            db.get_dataset_meta("encoded-expansion").unwrap()
+        };
+        let snapshot = save_snapshot(&archive, vec![dataset]);
+        let observed = Arc::new(Mutex::new(SavePerfMetrics::default()));
+        let captured = Arc::clone(&observed);
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        with_save_perf_observer(
+            move |metrics| *captured.lock().unwrap() = metrics,
+            || writer.write(&snapshot, &archive, None),
+        )
+        .unwrap();
+
+        let metrics = *observed.lock().unwrap();
+        assert!(metrics.max_retained_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+        let reopened = spprj_archive::read_project_file(archive.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.tables[0].rows[0][1], serde_json::json!(value));
+        std::fs::remove_file(archive).unwrap();
+    }
+
+    #[test]
+    fn streaming_save_near_cap_tagged_text_avoids_allocating_json_conversion() {
+        let state = AppState::new().unwrap();
+        let archive = temp_path("near-cap-tagged-text");
+        let value = "x".repeat(7 * 1024 * 1024);
+        let dataset = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "near-cap-tagged-text",
+                "Near Cap Tagged Text",
+                &["value".to_string()],
+                &["VARCHAR[]".to_string()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO \"dataset_near_cap_tagged_text\" (\"_row_id\", \"value\")
+                     VALUES (1, [?])",
+                    params![&value],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 1
+                     WHERE id = 'near-cap-tagged-text'",
+                    [],
+                )
+                .unwrap();
+            db.get_dataset_meta("near-cap-tagged-text").unwrap()
+        };
+        let snapshot = save_snapshot(&archive, vec![dataset]);
+        let observed = Arc::new(Mutex::new(SavePerfMetrics::default()));
+        let captured = Arc::clone(&observed);
+
+        reset_tagged_value_to_json_call_count();
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        with_save_perf_observer(
+            move |metrics| *captured.lock().unwrap() = metrics,
+            || writer.write(&snapshot, &archive, None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tagged_value_to_json_call_count(),
+            0,
+            "streaming save must not materialize tagged serde_json values"
+        );
+        let metrics = *observed.lock().unwrap();
+        assert!(metrics.max_retained_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_encoded_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+
+        let reopened = spprj_archive::read_project_file(archive.to_str().unwrap()).unwrap();
+        let tagged = reopened.tables[0].rows[0][1]["$duckdbValue"]
+            .as_str()
+            .unwrap();
+        assert_eq!(tagged.len(), value.len() + 2);
+        assert!(tagged.starts_with('['));
+        assert!(tagged.ends_with(']'));
+        assert_eq!(&tagged[1..tagged.len() - 1], value);
+        std::fs::remove_file(archive).unwrap();
+    }
+
+    #[test]
     fn stream_writer_preserves_gapped_row_ids_and_order() {
         let state = AppState::new().unwrap();
         let dataset = seed_gapped_dataset(&state);
@@ -2931,7 +3166,7 @@ mod tests {
     #[test]
     fn stream_writer_progress_emits_on_advancement_checkpoints_after_large_jumps() {
         let state = AppState::new().unwrap();
-        let dataset = seed_benchmark_dataset(&state, 8_000);
+        let dataset = seed_benchmark_dataset(&state, 20_000);
         let destination = temp_path("progress-jumps");
         let snapshot = save_snapshot(&destination, vec![dataset]);
 
@@ -2986,7 +3221,7 @@ mod tests {
     #[test]
     fn stream_writer_progress_first_advancing_event_waits_for_minimum_interval() {
         let state = AppState::new().unwrap();
-        let dataset = seed_benchmark_dataset(&state, 8_000);
+        let dataset = seed_benchmark_dataset(&state, 20_000);
         let destination = temp_path("progress-first-window");
         let snapshot = save_snapshot(&destination, vec![dataset]);
 

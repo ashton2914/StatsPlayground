@@ -35,7 +35,7 @@
 //! via a first-byte sniff and parsed via `LegacySpprj`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Cursor, Read, Seek, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -44,6 +44,9 @@ use serde_json::{Map, Value};
 
 use crate::error::AppError;
 use crate::models::table::ColumnDisplayProps;
+use crate::services::streaming_table_reader::{
+    scan_table_header, stream_table_rows, StreamedTableHeader, TableBatchSink, TableHeaderScan,
+};
 use crate::services::workflow_domain;
 
 #[cfg(test)]
@@ -902,15 +905,80 @@ struct LegacyDataset {
 // Read API
 // ----------------------------------------------------------------------------
 
+pub(crate) enum ProjectTablePayload {
+    Stream {
+        entry: TableEntryRef,
+        header: StreamedTableHeader,
+    },
+    Buffered {
+        entry: TableEntryRef,
+        doc: TableDoc,
+    },
+}
+
+pub(crate) trait ProjectArchiveTableSink {
+    fn restore_streamed(
+        &mut self,
+        entry: &TableEntryRef,
+        header: &StreamedTableHeader,
+        archive_header: &StreamedTableHeader,
+        reader: &mut dyn Read,
+    ) -> Result<(), AppError>;
+
+    fn restore_buffered(&mut self, entry: &TableEntryRef, doc: &TableDoc) -> Result<(), AppError>;
+}
+
+pub(crate) struct OpenProjectArchive {
+    pub bundle: ProjectBundle,
+    table_payloads: Vec<ProjectTablePayload>,
+    zip: Option<zip::ZipArchive<std::fs::File>>,
+}
+
+impl OpenProjectArchive {
+    pub(crate) fn open(path: &str) -> Result<Self, AppError> {
+        let mut file = std::fs::File::open(path)?;
+        let mut signature = [0u8; 4];
+        let signature_len = file.read(&mut signature)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        if is_zip(&signature[..signature_len]) {
+            let mut zip = zip::ZipArchive::new(file)
+                .map_err(|e| AppError::FileIO(format!("Invalid project archive: {e}")))?;
+            let (bundle, table_payloads) = read_zip_metadata(&mut zip)?;
+            Ok(Self {
+                bundle,
+                table_payloads,
+                zip: Some(zip),
+            })
+        } else {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            let mut bundle = read_legacy_json(&bytes)?;
+            let table_payloads = buffered_table_payloads(&mut bundle);
+            Ok(Self {
+                bundle,
+                table_payloads,
+                zip: None,
+            })
+        }
+    }
+
+    pub(crate) fn restore_tables<S: ProjectArchiveTableSink>(
+        &mut self,
+        sink: &mut S,
+    ) -> Result<(), AppError> {
+        restore_table_payloads(&self.bundle, &self.table_payloads, self.zip.as_mut(), sink)
+    }
+}
+
 /// Sniff the first bytes of a file and decide whether it is a ZIP archive
 /// (new format) or a JSON document (legacy).
 pub fn read_project_file(path: &str) -> Result<ProjectBundle, AppError> {
-    let bytes = std::fs::read(path)?;
-    if is_zip(&bytes) {
-        read_zip_bundle(&bytes)
-    } else {
-        read_legacy_json(&bytes)
-    }
+    let mut archive = OpenProjectArchive::open(path)?;
+    let mut sink = CollectingProjectTableSink::default();
+    archive.restore_tables(&mut sink)?;
+    archive.bundle.tables = sink.tables;
+    Ok(archive.bundle)
 }
 
 pub fn build_graph_docs(raw_graph_builders: Vec<Value>) -> Vec<GraphDoc> {
@@ -1356,7 +1424,16 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
     let cursor = Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor)
         .map_err(|e| AppError::FileIO(format!("Invalid project archive: {}", e)))?;
+    let (mut bundle, table_payloads) = read_zip_metadata(&mut zip)?;
+    let mut sink = CollectingProjectTableSink::default();
+    restore_table_payloads(&bundle, &table_payloads, Some(&mut zip), &mut sink)?;
+    bundle.tables = sink.tables;
+    Ok(bundle)
+}
 
+fn read_zip_metadata<R: Read + Seek>(
+    mut zip: &mut zip::ZipArchive<R>,
+) -> Result<(ProjectBundle, Vec<ProjectTablePayload>), AppError> {
     let manifest_bytes = read_entry_bytes(&mut zip, "manifest.json")
         .ok_or_else(|| AppError::FileIO("Project archive missing manifest.json".into()))?;
     let manifest: ProjectManifest = serde_json::from_slice(&manifest_bytes)
@@ -1367,25 +1444,41 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
     let strict_v4_name_checks = is_format_v4(&manifest.version);
 
     let mut tables = Vec::with_capacity(manifest.tables.len());
+    let mut table_payloads = Vec::with_capacity(manifest.tables.len());
     for entry in &manifest.tables {
-        let bytes = read_entry_bytes(&mut zip, &entry.file)
-            .ok_or_else(|| AppError::FileIO(format!("Missing table entry: {}", entry.file)))?;
-        let doc: TableDoc = serde_json::from_slice(&bytes)
-            .map_err(|e| AppError::FileIO(format!("Invalid table file {}: {}", entry.file, e)))?;
-        validate_table_doc(&doc)?;
-        if doc.id != entry.id {
-            return Err(AppError::FileIO(format!(
-                "Mismatched table id in {}: manifest={}, body={}",
-                entry.file, entry.id, doc.id
-            )));
+        let scan = {
+            let table_entry = zip
+                .by_name(&entry.file)
+                .map_err(|_| AppError::FileIO(format!("Missing table entry: {}", entry.file)))?;
+            scan_table_header(table_entry).map_err(|error| {
+                AppError::FileIO(format!("Invalid table file {}: {error}", entry.file))
+            })?
+        };
+        match scan {
+            TableHeaderScan::Canonical(header) => {
+                validate_table_header(&header, entry, strict_v4_name_checks)?;
+                tables.push(table_doc_from_header(&header));
+                table_payloads.push(ProjectTablePayload::Stream {
+                    entry: entry.clone(),
+                    header,
+                });
+            }
+            TableHeaderScan::RequiresBufferedCompatibility => {
+                let bytes = read_entry_bytes(zip, &entry.file).ok_or_else(|| {
+                    AppError::FileIO(format!("Missing table entry: {}", entry.file))
+                })?;
+                let doc: TableDoc = serde_json::from_slice(&bytes).map_err(|e| {
+                    AppError::FileIO(format!("Invalid table file {}: {e}", entry.file))
+                })?;
+                validate_table_doc(&doc)?;
+                validate_table_identity(&doc, entry, strict_v4_name_checks)?;
+                tables.push(table_doc_header(&doc));
+                table_payloads.push(ProjectTablePayload::Buffered {
+                    entry: entry.clone(),
+                    doc,
+                });
+            }
         }
-        if strict_v4_name_checks && doc.name != entry.name {
-            return Err(AppError::FileIO(format!(
-                "Mismatched table name in {}: manifest={}, body={}",
-                entry.file, entry.name, doc.name
-            )));
-        }
-        tables.push(doc);
     }
     let mut graphs = Vec::with_capacity(manifest.graphs.len());
     for entry in &manifest.graphs {
@@ -1497,24 +1590,206 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         &manifest.workflow_runs,
     )?;
 
-    Ok(ProjectBundle {
-        manifest,
-        tables,
-        graphs,
-        graph_builders_new,
-        fit_y_by_x,
-        fit_models,
-        reports,
-        distributions,
-        analyses,
-        tabulates,
-        history,
-        snapshots,
-        workflows,
-        table_transforms,
-        delta_history,
-        history_timeline,
-    })
+    Ok((
+        ProjectBundle {
+            manifest,
+            tables,
+            graphs,
+            graph_builders_new,
+            fit_y_by_x,
+            fit_models,
+            reports,
+            distributions,
+            analyses,
+            tabulates,
+            history,
+            snapshots,
+            workflows,
+            table_transforms,
+            delta_history,
+            history_timeline,
+        },
+        table_payloads,
+    ))
+}
+
+fn validate_table_header(
+    header: &StreamedTableHeader,
+    entry: &TableEntryRef,
+    strict_v4_name_checks: bool,
+) -> Result<(), AppError> {
+    let doc = table_doc_from_header(header);
+    validate_table_doc(&doc)?;
+    validate_table_identity(&doc, entry, strict_v4_name_checks)
+}
+
+fn validate_table_identity(
+    doc: &TableDoc,
+    entry: &TableEntryRef,
+    strict_v4_name_checks: bool,
+) -> Result<(), AppError> {
+    if doc.id != entry.id {
+        return Err(AppError::FileIO(format!(
+            "Mismatched table id in {}: manifest={}, body={}",
+            entry.file, entry.id, doc.id
+        )));
+    }
+    if strict_v4_name_checks && doc.name != entry.name {
+        return Err(AppError::FileIO(format!(
+            "Mismatched table name in {}: manifest={}, body={}",
+            entry.file, entry.name, doc.name
+        )));
+    }
+    Ok(())
+}
+
+fn table_doc_from_header(header: &StreamedTableHeader) -> TableDoc {
+    TableDoc {
+        id: header.id.clone(),
+        name: header.name.clone(),
+        source_type: header.source_type.clone(),
+        version: header.version.clone(),
+        columns: header.columns.clone(),
+        rows: Vec::new(),
+    }
+}
+
+fn table_doc_header(doc: &TableDoc) -> TableDoc {
+    TableDoc {
+        id: doc.id.clone(),
+        name: doc.name.clone(),
+        source_type: doc.source_type.clone(),
+        version: doc.version.clone(),
+        columns: doc.columns.clone(),
+        rows: Vec::new(),
+    }
+}
+
+fn buffered_table_payloads(bundle: &mut ProjectBundle) -> Vec<ProjectTablePayload> {
+    let docs = std::mem::take(&mut bundle.tables);
+    let mut payloads = Vec::with_capacity(docs.len());
+    for doc in docs {
+        let entry = bundle
+            .manifest
+            .tables
+            .iter()
+            .find(|entry| entry.id == doc.id)
+            .cloned()
+            .unwrap_or_else(|| TableEntryRef {
+                id: doc.id.clone(),
+                name: doc.name.clone(),
+                file: String::new(),
+            });
+        bundle.tables.push(table_doc_header(&doc));
+        payloads.push(ProjectTablePayload::Buffered { entry, doc });
+    }
+    payloads
+}
+
+fn restore_table_payloads<R: Read + Seek, S: ProjectArchiveTableSink>(
+    bundle: &ProjectBundle,
+    table_payloads: &[ProjectTablePayload],
+    mut zip: Option<&mut zip::ZipArchive<R>>,
+    sink: &mut S,
+) -> Result<(), AppError> {
+    for payload in table_payloads {
+        let (entry, current) = match payload {
+            ProjectTablePayload::Stream { entry, .. }
+            | ProjectTablePayload::Buffered { entry, .. } => {
+                let current = bundle
+                    .tables
+                    .iter()
+                    .find(|table| table.id == entry.id)
+                    .ok_or_else(|| {
+                        AppError::FileIO(format!(
+                            "Missing migrated table header for stable id {}",
+                            entry.id
+                        ))
+                    })?;
+                (entry, current)
+            }
+        };
+        let mut resolved_entry = entry.clone();
+        resolved_entry.name = current.name.clone();
+
+        match payload {
+            ProjectTablePayload::Stream { header, .. } => {
+                let resolved_header = StreamedTableHeader {
+                    id: current.id.clone(),
+                    name: current.name.clone(),
+                    source_type: current.source_type.clone(),
+                    version: current.version.clone(),
+                    columns: current.columns.clone(),
+                };
+                let zip = zip.as_deref_mut().ok_or_else(|| {
+                    AppError::FileIO("Streaming table payload has no open ZIP archive".into())
+                })?;
+                let mut reader = zip.by_name(&entry.file).map_err(|e| {
+                    AppError::FileIO(format!(
+                        "Missing table entry during restore {}: {e}",
+                        entry.file
+                    ))
+                })?;
+                sink.restore_streamed(&resolved_entry, &resolved_header, header, &mut reader)?;
+            }
+            ProjectTablePayload::Buffered { doc, .. } => {
+                let mut resolved_doc = doc.clone();
+                resolved_doc.id = current.id.clone();
+                resolved_doc.name = current.name.clone();
+                resolved_doc.source_type = current.source_type.clone();
+                resolved_doc.version = current.version.clone();
+                resolved_doc.columns = current.columns.clone();
+                sink.restore_buffered(&resolved_entry, &resolved_doc)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct CollectingProjectTableSink {
+    tables: Vec<TableDoc>,
+}
+
+struct CollectingTableBatchSink {
+    rows: Vec<Vec<Value>>,
+}
+
+impl TableBatchSink for CollectingTableBatchSink {
+    fn begin_table(&mut self, _header: &StreamedTableHeader) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<(), AppError> {
+        self.rows.extend_from_slice(rows);
+        Ok(())
+    }
+
+    fn finish_table(&mut self, _row_count: usize) -> Result<(), AppError> {
+        Ok(())
+    }
+}
+
+impl ProjectArchiveTableSink for CollectingProjectTableSink {
+    fn restore_streamed(
+        &mut self,
+        _entry: &TableEntryRef,
+        header: &StreamedTableHeader,
+        archive_header: &StreamedTableHeader,
+        reader: &mut dyn Read,
+    ) -> Result<(), AppError> {
+        let mut row_sink = CollectingTableBatchSink { rows: Vec::new() };
+        stream_table_rows(reader, archive_header, &mut row_sink)?;
+        let mut doc = table_doc_from_header(header);
+        doc.rows = row_sink.rows;
+        self.tables.push(doc);
+        Ok(())
+    }
+
+    fn restore_buffered(&mut self, _entry: &TableEntryRef, doc: &TableDoc) -> Result<(), AppError> {
+        self.tables.push(doc.clone());
+        Ok(())
+    }
 }
 
 fn read_history_timeline<R: Read + Seek>(
@@ -6579,6 +6854,9 @@ mod tests {
         CalculatedColumnDefinitionV1, CalculatedExpressionV1, CalculatedFunctionV1,
         CalculatedNumber, CalculatedOutputTypeV1,
     };
+    use crate::services::streaming_table_reader::{
+        stream_table_rows, StreamedTableHeader, TableBatchSink,
+    };
     use crate::services::workflow_domain;
     use std::io::{Read, Write};
 
@@ -6634,6 +6912,170 @@ mod tests {
             columns: vec![],
             rows: vec![],
         }
+    }
+
+    fn canonical_table_doc() -> TableDoc {
+        TableDoc {
+            id: "table-1".into(),
+            name: "Data".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![TableColumn {
+                column_id: Some(uuid::Uuid::new_v4().to_string()),
+                name: "x".into(),
+                col_type: "DOUBLE".into(),
+                width: None,
+                format: None,
+                extras: None,
+                calculated: None,
+            }],
+            rows: vec![
+                vec![serde_json::json!(1), serde_json::json!(1.5)],
+                vec![serde_json::json!(2), serde_json::json!(2.5)],
+            ],
+        }
+    }
+
+    fn write_v4_project_with_table(doc: TableDoc) -> tempfile::TempPath {
+        let bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![doc],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        path
+    }
+
+    fn write_v4_project_with_raw_table(raw_table: Vec<u8>) -> tempfile::TempPath {
+        let canonical_path = write_v4_project_with_table(canonical_table_doc());
+        let source_file = std::fs::File::open(&canonical_path).unwrap();
+        let mut source = zip::ZipArchive::new(source_file).unwrap();
+        let target_path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let target_file = std::fs::File::create(&target_path).unwrap();
+        let mut target = zip::ZipWriter::new(target_file);
+
+        for index in 0..source.len() {
+            let entry = source.by_index(index).unwrap();
+            if entry.name().ends_with(".sptb") {
+                let name = entry.name().to_string();
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(entry.compression());
+                drop(entry);
+                target.start_file(name, options).unwrap();
+                target.write_all(&raw_table).unwrap();
+            } else {
+                target.raw_copy_file(entry).unwrap();
+            }
+        }
+        target.finish().unwrap();
+        target_path
+    }
+
+    fn rows_first_table_json() -> Vec<u8> {
+        let doc = canonical_table_doc();
+        format!(
+            r#"{{"rows":{},"id":{},"name":{},"sourceType":{},"version":{},"columns":{}}}"#,
+            serde_json::to_string(&doc.rows).unwrap(),
+            serde_json::to_string(&doc.id).unwrap(),
+            serde_json::to_string(&doc.name).unwrap(),
+            serde_json::to_string(&doc.source_type).unwrap(),
+            serde_json::to_string(&doc.version).unwrap(),
+            serde_json::to_string(&doc.columns).unwrap(),
+        )
+        .into_bytes()
+    }
+
+    #[derive(Default)]
+    struct RecordingProjectTableSink {
+        streamed_ids: Vec<String>,
+        buffered_ids: Vec<String>,
+    }
+
+    #[derive(Default)]
+    struct DiscardingTableBatchSink;
+
+    impl TableBatchSink for DiscardingTableBatchSink {
+        fn begin_table(&mut self, _header: &StreamedTableHeader) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn append_rows(&mut self, _rows: &[Vec<Value>]) -> Result<(), AppError> {
+            Ok(())
+        }
+
+        fn finish_table(&mut self, _row_count: usize) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    impl ProjectArchiveTableSink for RecordingProjectTableSink {
+        fn restore_streamed(
+            &mut self,
+            entry: &TableEntryRef,
+            _header: &StreamedTableHeader,
+            archive_header: &StreamedTableHeader,
+            reader: &mut dyn Read,
+        ) -> Result<(), AppError> {
+            self.streamed_ids.push(entry.id.clone());
+            stream_table_rows(reader, archive_header, &mut DiscardingTableBatchSink)?;
+            Ok(())
+        }
+
+        fn restore_buffered(
+            &mut self,
+            entry: &TableEntryRef,
+            _doc: &TableDoc,
+        ) -> Result<(), AppError> {
+            self.buffered_ids.push(entry.id.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn open_archive_plan_streams_canonical_table_entries_from_file() {
+        let path = write_v4_project_with_table(canonical_table_doc());
+        let mut archive = OpenProjectArchive::open(path.to_str().unwrap()).unwrap();
+        let mut sink = RecordingProjectTableSink::default();
+
+        archive.restore_tables(&mut sink).unwrap();
+
+        assert_eq!(sink.streamed_ids, vec!["table-1"]);
+        assert!(sink.buffered_ids.is_empty());
+        assert!(archive.bundle.tables[0].rows.is_empty());
+    }
+
+    #[test]
+    fn open_archive_plan_buffers_rows_before_header_fields() {
+        let path = write_v4_project_with_raw_table(rows_first_table_json());
+        let mut archive = OpenProjectArchive::open(path.to_str().unwrap()).unwrap();
+        let mut sink = RecordingProjectTableSink::default();
+
+        archive.restore_tables(&mut sink).unwrap();
+
+        assert_eq!(sink.buffered_ids, vec!["table-1"]);
+        assert!(sink.streamed_ids.is_empty());
+    }
+
+    #[test]
+    fn existing_read_project_file_still_materializes_table_rows() {
+        let path = write_v4_project_with_table(canonical_table_doc());
+        let bundle = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(bundle.tables[0].rows.len(), 2);
     }
 
     fn native_graph_document() -> Value {

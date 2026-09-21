@@ -9,18 +9,23 @@ use crate::models::project::{DatasetNameMigration, DocumentNameMigration, Projec
 use crate::models::save::{
     SaveProgressCallback, SaveProjectRequest, SaveSnapshot, SaveWriteResult,
 };
-use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
-use crate::services::archive_cell::{
-    archive_cell_to_json, archive_export_expression, is_archive_scalar_type,
-};
+use crate::services::archive_cell::{archive_cell_to_json, archive_export_expression};
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaSqlColumn, TypedCalculatedExpression, TypedCalculatedOutput,
 };
+use crate::services::project_table_restore::{
+    ProjectTableRestorePerfMetrics, ProjectTableRestoreSession,
+};
 use crate::services::spprj_archive::{
-    self, project_archive_table_columns, DatasetFilters, GraphDoc, ProjectBundle, TableColumn,
-    TableDoc,
+    self, project_archive_table_columns, DatasetFilters, GraphDoc, ProjectArchiveTableSink,
+    ProjectBundle, TableColumn, TableDoc, TableEntryRef,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
+#[cfg(not(any(test, feature = "perf-harness")))]
+use crate::services::streaming_table_reader::stream_table_rows;
+use crate::services::streaming_table_reader::StreamedTableHeader;
+#[cfg(any(test, feature = "perf-harness"))]
+use crate::services::streaming_table_reader::{stream_table_rows_profiled, TableStreamPerfMetrics};
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
@@ -28,13 +33,274 @@ use crate::services::workflow_domain::{
 };
 use crate::services::workflow_executor::{document_commit_id, WorkflowRunCommitPacket};
 use crate::state::AppState;
-use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
-use std::io::Write;
+use std::io::{Read, Write};
+
+#[cfg(test)]
+thread_local! {
+    static STREAMING_TABLE_READER_COUNTS: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+fn reset_streaming_table_reader_counters() {
+    STREAMING_TABLE_READER_COUNTS.with(|counts| counts.set((0, 0)));
+}
+
+#[cfg(test)]
+fn streamed_table_count() -> usize {
+    STREAMING_TABLE_READER_COUNTS.with(|counts| counts.get().0)
+}
+
+#[cfg(test)]
+fn buffered_compatibility_table_count() -> usize {
+    STREAMING_TABLE_READER_COUNTS.with(|counts| counts.get().1)
+}
+
+#[cfg(test)]
+fn record_streamed_table() {
+    STREAMING_TABLE_READER_COUNTS.with(|counts| {
+        let (streamed, buffered) = counts.get();
+        counts.set((streamed + 1, buffered));
+    });
+}
+
+#[cfg(test)]
+fn record_buffered_compatibility_table() {
+    STREAMING_TABLE_READER_COUNTS.with(|counts| {
+        let (streamed, buffered) = counts.get();
+        counts.set((streamed, buffered + 1));
+    });
+}
 
 pub struct ProjectService<'a> {
     state: &'a AppState,
 }
+
+struct StagedProjectTableSink<'a> {
+    state: &'a AppState,
+    progress: Option<&'a dyn Fn(usize, usize, &str, usize, usize)>,
+    table_index: usize,
+    table_total: usize,
+    perf_metrics: &'a mut OpenTableRestorePerfMetrics,
+}
+
+impl ProjectArchiveTableSink for StagedProjectTableSink<'_> {
+    fn restore_streamed(
+        &mut self,
+        entry: &TableEntryRef,
+        header: &StreamedTableHeader,
+        archive_header: &StreamedTableHeader,
+        reader: &mut dyn Read,
+    ) -> Result<(), AppError> {
+        if let Some(progress) = self.progress {
+            progress(self.table_index, self.table_total, &header.name, 0, 0);
+        }
+        let row_progress = |rows_done, rows_total| {
+            if let Some(progress) = self.progress {
+                progress(
+                    self.table_index,
+                    self.table_total,
+                    &header.name,
+                    rows_done,
+                    rows_total,
+                );
+            }
+        };
+        #[cfg(not(any(test, feature = "perf-harness")))]
+        let mut session = ProjectTableRestoreSession::begin(
+            self.state,
+            header.clone(),
+            None,
+            Some(&row_progress),
+        )?;
+        #[cfg(any(test, feature = "perf-harness"))]
+        let mut session = ProjectTableRestoreSession::begin_profiled(
+            self.state,
+            header.clone(),
+            None,
+            Some(&row_progress),
+        )?;
+        #[cfg(not(any(test, feature = "perf-harness")))]
+        if let Err(error) = stream_table_rows(reader, archive_header, &mut session) {
+            return Err(session.abort(error));
+        }
+        #[cfg(any(test, feature = "perf-harness"))]
+        let mut stream_metrics = TableStreamPerfMetrics::default();
+        #[cfg(any(test, feature = "perf-harness"))]
+        if let Err(error) =
+            stream_table_rows_profiled(reader, archive_header, &mut session, &mut stream_metrics)
+        {
+            return Err(session.abort(error));
+        }
+        #[cfg(any(test, feature = "perf-harness"))]
+        let restore_metrics = session.perf_metrics();
+        #[cfg(any(test, feature = "perf-harness"))]
+        let finish_started = std::time::Instant::now();
+        let restored_id = session.finish()?;
+        #[cfg(any(test, feature = "perf-harness"))]
+        {
+            self.perf_metrics.json_parse_ns = self
+                .perf_metrics
+                .json_parse_ns
+                .saturating_add(stream_metrics.json_parse_ns);
+            self.perf_metrics.rows = self.perf_metrics.rows.saturating_add(stream_metrics.rows);
+            self.perf_metrics.add_restore(restore_metrics);
+            self.perf_metrics.finalize_ns = self
+                .perf_metrics
+                .finalize_ns
+                .saturating_add(finish_started.elapsed().as_nanos());
+        }
+        if restored_id != entry.id {
+            return Err(AppError::FileIO(format!(
+                "Restored table id mismatch: expected {}, got {restored_id}",
+                entry.id
+            )));
+        }
+        #[cfg(test)]
+        record_streamed_table();
+        self.table_index += 1;
+        Ok(())
+    }
+
+    fn restore_buffered(&mut self, entry: &TableEntryRef, doc: &TableDoc) -> Result<(), AppError> {
+        if let Some(progress) = self.progress {
+            progress(
+                self.table_index,
+                self.table_total,
+                &doc.name,
+                0,
+                doc.rows.len(),
+            );
+        }
+        let row_progress = |rows_done, rows_total| {
+            if let Some(progress) = self.progress {
+                progress(
+                    self.table_index,
+                    self.table_total,
+                    &doc.name,
+                    rows_done,
+                    rows_total,
+                );
+            }
+        };
+        let restored_id = ProjectService::new(self.state)
+            .restore_table_doc_with_progress(doc, Some(&row_progress))?;
+        if restored_id != entry.id {
+            return Err(AppError::FileIO(format!(
+                "Restored table id mismatch: expected {}, got {restored_id}",
+                entry.id
+            )));
+        }
+        #[cfg(test)]
+        record_buffered_compatibility_table();
+        self.table_index += 1;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OpenTableRestorePerfMetrics {
+    pub json_parse_ns: u128,
+    pub validation_conversion_ns: u128,
+    pub appender_create_ns: u128,
+    pub appender_append_ns: u128,
+    pub appender_flush_ns: u128,
+    pub finalize_ns: u128,
+    pub appender_create_count: usize,
+    pub rows: usize,
+}
+
+impl OpenTableRestorePerfMetrics {
+    fn add_restore(&mut self, metrics: ProjectTableRestorePerfMetrics) {
+        self.validation_conversion_ns = self
+            .validation_conversion_ns
+            .saturating_add(metrics.validation_conversion_ns);
+        self.appender_create_ns = self
+            .appender_create_ns
+            .saturating_add(metrics.appender_create_ns);
+        self.appender_append_ns = self
+            .appender_append_ns
+            .saturating_add(metrics.appender_append_ns);
+        self.appender_flush_ns = self
+            .appender_flush_ns
+            .saturating_add(metrics.appender_flush_ns);
+        self.appender_create_count = self
+            .appender_create_count
+            .saturating_add(metrics.appender_create_count);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OpenPerfMetrics {
+    pub total_ms: u128,
+    pub archive_read_parse_ms: u128,
+    pub table_restore_ms: u128,
+    pub finalize_ms: u128,
+    pub table_restore_detail: OpenTableRestorePerfMetrics,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+type OpenPerfObserver = Box<dyn FnMut(OpenPerfMetrics)>;
+
+#[cfg(any(test, feature = "perf-harness"))]
+thread_local! {
+    static OPEN_PERF_OBSERVER: std::cell::RefCell<Option<OpenPerfObserver>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+struct OpenPerfObserverGuard {
+    previous: Option<OpenPerfObserver>,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+impl OpenPerfObserverGuard {
+    fn install(observer: OpenPerfObserver) -> Self {
+        let previous = OPEN_PERF_OBSERVER.with(|slot| slot.borrow_mut().replace(observer));
+        Self { previous }
+    }
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+impl Drop for OpenPerfObserverGuard {
+    fn drop(&mut self) {
+        OPEN_PERF_OBSERVER.with(|slot| {
+            *slot.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn with_open_perf_observer<T, FObserve, FRun>(observer: FObserve, run: FRun) -> T
+where
+    FObserve: FnMut(OpenPerfMetrics) + 'static,
+    FRun: FnOnce() -> T,
+{
+    let _guard = OpenPerfObserverGuard::install(Box::new(observer));
+    run()
+}
+
+#[cfg(not(any(test, feature = "perf-harness")))]
+pub(crate) fn with_open_perf_observer<T, FObserve, FRun>(_observer: FObserve, run: FRun) -> T
+where
+    FObserve: FnMut(OpenPerfMetrics) + 'static,
+    FRun: FnOnce() -> T,
+{
+    run()
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+fn notify_open_perf_observer(metrics: OpenPerfMetrics) {
+    OPEN_PERF_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow_mut().as_mut() {
+            observer(metrics);
+        }
+    });
+}
+
+#[cfg(not(any(test, feature = "perf-harness")))]
+fn notify_open_perf_observer(_metrics: OpenPerfMetrics) {}
 
 fn reconcile_archived_history(
     history: Vec<serde_json::Value>,
@@ -288,6 +554,29 @@ pub(crate) fn seed_save_project(
     Ok(archive_path_string)
 }
 
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn seed_project_persistence_stress_project(
+    state: &AppState,
+    rows: usize,
+    string_bytes: usize,
+) -> Result<String, AppError> {
+    let archive_path = std::env::temp_dir().join(format!(
+        "stats_playground_save_current_{}.spprj",
+        uuid::Uuid::new_v4()
+    ));
+    let archive_path_string = archive_path.to_string_lossy().to_string();
+
+    ProjectService::new(state)
+        .create_project("Project Persistence String Stress", &archive_path_string)?;
+    state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .seed_project_persistence_stress_table("save-current-baseline", rows, string_bytes)?;
+
+    Ok(archive_path_string)
+}
+
 impl<'a> ProjectService<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self { state }
@@ -369,36 +658,53 @@ impl<'a> ProjectService<'a> {
         file_path: &str,
         progress_cb: Option<&dyn Fn(usize, usize, &str, usize, usize)>,
     ) -> Result<OpenProjectResult, AppError> {
-        let mut bundle = spprj_archive::read_project_file(file_path)?;
-        if is_future_project_format(&bundle.manifest.version) {
-            return Err(AppError::InvalidParam(format!(
-                "Unsupported project format version: {}",
-                bundle.manifest.version
-            )));
-        }
-        let filter_migration = spprj_archive::migrate_legacy_graph_filters(
-            &bundle.manifest.dataset_filters,
-            &mut bundle.graphs,
-        )?;
-        bundle.manifest.dataset_filters = filter_migration.dataset_filters;
-        let graph_requires_migration = spprj_archive::refresh_project_lineage_graph(&mut bundle)?;
-        let requires_migration = requires_archive_migration(&bundle.manifest.version)
-            || graph_requires_migration
-            || filter_migration.changed;
-        let document_name_migrations = if requires_migration {
-            normalize_visible_document_names(&mut bundle)
-        } else {
-            Vec::new()
+        let open_started = std::time::Instant::now();
+        let archive_started = std::time::Instant::now();
+        let mut archive = spprj_archive::OpenProjectArchive::open(file_path)?;
+        let (
+            requires_migration,
+            document_name_migrations,
+            dataset_name_migrations,
+            dataset_filter_migration_conflicts,
+        ) = {
+            let bundle = &mut archive.bundle;
+            if is_future_project_format(&bundle.manifest.version) {
+                return Err(AppError::InvalidParam(format!(
+                    "Unsupported project format version: {}",
+                    bundle.manifest.version
+                )));
+            }
+            let filter_migration = spprj_archive::migrate_legacy_graph_filters(
+                &bundle.manifest.dataset_filters,
+                &mut bundle.graphs,
+            )?;
+            bundle.manifest.dataset_filters = filter_migration.dataset_filters;
+            let graph_requires_migration = spprj_archive::refresh_project_lineage_graph(bundle)?;
+            let requires_migration = requires_archive_migration(&bundle.manifest.version)
+                || graph_requires_migration
+                || filter_migration.changed;
+            let document_name_migrations = if requires_migration {
+                normalize_visible_document_names(bundle)
+            } else {
+                Vec::new()
+            };
+            let dataset_name_migrations = document_name_migrations
+                .iter()
+                .filter(|migration| migration.kind == "table")
+                .map(|migration| DatasetNameMigration {
+                    dataset_id: migration.id.clone(),
+                    old_name: migration.old_name.clone(),
+                    new_name: migration.new_name.clone(),
+                })
+                .collect();
+            (
+                requires_migration,
+                document_name_migrations,
+                dataset_name_migrations,
+                filter_migration.conflicts,
+            )
         };
-        let dataset_name_migrations = document_name_migrations
-            .iter()
-            .filter(|migration| migration.kind == "table")
-            .map(|migration| DatasetNameMigration {
-                dataset_id: migration.id.clone(),
-                old_name: migration.old_name.clone(),
-                new_name: migration.new_name.clone(),
-            })
-            .collect();
+        let archive_read_parse_ms = archive_started.elapsed().as_millis();
 
         let recovery_entries = self
             .state
@@ -453,20 +759,19 @@ impl<'a> ProjectService<'a> {
         }
 
         let staged_state = AppState::new()?;
-        let total = bundle.tables.len();
+        let total = archive.bundle.tables.len();
+        let table_restore_started = std::time::Instant::now();
+        let mut table_restore_detail = OpenTableRestorePerfMetrics::default();
         {
             let staged_service = ProjectService::new(&staged_state);
-            for (idx, doc) in bundle.tables.iter().enumerate() {
-                if let Some(cb) = &progress_cb {
-                    cb(idx, total, &doc.name, 0, doc.rows.len());
-                }
-                let row_progress = |rows_done, rows_total| {
-                    if let Some(cb) = &progress_cb {
-                        cb(idx, total, &doc.name, rows_done, rows_total);
-                    }
-                };
-                staged_service.restore_table_doc_with_progress(doc, Some(&row_progress))?;
-            }
+            let mut staged_table_sink = StagedProjectTableSink {
+                state: &staged_state,
+                progress: progress_cb,
+                table_index: 0,
+                table_total: total,
+                perf_metrics: &mut table_restore_detail,
+            };
+            archive.restore_tables(&mut staged_table_sink)?;
             for doc in &recovered_tables {
                 let _ = staged_state
                     .db
@@ -475,6 +780,10 @@ impl<'a> ProjectService<'a> {
                     .delete_dataset(&doc.id);
                 staged_service.restore_table_doc(doc)?;
             }
+        }
+        let table_restore_ms = table_restore_started.elapsed().as_millis();
+        let bundle = archive.bundle;
+        {
             {
                 let db = staged_state
                     .db
@@ -488,10 +797,8 @@ impl<'a> ProjectService<'a> {
                 if bundle.manifest.dataset_generations.is_none() {
                     if let Some(history_timeline) = &bundle.history_timeline {
                         for cursor in &history_timeline.metadata.datasets {
-                            generations.insert(
-                                cursor.dataset_id.clone(),
-                                cursor.current_generation,
-                            );
+                            generations
+                                .insert(cursor.dataset_id.clone(), cursor.current_generation);
                         }
                     } else if let Some(delta_history) = &bundle.delta_history {
                         for change_set in &delta_history.metadata.change_sets {
@@ -554,10 +861,8 @@ impl<'a> ProjectService<'a> {
                 let parent = std::path::Path::new(file_path).parent().ok_or_else(|| {
                     AppError::FileIO("Project archive has no parent directory".into())
                 })?;
-                let mut temporary_snapshots =
-                    Vec::with_capacity(history_timeline.snapshots.len());
-                let mut restore_snapshots =
-                    Vec::with_capacity(history_timeline.snapshots.len());
+                let mut temporary_snapshots = Vec::with_capacity(history_timeline.snapshots.len());
+                let mut restore_snapshots = Vec::with_capacity(history_timeline.snapshots.len());
                 for (change_set_id, descriptor, bytes) in &history_timeline.snapshots {
                     let mut file = tempfile::Builder::new()
                         .prefix(".statsplayground-open-history-v2-")
@@ -576,10 +881,7 @@ impl<'a> ProjectService<'a> {
                     .db
                     .lock()
                     .map_err(|error| AppError::Database(error.to_string()))?
-                    .restore_unified_history(
-                        &history_timeline.metadata,
-                        &restore_snapshots,
-                    )?;
+                    .restore_unified_history(&history_timeline.metadata, &restore_snapshots)?;
                 drop(temporary_snapshots);
             }
         }
@@ -640,8 +942,7 @@ impl<'a> ProjectService<'a> {
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<Result<std::collections::HashSet<_>, _>>()?
         };
-        let restored_history =
-            reconcile_archived_history(bundle.history, &retained_change_set_ids);
+        let restored_history = reconcile_archived_history(bundle.history, &retained_change_set_ids);
         let history_current_idx = archived_history_current_idx(
             &restored_history,
             bundle
@@ -679,6 +980,17 @@ impl<'a> ProjectService<'a> {
             cb(total, total, "完成", 0, 0);
         }
 
+        let total_ms = open_started.elapsed().as_millis();
+        notify_open_perf_observer(OpenPerfMetrics {
+            total_ms,
+            archive_read_parse_ms,
+            table_restore_ms,
+            finalize_ms: total_ms
+                .saturating_sub(archive_read_parse_ms)
+                .saturating_sub(table_restore_ms),
+            table_restore_detail,
+        });
+
         Ok(OpenProjectResult {
             project,
             history: restored_history,
@@ -705,7 +1017,7 @@ impl<'a> ProjectService<'a> {
             dataset_name_migrations,
             requires_migration,
             dataset_filters: bundle.manifest.dataset_filters.clone(),
-            dataset_filter_migration_conflicts: filter_migration.conflicts,
+            dataset_filter_migration_conflicts,
             tabulate_folders,
             workflows,
             logical_folders,
@@ -934,165 +1246,25 @@ impl<'a> ProjectService<'a> {
         doc: &TableDoc,
         progress_cb: Option<&dyn Fn(usize, usize)>,
     ) -> Result<String, AppError> {
-        if doc.version != "1" && doc.version != "2" && !table_doc_is_v3(&doc.version) {
-            return Err(AppError::InvalidParam(format!(
-                "unsupported table document version: {}",
-                doc.version
-            )));
-        }
-        let v3_validation = if table_doc_is_v3(&doc.version) {
-            Some(
-                spprj_archive::validate_table_doc_structure(doc).map_err(|error| match error {
-                    AppError::FileIO(message)
-                        if message.contains("calculated column graph invalid") =>
-                    {
-                        formula_archive_inconsistent(message)
-                    }
-                    other => other,
-                })?,
-            )
-        } else {
-            None
+        let header = StreamedTableHeader {
+            id: doc.id.clone(),
+            name: doc.name.clone(),
+            source_type: doc.source_type.clone(),
+            version: doc.version.clone(),
+            columns: doc.columns.clone(),
         };
-        let v3_archive_columns = v3_validation
-            .as_ref()
-            .map(|validation| {
-                table_doc_to_archive_column_plans(doc, Some(&validation.calculated_columns_by_id))
-            })
-            .transpose()?;
-
-        let expected_row_width = doc.columns.len() + 1;
-        if doc.rows.iter().any(|row| row.len() != expected_row_width) {
-            return Err(AppError::InvalidParam(format!(
-                "table rows must contain exactly {expected_row_width} values"
-            )));
-        }
-
-        let mut row_ids = std::collections::HashSet::with_capacity(doc.rows.len());
-        for row in &doc.rows {
-            let row_id = row[0]
-                .as_i64()
-                .ok_or_else(|| AppError::InvalidParam("table row IDs must be integers".into()))?;
-            if row_id <= 0 {
-                return Err(AppError::InvalidParam(
-                    "table row IDs must be positive".into(),
-                ));
-            }
-            if !row_ids.insert(row_id) {
-                return Err(AppError::InvalidParam(
-                    "table row IDs must be unique".into(),
-                ));
+        let mut session = ProjectTableRestoreSession::begin(
+            self.state,
+            header,
+            Some(doc.rows.len()),
+            progress_cb,
+        )?;
+        for rows in doc.rows.chunks(5_000) {
+            if let Err(error) = session.append_rows(rows) {
+                return Err(session.abort(error));
             }
         }
-
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let archived_col_names: Vec<String> = doc
-            .columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect();
-        let col_names = DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
-        let col_types: Vec<String> = doc.columns.iter().map(|c| c.col_type.clone()).collect();
-        db.conn().execute_batch("BEGIN TRANSACTION")?;
-        let restore_result = (|| -> Result<(), AppError> {
-            db.create_empty_table(&doc.id, &doc.name, &col_names, &col_types)?;
-            let canonical_columns = db.get_user_columns(&doc.id)?;
-
-            if !doc.rows.is_empty() {
-                let table_name = format!("dataset_{}", doc.id.replace('-', "_"));
-                let mut appender = db.conn().appender(&table_name)?;
-                let rows_total = doc.rows.len();
-
-                for (row_index, row) in doc.rows.iter().enumerate() {
-                    let mut values = row
-                        .iter()
-                        .enumerate()
-                        .map(|(index, value)| {
-                            let column_type = index
-                                .checked_sub(1)
-                                .map(|column_index| canonical_columns[column_index].1.as_str());
-                            let decode_archive_tag = index > 0
-                                && doc.version != "1"
-                                && !is_archive_scalar_type(&canonical_columns[index - 1].1);
-                            json_to_duckdb_param(value, decode_archive_tag, column_type)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    values.push(DuckValue::Null);
-                    appender.append_row(appender_params_from_iter(values))?;
-                    let rows_done = row_index + 1;
-                    if rows_done % 5_000 == 0 || rows_done == rows_total {
-                        if let Some(cb) = progress_cb {
-                            cb(rows_done, rows_total);
-                        }
-                    }
-                }
-                appender.flush()?;
-            }
-
-            let table_ident = quote_identifier(&format!("dataset_{}", doc.id.replace('-', "_")));
-            let row_count: i64 =
-                db.conn()
-                    .query_row(&format!("SELECT COUNT(*) FROM {table_ident}"), [], |row| {
-                        row.get(0)
-                    })?;
-            db.conn().execute(
-                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
-                duckdb::params![row_count, doc.id],
-            )?;
-            if let Some(validation) = &v3_validation {
-                validate_restored_ready_calculated_columns(
-                    &db,
-                    doc,
-                    &validation.calculated_columns_by_id,
-                )?;
-            }
-            if let Some(v3_archive_columns) = &v3_archive_columns {
-                db.replace_archive_column_ids(&doc.id, v3_archive_columns)?;
-                db.replace_archived_calculated_columns(&doc.id, v3_archive_columns)?;
-            } else {
-                db.replace_archived_calculated_columns(&doc.id, &[])?;
-            }
-            Ok(())
-        })();
-
-        match restore_result {
-            Ok(()) => db.conn().execute_batch("COMMIT")?,
-            Err(error) => {
-                let _ = db.conn().execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-        // Re-register column display props.
-        let mut display_props: Vec<ColumnDisplayProps> = Vec::new();
-        for (i, col) in doc.columns.iter().enumerate() {
-            if col.width.is_some() || col.format.is_some() || col.extras.is_some() {
-                display_props.push(ColumnDisplayProps {
-                    col_index: i,
-                    width: col.width,
-                    format: col.format.as_ref().map(|f| ColumnFormatInfo {
-                        kind: f.kind.clone(),
-                        decimals: f.decimals,
-                        currency: f.currency.clone(),
-                    }),
-                    extras: col.extras.clone(),
-                });
-            }
-        }
-        if !display_props.is_empty() {
-            let mut display = self
-                .state
-                .column_display
-                .lock()
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            display.insert(doc.id.clone(), display_props);
-        }
-
-        Ok(doc.id.clone())
+        session.finish()
     }
 
     // ------------------------------------------------------------------
@@ -1218,11 +1390,11 @@ fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn table_doc_is_v3(version: &str) -> bool {
+pub(crate) fn table_doc_is_v3(version: &str) -> bool {
     version.split('.').next() == Some("3")
 }
 
-fn table_doc_to_archive_column_plans(
+pub(crate) fn table_doc_to_archive_column_plans(
     doc: &TableDoc,
     validated_calculated_columns_by_id: Option<
         &std::collections::HashMap<String, ArchivedCalculatedColumn>,
@@ -1338,7 +1510,7 @@ fn remap_imported_table_doc(doc: &TableDoc) -> Result<TableDoc, AppError> {
     Ok(remapped)
 }
 
-fn json_to_duckdb_param(
+pub(crate) fn json_to_duckdb_param(
     value: &serde_json::Value,
     decode_v2_tag: bool,
     column_type: Option<&str>,
@@ -1664,11 +1836,11 @@ fn set_object_name(value: &mut serde_json::Value, new_name: &str) {
     }
 }
 
-fn formula_archive_inconsistent(message: impl Into<String>) -> AppError {
+pub(crate) fn formula_archive_inconsistent(message: impl Into<String>) -> AppError {
     AppError::InvalidParam(format!("formula_archive_inconsistent:{}", message.into()))
 }
 
-fn validate_restored_ready_calculated_columns(
+pub(crate) fn validate_restored_ready_calculated_columns(
     db: &DuckDbEngine,
     doc: &TableDoc,
     calculated_columns_by_id: &std::collections::HashMap<String, ArchivedCalculatedColumn>,
@@ -1980,8 +2152,10 @@ fn normalize_duplicate_dataset_names(docs: &mut [TableDoc]) -> Vec<DatasetNameMi
 #[cfg(test)]
 mod tests {
     use super::{
-        folder_from_entry_path, normalize_duplicate_dataset_names, reconcile_archived_history,
-        ProjectService,
+        buffered_compatibility_table_count, folder_from_entry_path,
+        normalize_duplicate_dataset_names, reconcile_archived_history,
+        reset_streaming_table_reader_counters, streamed_table_count, with_open_perf_observer,
+        OpenPerfMetrics, ProjectService,
     };
     use crate::engine::duckdb_engine::NATURAL_ORDER_SQL;
     use crate::error::AppError;
@@ -1995,6 +2169,9 @@ mod tests {
     use crate::models::table::CreateTableFromRowsRequest;
     use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
     use crate::services::data_service::DataService;
+    use crate::services::project_table_restore::{
+        completed_append_count, reset_completed_append_count,
+    };
     use crate::services::spprj_archive::{
         self, GraphEntryRef, ProjectManifest, TableColumn, TableDoc, TableEntryRef,
     };
@@ -2003,6 +2180,54 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn open_perf_observer_is_removed_during_panic_unwinding() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observer_calls = Arc::clone(&calls);
+
+        let panic = std::panic::catch_unwind(|| {
+            with_open_perf_observer(
+                move |_| {
+                    observer_calls.fetch_add(1, Ordering::SeqCst);
+                },
+                || panic!("observer scope panic"),
+            );
+        });
+
+        assert!(panic.is_err());
+        super::notify_open_perf_observer(OpenPerfMetrics::default());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_open_perf_observer_restores_outer_observer() {
+        let outer_calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = Arc::new(AtomicUsize::new(0));
+        let outer_observer_calls = Arc::clone(&outer_calls);
+        let inner_observer_calls = Arc::clone(&inner_calls);
+
+        with_open_perf_observer(
+            move |_| {
+                outer_observer_calls.fetch_add(1, Ordering::SeqCst);
+            },
+            || {
+                with_open_perf_observer(
+                    move |_| {
+                        inner_observer_calls.fetch_add(1, Ordering::SeqCst);
+                    },
+                    || super::notify_open_perf_observer(OpenPerfMetrics::default()),
+                );
+                super::notify_open_perf_observer(OpenPerfMetrics::default());
+            },
+        );
+        super::notify_open_perf_observer(OpenPerfMetrics::default());
+
+        assert_eq!(inner_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(outer_calls.load(Ordering::SeqCst), 1);
+    }
 
     fn source_between(source: &str, start: &str, end: &str) -> String {
         let start_idx = source
@@ -2094,10 +2319,189 @@ mod tests {
         )
     }
 
-    fn rewrite_project_manifest(
-        path: &std::path::Path,
-        edit: impl FnOnce(&mut serde_json::Value),
-    ) {
+    fn save_named_project_fixture(
+        dataset_id: &str,
+        rows: usize,
+        columns: usize,
+    ) -> tempfile::TempPath {
+        let state = AppState::new().unwrap();
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        state
+            .db
+            .lock()
+            .unwrap()
+            .seed_benchmark_table(dataset_id, "Fixture Table", rows, columns)
+            .unwrap();
+        *state.project.write().unwrap() = Some(ProjectInfo {
+            name: "Fixture Project".into(),
+            file_path: path.to_string_lossy().into_owned(),
+            created_at: "2026-09-21T00:00:00Z".into(),
+        });
+        ProjectService::new(&state)
+            .save_project(
+                empty_save_request(Some(path.to_string_lossy().into_owned())),
+                None,
+            )
+            .unwrap();
+        path
+    }
+
+    fn save_project_fixture(rows: usize, columns: usize) -> tempfile::TempPath {
+        save_named_project_fixture("fixture-table", rows, columns)
+    }
+
+    fn rows_first_v4_project() -> tempfile::TempPath {
+        let path = save_named_project_fixture("table-1", 2, 1);
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if !name.ends_with(".sptb") {
+                    return bytes;
+                }
+                let doc: TableDoc = serde_json::from_slice(&bytes).unwrap();
+                format!(
+                    r#"{{"rows":{},"id":{},"name":{},"sourceType":{},"version":{},"columns":{}}}"#,
+                    serde_json::to_string(&doc.rows).unwrap(),
+                    serde_json::to_string(&doc.id).unwrap(),
+                    serde_json::to_string(&doc.name).unwrap(),
+                    serde_json::to_string(&doc.source_type).unwrap(),
+                    serde_json::to_string(&doc.version).unwrap(),
+                    serde_json::to_string(&doc.columns).unwrap(),
+                )
+                .into_bytes()
+            },
+            Vec::new(),
+        );
+        path
+    }
+
+    fn seeded_live_project() -> AppState {
+        let state = AppState::new().unwrap();
+        state
+            .db
+            .lock()
+            .unwrap()
+            .seed_benchmark_table("live-table", "Live Table", 10, 2)
+            .unwrap();
+        *state.project.write().unwrap() = Some(ProjectInfo {
+            name: "Live Project".into(),
+            file_path: "live-project.spprj".into(),
+            created_at: "2026-09-20T00:00:00Z".into(),
+        });
+        state
+    }
+
+    fn v4_project_with_duplicate_row_id_after_first_batch() -> tempfile::TempPath {
+        let path = save_named_project_fixture("rejected-table", 5_002, 1);
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if !name.ends_with(".sptb") {
+                    return bytes;
+                }
+                let mut doc: TableDoc = serde_json::from_slice(&bytes).unwrap();
+                doc.columns[0].col_type = "VARCHAR".into();
+                let large_value = "x".repeat(1_024);
+                for row in &mut doc.rows {
+                    row[1] = serde_json::Value::String(large_value.clone());
+                }
+                doc.rows[5_001][0] = serde_json::json!(1);
+                serde_json::to_vec(&doc).unwrap()
+            },
+            Vec::new(),
+        );
+        path
+    }
+
+    fn dataset_row_count(state: &AppState, dataset_id: &str) -> i64 {
+        state
+            .db
+            .lock()
+            .unwrap()
+            .get_dataset_meta(dataset_id)
+            .unwrap()
+            .row_count
+    }
+
+    fn assert_live_project_unchanged(state: &AppState) {
+        let project = state.project.read().unwrap().clone().unwrap();
+        assert_eq!(project.name, "Live Project");
+        assert_eq!(project.file_path, "live-project.spprj");
+        assert_eq!(project.created_at, "2026-09-20T00:00:00Z");
+
+        let db = state.db.lock().unwrap();
+        let datasets = db.list_datasets().unwrap();
+        assert_eq!(
+            datasets
+                .iter()
+                .map(|dataset| dataset.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["live-table"]
+        );
+        assert_eq!(datasets[0].row_count, 10);
+        let values = db
+            .conn()
+            .query_row(
+                "SELECT first(value_1 ORDER BY _row_id), last(value_1 ORDER BY _row_id) \
+                 FROM dataset_live_table",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(values, (1, 10));
+    }
+
+    #[test]
+    fn open_project_streams_canonical_v4_tables() {
+        let path = save_project_fixture(12_000, 6);
+        reset_streaming_table_reader_counters();
+        let state = AppState::new().unwrap();
+
+        ProjectService::new(&state)
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
+
+        assert_eq!(dataset_row_count(&state, "fixture-table"), 12_000);
+        assert_eq!(streamed_table_count(), 1);
+        assert_eq!(buffered_compatibility_table_count(), 0);
+    }
+
+    #[test]
+    fn open_project_uses_buffered_compatibility_for_rows_first_table() {
+        let path = rows_first_v4_project();
+        reset_streaming_table_reader_counters();
+        let state = AppState::new().unwrap();
+
+        ProjectService::new(&state)
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
+
+        assert_eq!(dataset_row_count(&state, "table-1"), 2);
+        assert_eq!(streamed_table_count(), 0);
+        assert_eq!(buffered_compatibility_table_count(), 1);
+    }
+
+    #[test]
+    fn streamed_open_failure_preserves_live_project() {
+        let state = seeded_live_project();
+        let rejected = v4_project_with_duplicate_row_id_after_first_batch();
+        reset_completed_append_count();
+
+        let error = match ProjectService::new(&state).open_project(rejected.to_str().unwrap(), None)
+        {
+            Ok(_) => panic!("duplicate row ID should reject project open"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert!(
+            completed_append_count() >= 1,
+            "at least one bounded append must complete before rejection"
+        );
+        assert_live_project_unchanged(&state);
+    }
+
+    fn rewrite_project_manifest(path: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
         let file = std::fs::File::open(path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let mut entries = Vec::with_capacity(archive.len());
@@ -2367,7 +2771,11 @@ mod tests {
             .unwrap();
             db.apply_change_set(&last.change_set_id, true).unwrap();
             db.drop_change_set(&pruned.change_set_id).unwrap();
-            (first.change_set_id, pruned.change_set_id, last.change_set_id)
+            (
+                first.change_set_id,
+                pruned.change_set_id,
+                last.change_set_id,
+            )
         };
         let mut request = empty_save_request(None);
         request.history = vec![
@@ -2506,7 +2914,9 @@ mod tests {
             .unwrap();
             db.drop_change_set(&change.change_set_id).unwrap();
         }
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
 
         let reopened_state = AppState::new().unwrap();
         let opened = ProjectService::new(&reopened_state)
@@ -2587,7 +2997,9 @@ mod tests {
             .unwrap()
             .change_set_id
         };
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
 
         let reopened = AppState::new().unwrap();
         ProjectService::new(&reopened)
@@ -2597,9 +3009,7 @@ mod tests {
         db.apply_change_set(&change_set_id, true).unwrap();
         let rows = db
             .conn()
-            .prepare(
-                "SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id",
-            )
+            .prepare("SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id")
             .unwrap()
             .query_map([], |row| {
                 Ok((
@@ -2637,13 +3047,8 @@ mod tests {
             .unwrap();
         let change_set_id = {
             let db = state.db.lock().unwrap();
-            db.seed_benchmark_table(
-                "legacy-numeric-rebalance",
-                "Legacy numeric rebalance",
-                2,
-                1,
-            )
-            .unwrap();
+            db.seed_benchmark_table("legacy-numeric-rebalance", "Legacy numeric rebalance", 2, 1)
+                .unwrap();
             let added = crate::services::table_delta_mutation::add_rows_compact(
                 &db,
                 "legacy-numeric-rebalance",
@@ -2688,7 +3093,9 @@ mod tests {
                 .unwrap();
             added.change_set_id
         };
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
         rewrite_project_entries(
             &path,
             |name, bytes| {
@@ -2703,9 +3110,7 @@ mod tests {
 
         let reopened = AppState::new().unwrap();
         let reopened_service = ProjectService::new(&reopened);
-        reopened_service
-            .open_project(&path_string, None)
-            .unwrap();
+        reopened_service.open_project(&path_string, None).unwrap();
         {
             let db = reopened.db.lock().unwrap();
             let row_order: i128 = db
@@ -3167,7 +3572,10 @@ mod tests {
         ];
         service.save_project(request, None).unwrap();
         rewrite_project_manifest(&path, |manifest| {
-            manifest.as_object_mut().unwrap().remove("datasetGenerations");
+            manifest
+                .as_object_mut()
+                .unwrap()
+                .remove("datasetGenerations");
         });
 
         let reopened_state = AppState::new().unwrap();
@@ -3225,7 +3633,9 @@ mod tests {
             )
             .unwrap();
         }
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
         rewrite_project_manifest(&path, |manifest| {
             manifest["datasetGenerations"]["low-generation-history"] = serde_json::json!(0);
         });

@@ -1,3 +1,4 @@
+use std::fmt::{self, Debug};
 use std::io::Write;
 
 use duckdb::types::Value as DuckValue;
@@ -9,6 +10,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
 static ARCHIVE_CELL_TO_JSON_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static TAGGED_VALUE_TO_JSON_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArchiveCellWriteMode {
@@ -25,6 +31,16 @@ pub(crate) fn reset_archive_cell_to_json_call_count() {
 #[cfg(test)]
 pub(crate) fn archive_cell_to_json_call_count() -> usize {
     ARCHIVE_CELL_TO_JSON_CALLS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_tagged_value_to_json_call_count() {
+    TAGGED_VALUE_TO_JSON_CALLS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn tagged_value_to_json_call_count() -> usize {
+    TAGGED_VALUE_TO_JSON_CALLS.with(std::cell::Cell::get)
 }
 
 pub(crate) fn is_archive_scalar_type(column_type: &str) -> bool {
@@ -71,15 +87,20 @@ pub(crate) fn write_archive_cell_with_mode<W: Write>(
     match mode {
         ArchiveCellWriteMode::Scalar => write_scalar_archive_cell(writer, value),
         ArchiveCellWriteMode::BlobTagged => write_blob_tagged_archive_cell(writer, value),
-        ArchiveCellWriteMode::Tagged => {
-            if let DuckValue::Blob(bytes) = value {
-                write_tagged_blob(writer, bytes)
-            } else {
-                let json = tagged_value_to_json(value, "")?;
-                serde_json::to_writer(writer, &json)
-                    .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))
-            }
-        }
+        ArchiveCellWriteMode::Tagged => write_tagged_archive_cell(writer, value),
+    }
+}
+
+fn write_tagged_archive_cell<W: Write>(writer: &mut W, value: &DuckValue) -> Result<(), AppError> {
+    match value {
+        DuckValue::Null => write_archive_bytes(writer, b"null"),
+        DuckValue::Text(text) => write_tagged_text(writer, text),
+        DuckValue::UTinyInt(value) => write_tagged_unsigned(writer, value),
+        DuckValue::USmallInt(value) => write_tagged_unsigned(writer, value),
+        DuckValue::UInt(value) => write_tagged_unsigned(writer, value),
+        DuckValue::UBigInt(value) => write_tagged_unsigned(writer, value),
+        DuckValue::Blob(bytes) => write_tagged_blob(writer, bytes),
+        other => write_tagged_debug(writer, other),
     }
 }
 
@@ -88,50 +109,53 @@ fn write_blob_tagged_archive_cell<W: Write>(
     value: &DuckValue,
 ) -> Result<(), AppError> {
     match value {
-        DuckValue::Null => writer
-            .write_all(b"null")
-            .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
+        DuckValue::Null => write_archive_bytes(writer, b"null"),
         DuckValue::Blob(bytes) => write_tagged_blob(writer, bytes),
         DuckValue::Text(text) => write_tagged_text(writer, text),
-        other => {
-            let json = serde_json::json!({ "$duckdbValue": format!("{:?}", other) });
-            serde_json::to_writer(writer, &json)
-                .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))
-        }
+        other => write_tagged_debug(writer, other),
     }
 }
 
 fn write_tagged_text<W: Write>(writer: &mut W, text: &str) -> Result<(), AppError> {
-    writer
-        .write_all(b"{\"$duckdbValue\":")
-        .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))?;
+    write_archive_bytes(writer, b"{\"$duckdbValue\":")?;
     serde_json::to_writer(&mut *writer, text)
         .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))?;
-    writer
-        .write_all(b"}")
-        .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))
+    write_archive_bytes(writer, b"}")
+}
+
+fn write_tagged_unsigned<W: Write, T: fmt::Display>(
+    writer: &mut W,
+    value: &T,
+) -> Result<(), AppError> {
+    write_archive_bytes(writer, b"{\"$duckdbValue\":\"")?;
+    write!(writer, "{value}").map_err(archive_cell_write_error)?;
+    write_archive_bytes(writer, b"\"}")
+}
+
+fn write_tagged_debug<W: Write, T: Debug>(writer: &mut W, value: &T) -> Result<(), AppError> {
+    write_archive_bytes(writer, b"{\"$duckdbValue\":")?;
+    write_json_debug_string(writer, value)?;
+    write_archive_bytes(writer, b"}")
 }
 
 fn write_tagged_blob<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), AppError> {
-    writer
-        .write_all(b"{\"$duckdbValue\":\"")
-        .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))?;
+    write_archive_bytes(writer, b"{\"$duckdbValue\":\"")?;
     write_upper_hex_bytes(writer, bytes)?;
-    writer
-        .write_all(b"\"}")
-        .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))
+    write_archive_bytes(writer, b"\"}")
 }
 
 fn write_upper_hex_bytes<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), AppError> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = Vec::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize]);
-        encoded.push(HEX[(byte & 0x0F) as usize]);
+    const INPUT_CHUNK_BYTES: usize = 4 * 1024;
+    let mut encoded = [0u8; INPUT_CHUNK_BYTES * 2];
+    for chunk in bytes.chunks(INPUT_CHUNK_BYTES) {
+        for (index, byte) in chunk.iter().enumerate() {
+            encoded[index * 2] = HEX[(byte >> 4) as usize];
+            encoded[index * 2 + 1] = HEX[(byte & 0x0F) as usize];
+        }
+        write_archive_bytes(writer, &encoded[..chunk.len() * 2])?;
     }
-    writer
-        .write_all(&encoded)
-        .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}")))
+    Ok(())
 }
 
 pub(crate) fn write_archive_cell<W: Write>(
@@ -144,9 +168,7 @@ pub(crate) fn write_archive_cell<W: Write>(
 
 fn write_scalar_archive_cell<W: Write>(writer: &mut W, value: &DuckValue) -> Result<(), AppError> {
     match value {
-        DuckValue::Null => writer
-            .write_all(b"null")
-            .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
+        DuckValue::Null => write_archive_bytes(writer, b"null"),
         DuckValue::Boolean(value) => serde_json::to_writer(writer, value)
             .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
         DuckValue::TinyInt(value) => serde_json::to_writer(writer, value)
@@ -163,8 +185,7 @@ fn write_scalar_archive_cell<W: Write>(writer: &mut W, value: &DuckValue) -> Res
             .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
         DuckValue::UInt(value) => serde_json::to_writer(writer, value)
             .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
-        DuckValue::UBigInt(value) => serde_json::to_writer(writer, &value.to_string())
-            .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
+        DuckValue::UBigInt(value) => write_json_unsigned_string(writer, value),
         DuckValue::Float(value) => {
             let finite = f64::from(*value);
             if !finite.is_finite() {
@@ -186,9 +207,111 @@ fn write_scalar_archive_cell<W: Write>(writer: &mut W, value: &DuckValue) -> Res
         }
         DuckValue::Text(value) => serde_json::to_writer(writer, value)
             .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
-        other => serde_json::to_writer(writer, &format!("{:?}", other))
-            .map_err(|e| AppError::FileIO(format!("failed to serialize archive cell: {e}"))),
+        other => write_json_debug_string(writer, other),
     }
+}
+
+fn write_json_unsigned_string<W: Write, T: fmt::Display>(
+    writer: &mut W,
+    value: &T,
+) -> Result<(), AppError> {
+    write_archive_bytes(writer, b"\"")?;
+    write!(writer, "{value}").map_err(archive_cell_write_error)?;
+    write_archive_bytes(writer, b"\"")
+}
+
+fn write_json_debug_string<W: Write, T: Debug>(writer: &mut W, value: &T) -> Result<(), AppError> {
+    write_archive_bytes(writer, b"\"")?;
+    {
+        let mut escaped = JsonStringEscaper::new(writer);
+        if fmt::write(&mut escaped, format_args!("{value:?}")).is_err() {
+            return Err(escaped.into_error());
+        }
+    }
+    write_archive_bytes(writer, b"\"")
+}
+
+struct JsonStringEscaper<'a, W: Write> {
+    writer: &'a mut W,
+    error: Option<std::io::Error>,
+}
+
+impl<'a, W: Write> JsonStringEscaper<'a, W> {
+    fn new(writer: &'a mut W) -> Self {
+        Self {
+            writer,
+            error: None,
+        }
+    }
+
+    fn into_error(self) -> AppError {
+        archive_cell_write_error(
+            self.error.unwrap_or_else(|| {
+                std::io::Error::other("failed to format archive cell debug value")
+            }),
+        )
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> fmt::Result {
+        self.writer.write_all(bytes).map_err(|error| {
+            self.error = Some(error);
+            fmt::Error
+        })
+    }
+}
+
+impl<W: Write> fmt::Write for JsonStringEscaper<'_, W> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let bytes = text.as_bytes();
+        let mut run_start = 0usize;
+
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            let escape: &[u8] = match byte {
+                b'"' => br#"\""#,
+                b'\\' => br#"\\"#,
+                b'\x08' => br#"\b"#,
+                b'\t' => br#"\t"#,
+                b'\n' => br#"\n"#,
+                b'\x0c' => br#"\f"#,
+                b'\r' => br#"\r"#,
+                0x00..=0x1f => {
+                    if run_start < index {
+                        self.write_bytes(&bytes[run_start..index])?;
+                    }
+                    self.write_bytes(&[
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX[(byte >> 4) as usize],
+                        HEX[(byte & 0x0f) as usize],
+                    ])?;
+                    run_start = index + 1;
+                    continue;
+                }
+                _ => continue,
+            };
+            if run_start < index {
+                self.write_bytes(&bytes[run_start..index])?;
+            }
+            self.write_bytes(escape)?;
+            run_start = index + 1;
+        }
+
+        if run_start < bytes.len() {
+            self.write_bytes(&bytes[run_start..])?;
+        }
+        Ok(())
+    }
+}
+
+fn write_archive_bytes<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), AppError> {
+    writer.write_all(bytes).map_err(archive_cell_write_error)
+}
+
+fn archive_cell_write_error(error: std::io::Error) -> AppError {
+    AppError::FileIO(format!("failed to serialize archive cell: {error}"))
 }
 
 pub(crate) fn archive_cell_to_json(
@@ -243,6 +366,9 @@ fn tagged_value_to_json(
     value: &DuckValue,
     column_type: &str,
 ) -> Result<serde_json::Value, AppError> {
+    #[cfg(test)]
+    TAGGED_VALUE_TO_JSON_CALLS.with(|count| count.set(count.get().saturating_add(1)));
+
     match value {
         DuckValue::Null => Ok(serde_json::Value::Null),
         DuckValue::Text(text) => Ok(serde_json::json!({ "$duckdbValue": text })),
@@ -284,6 +410,24 @@ mod tests {
     struct FailingSink {
         bytes: Vec<u8>,
         fail_after: usize,
+    }
+
+    #[derive(Default)]
+    struct TrackingSink {
+        bytes: Vec<u8>,
+        max_write_bytes: usize,
+    }
+
+    impl Write for TrackingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.max_write_bytes = self.max_write_bytes.max(buf.len());
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     impl FailingSink {
@@ -532,6 +676,23 @@ mod tests {
     }
 
     #[test]
+    fn direct_blob_writer_hex_encodes_in_fixed_size_chunks() {
+        let value = DuckValue::Blob(vec![0xab; 1024 * 1024]);
+        let mut sink = TrackingSink::default();
+
+        write_archive_cell(&mut sink, &value, "BLOB").unwrap();
+
+        assert!(
+            sink.max_write_bytes <= 8 * 1024,
+            "blob encoding must not create an O(blob length) serializer buffer"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&sink.bytes).unwrap();
+        let hex = parsed["$duckdbValue"].as_str().unwrap();
+        assert_eq!(hex.len(), 2 * 1024 * 1024);
+        assert!(hex.bytes().all(|byte| byte == b'A' || byte == b'B'));
+    }
+
+    #[test]
     fn edge_matrix_uses_real_duckdb_values() {
         let source = include_str!("archive_cell.rs");
         assert!(
@@ -660,6 +821,14 @@ mod tests {
             let value: DuckValue = row.get(index).unwrap();
             let actual = archive_cell_to_json(&value, column_type).unwrap();
             assert_eq!(actual, expected, "edge case {name}");
+
+            let mut bytes = Vec::new();
+            write_archive_cell(&mut bytes, &value, column_type).unwrap();
+            assert_eq!(
+                bytes,
+                serde_json::to_vec(&expected).unwrap(),
+                "edge case {name} writer bytes"
+            );
         }
     }
 

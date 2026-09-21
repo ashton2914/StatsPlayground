@@ -343,6 +343,12 @@ pub(crate) struct ArchiveKeysetReadPlan {
     pub columns: Vec<ArchiveColumnPlan>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveCursor {
+    pub natural_order_key: i128,
+    pub row_id: i64,
+}
+
 pub(crate) struct ArchiveBatchRow {
     pub row_id: i64,
     pub values: Vec<Value>,
@@ -352,6 +358,7 @@ pub(crate) struct ArchiveBatchRow {
 pub(crate) struct ArchiveBatch {
     pub rows: Vec<ArchiveBatchRow>,
     pub retained_bytes_estimate: usize,
+    pub next_cursor: Option<ArchiveCursor>,
 }
 
 impl DuckDbEngine {
@@ -581,6 +588,175 @@ impl DuckDbEngine {
         let generation = self.get_dataset_generation(id)?;
         self.rebuild_natural_anchors(id, generation)?;
 
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub(crate) fn seed_project_persistence_stress_table(
+        &self,
+        id: &str,
+        row_count: usize,
+        string_bytes: usize,
+    ) -> Result<(), AppError> {
+        const UNIQUE_SUFFIX_BYTES: usize = 20;
+        if string_bytes < UNIQUE_SUFFIX_BYTES {
+            return Err(AppError::InvalidParam(format!(
+                "stress string width must be at least {UNIQUE_SUFFIX_BYTES} bytes"
+            )));
+        }
+
+        let column_names = [
+            "unique_text".to_string(),
+            "repeated_text".to_string(),
+            "nullable_text".to_string(),
+            "bigint_value".to_string(),
+            "double_value".to_string(),
+        ];
+        let column_types = [
+            "VARCHAR".to_string(),
+            "VARCHAR".to_string(),
+            "VARCHAR".to_string(),
+            "BIGINT".to_string(),
+            "DOUBLE".to_string(),
+        ];
+        self.create_empty_table(
+            id,
+            "Project Persistence String Stress",
+            &column_names,
+            &column_types,
+        )?;
+
+        let upper_bound = row_count
+            .checked_add(1)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| AppError::InvalidParam("stress row count is too large".into()))?;
+        let unique_prefix_bytes = i64::try_from(string_bytes - UNIQUE_SUFFIX_BYTES)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let string_bytes = i64::try_from(string_bytes)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(id));
+        self.conn.execute(
+            &format!(
+                "INSERT INTO {table_name}
+                    (\"_row_id\", \"unique_text\", \"repeated_text\", \"nullable_text\", \"bigint_value\", \"double_value\")
+                 SELECT
+                    i,
+                    repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                        || lpad(CAST(i AS VARCHAR), 20, CAST(? AS VARCHAR)),
+                    repeat(chr(CAST(65 + (i % 8) AS INTEGER)), CAST(? AS BIGINT)),
+                    CASE
+                        WHEN i % 7 = 0 THEN NULL
+                        ELSE repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                    END,
+                    CAST(9007199254740991 + i AS BIGINT),
+                    CAST(i AS DOUBLE) * 0.25 - 100000.5
+                 FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+            ),
+            params![
+                "u",
+                unique_prefix_bytes,
+                "0",
+                string_bytes,
+                "n",
+                string_bytes,
+                upper_bound
+            ],
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count as i64, id],
+        )?;
+        let generation = self.get_dataset_generation(id)?;
+        self.rebuild_natural_anchors(id, generation)?;
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub(crate) fn validate_project_persistence_stress_table(
+        &self,
+        id: &str,
+        expected_rows: usize,
+        string_bytes: usize,
+    ) -> Result<(), AppError> {
+        const UNIQUE_SUFFIX_BYTES: usize = 20;
+        if string_bytes < UNIQUE_SUFFIX_BYTES {
+            return Err(AppError::InvalidParam(format!(
+                "stress string width must be at least {UNIQUE_SUFFIX_BYTES} bytes"
+            )));
+        }
+        let expected_rows = i64::try_from(expected_rows)
+            .map_err(|_| AppError::InvalidParam("stress row count is too large".into()))?;
+        let unique_prefix_bytes = i64::try_from(string_bytes - UNIQUE_SUFFIX_BYTES)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let string_bytes = i64::try_from(string_bytes)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(id));
+        let (actual_rows, mismatched_rows, minimum_row_id, maximum_row_id, distinct_row_ids): (
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            i64,
+        ) = self.conn.query_row(
+            &format!(
+                "SELECT
+                    count(*),
+                    count(*) FILTER (
+                        WHERE \"unique_text\" IS DISTINCT FROM (
+                                repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                                || lpad(CAST(\"_row_id\" AS VARCHAR), 20, CAST(? AS VARCHAR))
+                            )
+                           OR \"repeated_text\" IS DISTINCT FROM
+                                repeat(chr(CAST(65 + (\"_row_id\" % 8) AS INTEGER)), CAST(? AS BIGINT))
+                           OR \"nullable_text\" IS DISTINCT FROM CASE
+                                WHEN \"_row_id\" % 7 = 0 THEN NULL
+                                ELSE repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                              END
+                           OR \"bigint_value\" IS DISTINCT FROM
+                                CAST(9007199254740991 + \"_row_id\" AS BIGINT)
+                           OR \"double_value\" IS DISTINCT FROM
+                                CAST(\"_row_id\" AS DOUBLE) * 0.25 - 100000.5
+                    ),
+                    min(\"_row_id\"),
+                    max(\"_row_id\"),
+                    count(DISTINCT \"_row_id\")
+                 FROM {table_name}"
+            ),
+            params![
+                "u",
+                unique_prefix_bytes,
+                "0",
+                string_bytes,
+                "n",
+                string_bytes
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        let row_id_domain_matches = if expected_rows == 0 {
+            minimum_row_id.is_none() && maximum_row_id.is_none() && distinct_row_ids == 0
+        } else {
+            minimum_row_id == Some(1)
+                && maximum_row_id == Some(expected_rows)
+                && distinct_row_ids == expected_rows
+        };
+        if !row_id_domain_matches {
+            return Err(AppError::Database(format!(
+                "stress table row-ID domain mismatch: expected 1..={expected_rows}, got min {minimum_row_id:?}, max {maximum_row_id:?}, {distinct_row_ids} distinct IDs"
+            )));
+        }
+        if actual_rows != expected_rows || mismatched_rows != 0 {
+            return Err(AppError::Database(format!(
+                "stress table mismatch: expected {expected_rows} rows, got {actual_rows} with {mismatched_rows} mismatches"
+            )));
+        }
         Ok(())
     }
 
@@ -13023,32 +13199,24 @@ impl DuckDbEngine {
         };
 
         let select_sql = format!(
-            "SELECT \"_row_id\"{select_projection}
+            "SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS \"__archive_order_key\"{select_projection}
              FROM {table_name}
-             WHERE ? = 0
-                OR {NATURAL_ORDER_SQL} > (
-                    SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
-                )
-                OR (
-                    {NATURAL_ORDER_SQL} = (
-                        SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
-                    )
-                    AND \"_row_id\" > ?
-                )
+             WHERE ?
+                OR {NATURAL_ORDER_SQL} > ?
+                OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" > ?)
              ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
              LIMIT ?"
         );
-
         Ok(ArchiveKeysetReadPlan {
             select_sql,
             columns,
         })
     }
 
-    pub(crate) fn read_archive_keyset_batch(
+    pub(crate) fn read_archive_cursor_batch(
         &self,
         plan: &ArchiveKeysetReadPlan,
-        after_row_id: i64,
+        after: Option<ArchiveCursor>,
         row_limit: usize,
         target_batch_bytes: usize,
         hard_batch_bytes: usize,
@@ -13057,26 +13225,32 @@ impl DuckDbEngine {
             return Err(AppError::InvalidParam("row limit must be positive".into()));
         }
 
+        let cursor = after.unwrap_or(ArchiveCursor {
+            natural_order_key: 0,
+            row_id: 0,
+        });
         let mut stmt = self.conn.prepare_cached(&plan.select_sql)?;
         let mut query_rows = stmt.query(params![
-            after_row_id,
-            after_row_id,
-            after_row_id,
-            after_row_id,
+            after.is_none(),
+            cursor.natural_order_key,
+            cursor.natural_order_key,
+            cursor.row_id,
             row_limit as i64
         ])?;
 
         let mut rows = Vec::new();
         let mut releasable_bytes_estimate = 0usize;
+        let mut next_cursor = None;
 
         while let Some(row) = query_rows.next()? {
             let row_id: i64 = row.get(0)?;
+            let natural_order_key: i128 = row.get(1)?;
             let mut values = Vec::with_capacity(plan.columns.len());
             let mut row_bytes = estimate_retained_row_header_bytes(plan.columns.len());
             row_bytes = row_bytes.saturating_add(mem::size_of::<i64>());
 
             for index in 0..plan.columns.len() {
-                let value: Value = row.get(index + 1)?;
+                let value: Value = row.get(index + 2)?;
                 row_bytes = row_bytes.saturating_add(estimate_retained_value_bytes(&value));
                 if row_bytes > hard_batch_bytes {
                     return Err(AppError::InvalidParam(format!(
@@ -13110,6 +13284,10 @@ impl DuckDbEngine {
                 values,
                 retained_bytes_estimate: row_releasable_bytes,
             });
+            next_cursor = Some(ArchiveCursor {
+                natural_order_key,
+                row_id,
+            });
 
             if projected_retained_bytes >= target_batch_bytes {
                 break;
@@ -13123,6 +13301,7 @@ impl DuckDbEngine {
         Ok(ArchiveBatch {
             rows,
             retained_bytes_estimate,
+            next_cursor,
         })
     }
 
@@ -17354,6 +17533,92 @@ mod tests {
         assert_eq!(page.total_rows, 10_000);
         assert_eq!(page.rows.len(), 500);
         assert_eq!(page.columns.len(), 21);
+    }
+
+    #[test]
+    fn project_persistence_stress_fixture_covers_long_string_and_numeric_edges() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        db.seed_project_persistence_stress_table("stress-id", 32, 256)
+            .unwrap();
+
+        let meta = db.get_dataset_meta("stress-id").unwrap();
+        assert_eq!(meta.row_count, 32);
+        assert_eq!(meta.col_count, 5);
+
+        let page = db.query_table("stress-id", 0, 32, None, None).unwrap();
+        assert_eq!(
+            page.columns,
+            [
+                "_row_id",
+                "unique_text",
+                "repeated_text",
+                "nullable_text",
+                "bigint_value",
+                "double_value",
+            ]
+        );
+        assert_eq!(
+            page.column_types,
+            ["INTEGER", "VARCHAR", "VARCHAR", "VARCHAR", "BIGINT", "DOUBLE"]
+        );
+        assert_eq!(page.rows.len(), 32);
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row[1].as_str().is_some_and(|value| value.len() == 256)));
+        assert_eq!(
+            page.rows
+                .iter()
+                .filter_map(|row| row[1].as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            32
+        );
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row[2].as_str().is_some_and(|value| value.len() == 256)));
+        assert!(
+            page.rows
+                .iter()
+                .filter_map(|row| row[2].as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                < 32
+        );
+        assert!(page.rows.iter().any(|row| row[3].is_null()));
+        assert!(page.rows.iter().any(|row| !row[3].is_null()));
+        assert!(page.rows.iter().all(|row| row[4].as_i64().is_some()));
+        assert!(page.rows.iter().all(|row| row[5].as_f64().is_some()));
+    }
+
+    #[test]
+    fn project_persistence_stress_validator_rejects_shifted_row_id_domain() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_project_persistence_stress_table("stress-shifted", 4, 256)
+            .unwrap();
+        db.conn()
+            .execute_batch(
+                "UPDATE \"dataset_stress_shifted\" SET \"_row_id\" = \"_row_id\" + 10;
+                 UPDATE \"dataset_stress_shifted\" SET
+                    \"unique_text\" = repeat('u', 236)
+                        || lpad(CAST(\"_row_id\" AS VARCHAR), 20, '0'),
+                    \"repeated_text\" =
+                        repeat(chr(CAST(65 + (\"_row_id\" % 8) AS INTEGER)), 256),
+                    \"nullable_text\" = CASE
+                        WHEN \"_row_id\" % 7 = 0 THEN NULL
+                        ELSE repeat('n', 256)
+                    END,
+                    \"bigint_value\" = 9007199254740991 + \"_row_id\",
+                    \"double_value\" = CAST(\"_row_id\" AS DOUBLE) * 0.25 - 100000.5;",
+            )
+            .unwrap();
+
+        let error = db
+            .validate_project_persistence_stress_table("stress-shifted", 4, 256)
+            .expect_err("shifted row IDs must fail exact restoration validation");
+        assert!(error.to_string().contains("row-ID domain"));
     }
 
     #[test]
@@ -23790,11 +24055,107 @@ mod tests {
         let plan = db.prepare_archive_keyset_read("archive-batch").unwrap();
         reset_archive_cell_to_json_call_count();
         let batch = db
-            .read_archive_keyset_batch(&plan, 0, 128, 1024 * 1024, 2 * 1024 * 1024)
+            .read_archive_cursor_batch(&plan, None, 128, 1024 * 1024, 2 * 1024 * 1024)
             .unwrap();
 
         assert_eq!(batch.rows.len(), 1);
         assert_eq!(archive_cell_to_json_call_count(), 0);
+    }
+
+    #[test]
+    fn archive_keyset_cursor_survives_deleting_the_previous_batch_tail() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("archive-cursor-delete", "Archive Cursor", 12, 3)
+            .unwrap();
+        let plan = db
+            .prepare_archive_keyset_read("archive-cursor-delete")
+            .unwrap();
+
+        let first = db
+            .read_archive_cursor_batch(&plan, None, 4, 1024 * 1024, 2 * 1024 * 1024)
+            .unwrap();
+        let cursor = first.next_cursor.expect("first cursor");
+        db.conn()
+            .execute(
+                "DELETE FROM dataset_archive_cursor_delete WHERE _row_id = ?",
+                duckdb::params![cursor.row_id],
+            )
+            .unwrap();
+
+        let second = db
+            .read_archive_cursor_batch(&plan, Some(cursor), 16, 1024 * 1024, 2 * 1024 * 1024)
+            .unwrap();
+
+        assert_eq!(
+            second.rows.iter().map(|row| row.row_id).collect::<Vec<_>>(),
+            (5_i64..=12).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn archive_keyset_cursor_preserves_hugeint_order_and_row_id_ties() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "archive-cursor-order",
+            "Archive Cursor Order",
+            &["value".to_string()],
+            &["BIGINT".to_string()],
+        )
+        .unwrap();
+        for (row_id, order_key) in [
+            (1_i64, i128::MIN),
+            (2_i64, 0_i128),
+            (3_i64, 0_i128),
+            (4_i64, i128::MAX),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO dataset_archive_cursor_order
+                     (_row_id, value, _row_order) VALUES (?, ?, ?)",
+                    duckdb::params![row_id, row_id * 10, order_key],
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets
+                 SET row_count = 4, next_row_id = 5
+                 WHERE id = 'archive-cursor-order'",
+                [],
+            )
+            .unwrap();
+        let expected = {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id
+                     FROM dataset_archive_cursor_order
+                     ORDER BY CAST(_row_order AS HUGEINT), _row_id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let plan = db
+            .prepare_archive_keyset_read("archive-cursor-order")
+            .unwrap();
+
+        let mut cursor = None;
+        let mut actual = Vec::new();
+        loop {
+            let batch = db
+                .read_archive_cursor_batch(&plan, cursor, 2, 1024 * 1024, 2 * 1024 * 1024)
+                .unwrap();
+            if batch.rows.is_empty() {
+                break;
+            }
+            actual.extend(batch.rows.iter().map(|row| row.row_id));
+            cursor = batch.next_cursor;
+        }
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -23824,7 +24185,7 @@ mod tests {
 
         let plan = db.prepare_archive_keyset_read("archive-retained").unwrap();
         let batch = db
-            .read_archive_keyset_batch(&plan, 0, 16, 2 * 1024 * 1024, 8 * 1024 * 1024)
+            .read_archive_cursor_batch(&plan, None, 16, 2 * 1024 * 1024, 8 * 1024 * 1024)
             .unwrap();
         assert_eq!(batch.rows.len(), 1);
         assert!(batch.retained_bytes_estimate > payload.len());
