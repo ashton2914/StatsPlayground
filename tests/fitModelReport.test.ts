@@ -7,6 +7,11 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 
+import {
+  reconcileLeverageTermId,
+  selectDefaultLeverageTermId,
+} from "../src/components/fitModel/fitModelReportModel.ts";
+
 const {
   applyFitModelTermRemoval,
   applyFitModelTermUndo,
@@ -27,6 +32,14 @@ const VIEW_SOURCE_PATH = path.resolve(
 const REPORT_SOURCE_PATH = path.resolve(
   process.cwd(),
   "src/components/analysis/renderers/FitModelAnalysisReport.tsx",
+);
+const EFFECT_SUMMARY_SOURCE_PATH = path.resolve(
+  process.cwd(),
+  "src/components/fitModel/FitModelEffectSummary.tsx",
+);
+const LEVERAGE_PLOT_SOURCE_PATH = path.resolve(
+  process.cwd(),
+  "src/components/fitModel/FitModelLeveragePlot.tsx",
 );
 
 const testI18n = createTestI18n();
@@ -52,6 +65,8 @@ function createTestI18n(): I18nInstance {
                 section: {
                   modelSpecification: "Model Specification",
                   effectSummary: "Effect Summary",
+                  effectTests: "Effect Tests",
+                  leveragePlot: "Leverage Plot",
                   summaryOfFit: "Summary of Fit",
                   analysisOfVariance: "Analysis of Variance",
                   lackOfFit: "Lack of Fit",
@@ -59,7 +74,6 @@ function createTestI18n(): I18nInstance {
                   actualByPredicted: "Actual by Predicted",
                   residualByPredicted: "Residual by Predicted",
                   featureVif: "Feature VIF",
-                  residualQq: "Residual Q-Q",
                   rowDiagnostics: "Row Diagnostics",
                   predictionProfiler: "Prediction Profiler",
                   warnings: "Warnings",
@@ -90,6 +104,7 @@ function createTestI18n(): I18nInstance {
                   },
                 },
                 remove: "Remove",
+                add: "Add",
                 undo: "Undo",
                 chartPlaceholder: "Chart placeholder",
                 notComputable: "Not Computable",
@@ -276,6 +291,8 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
         upperConfidenceLimit: null,
       },
     ],
+    effectTests: [],
+    leveragePlots: [],
     plotRows: [],
     plotRowsSampled: false,
     warnings: ["saturatedModel"],
@@ -294,6 +311,7 @@ function renderReport(state: FitModelReportState): string {
         datasetMissing: false,
         loadIssue: null,
         removeMessage: null,
+        onAddEffect: () => undefined,
         onRemoveTerm: () => undefined,
         onUndoRemove: () => undefined,
       }),
@@ -312,6 +330,7 @@ function renderReportWithItem(item: FitModelItem, state: FitModelReportState): s
         datasetMissing: false,
         loadIssue: null,
         removeMessage: null,
+        onAddEffect: () => undefined,
         onRemoveTerm: () => undefined,
         onUndoRemove: () => undefined,
       }),
@@ -327,12 +346,45 @@ function testLogWorthContracts(): void {
 }
 
 function testEffectSummarySortAndPValueMapping(): void {
-  const result = createFittedResult();
+  const result = createFittedResult({
+    effectTests: [
+      {
+        termId: "A",
+        termLabel: "A",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 4,
+        fRatio: 2,
+        pValue: 0.1,
+        reason: null,
+      },
+      {
+        termId: "B",
+        termLabel: "B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 8,
+        fRatio: 4,
+        pValue: 0.02,
+        reason: null,
+      },
+      {
+        termId: "interaction:A*B",
+        termLabel: "A*B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: null,
+        fRatio: null,
+        pValue: null,
+        reason: "inferenceNotEstimable",
+      },
+    ],
+  });
   const effects = buildEffectSummary(result);
 
   assert.deepEqual(effects.map((row) => row.termLabel), ["B", "A", "A*B"]);
-  assert.equal(effects[0]?.pValue, 0.001);
-  assert.equal(effects[1]?.pValue, 0.05);
+  assert.equal(effects[0]?.pValue, 0.02);
+  assert.equal(effects[1]?.pValue, 0.1);
   assert.equal(effects[2]?.pValue, null);
 }
 
@@ -364,11 +416,225 @@ function testMeanCenteringDoesNotRelabelMainEffect(): void {
         upperConfidenceLimit: null,
       },
     ],
+    effectTests: [
+      {
+        termId: "main:A",
+        termLabel: "A",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 4,
+        fRatio: 2,
+        pValue: 0.02,
+        reason: null,
+      },
+      {
+        termId: "interaction:A*B",
+        termLabel: "A*B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 3,
+        fRatio: 1.5,
+        pValue: 0.03,
+        reason: null,
+      },
+    ],
   });
 
   const effects = buildEffectSummary(result);
   const main = effects.find((row) => row.termId === "main:A");
   assert.equal(main?.pValue, 0.02);
+}
+
+function testLeverageSelectionIsDeterministic(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 2,
+      fRatio: 1,
+      pValue: 0.05,
+      reason: null,
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 8,
+      fRatio: 4,
+      pValue: 0.001,
+      reason: null,
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: null,
+      reason: "inferenceNotEstimable",
+    },
+  ] as const;
+  const plots = effectTests.map((effect) => ({
+    termId: effect.termId,
+    termLabel: effect.termLabel,
+    pValue: effect.pValue,
+    points: [],
+    confidenceBand: [],
+    nullLineY: null,
+    rowsSampled: false,
+    sourceRowCount: 0,
+    reason: effect.reason,
+  }));
+
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("A", plots), "A");
+}
+
+function testLeverageSelectionReturnsNullWithoutFinitePValue(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: null,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: Number.NaN,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: Number.POSITIVE_INFINITY,
+      reason: "inferenceNotEstimable",
+    },
+  ] as const;
+  const plots = effectTests.map((effect) => ({
+    termId: effect.termId,
+    termLabel: effect.termLabel,
+    pValue: effect.pValue,
+    points: [],
+    confidenceBand: [],
+    nullLineY: null,
+    rowsSampled: false,
+    sourceRowCount: 0,
+    reason: effect.reason,
+  }));
+
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), null);
+  assert.equal(reconcileLeverageTermId("A", plots), null);
+}
+
+function testLeverageSelectionReplacesNonEstimableCurrent(): void {
+  const plots = [
+    {
+      termId: "A",
+      termLabel: "A",
+      pValue: null,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 0,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      pValue: Number.NEGATIVE_INFINITY,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 0,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      pValue: 0.001,
+      points: [],
+      confidenceBand: [],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: null,
+    },
+  ] as const;
+
+  assert.equal(reconcileLeverageTermId("A", plots), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
+}
+
+function testLeverageSelectionSkipsFinitePValueWithNonEstimablePlot(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 12,
+      fRatio: 12,
+      pValue: 0.0001,
+      reason: null,
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 4,
+      fRatio: 4,
+      pValue: 0.02,
+      reason: null,
+    },
+  ] as const;
+  const plots = [
+    {
+      termId: "A",
+      termLabel: "A",
+      pValue: 0.0001,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      pValue: 0.02,
+      points: [],
+      confidenceBand: [],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: null,
+    },
+  ] as const;
+
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), "B");
+  assert.equal(reconcileLeverageTermId("A", plots), "B");
 }
 
 function testRemoveInteractionSucceeds(): void {
@@ -557,14 +823,21 @@ function testRenderFittedContracts(): void {
   assert.match(html, /Summary of Fit/);
   assert.match(html, /Analysis of Variance/);
   assert.match(html, /Parameter Estimates/);
-  assert.match(html, /Lower 95%/);
-  assert.match(html, /Upper 95%/);
+  const parameterTable = html.match(/<table[^>]*aria-label="Parameter Estimates"[\s\S]*?<\/table>/)?.[0] ?? "";
+  assert.deepEqual(
+    [...parameterTable.matchAll(/<th[^>]*>(.*?)<\/th>/g)].map((match) => match[1]?.replace(/<[^>]+>/g, "")),
+    ["Term", "Estimate", "Std Error", "t Ratio", "Feature VIF"],
+  );
   assert.match(html, /Lack of Fit/);
   assert.match(html, /pureErrorZero|fitModel\.report\.reason\.pureErrorZero/);
   assert.match(html, /Feature VIF/);
-  assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>0\.0500<\/td><td[^>]*>1<\/td><td[^>]*>3<\/td><td[^>]*>1<\/td>/);
+  assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>1<\/td>/);
   assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
-  assert.match(html, /Residual Q-Q/);
+  assert.doesNotMatch(html, /Residual Q-Q/);
+  assert.match(html, /Mean of Response/);
+  assert.match(html, /Observations/);
+  assert.match(html, /Effect Tests/);
+  assert.match(html, /Leverage Plot/);
   assert.match(html, /Row Diagnostics/);
   assert.match(html, /Prediction Profiler/);
   assert.match(html, /Sampled: 1 \/ 12 rows/);
@@ -575,14 +848,15 @@ function testRenderFittedContracts(): void {
   assert.match(html, /data-diagnostic-filter="flagged"/);
   const orderedSections = [
     "Model Specification",
+    "Leverage Plot",
+    "Actual by Predicted",
     "Effect Summary",
+    "Lack of Fit",
+    "Residual by Predicted",
     "Summary of Fit",
     "Analysis of Variance",
-    "Lack of Fit",
     "Parameter Estimates",
-    "Actual by Predicted",
-    "Residual by Predicted",
-    "Residual Q-Q",
+    "Effect Tests",
     "Row Diagnostics",
     "Prediction Profiler",
     "Warnings",
@@ -597,6 +871,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, />Y = 1 \+ 2 A/);
   assert.match(html, /saturatedModel|fitModel\.report\.warning\.saturatedModel/);
   assert.match(html, /Remove/);
+  assert.match(html, /Add/);
   assert.match(html, /Undo/);
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /Actual by Predicted/);
@@ -732,18 +1007,37 @@ function testUnavailableLoadIssueRendersWithoutEquation(): void {
 function testViewSourceContracts(): void {
   const viewSource = readFileSync(VIEW_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
   const reportSource = readFileSync(REPORT_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
-  const source = `${viewSource}\n${reportSource}`;
+  const effectSummarySource = readFileSync(EFFECT_SUMMARY_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const leveragePlotSource = readFileSync(LEVERAGE_PLOT_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const source = [viewSource, reportSource, effectSummarySource, leveragePlotSource].join("\n");
 
   assert.match(
     viewSource,
     /useAnalysisExecution\(item, dataset \?\? null, runtime\)/,
     "FitModelAnalysisResults must execute through the native Analysis lifecycle.",
   );
+  assert.match(
+    viewSource,
+    /onAddEffect=\{canEditInputs && onDefinitionChange \? handleAddEffect : undefined\}/,
+    "FitModelAnalysisResults must wire Effect Summary Add to the direct term updater only when editing is allowed.",
+  );
+  assert.doesNotMatch(
+    source,
+    /buildResidualQqOption|residualQqOption|graphRole=["']residualQq["']|chartKind=["']residualQq["']/,
+    "Fit Model Analysis must preserve the approved Q-Q-hidden structure.",
+  );
   assert.doesNotMatch(
     source,
     /(?:from\s+["'][^"']*\/FitModelReport["']|<FitModelReport\b)/,
     "FitModelAnalysisResults must compose the native Analysis presentation instead of wrapping the legacy report.",
   );
+  for (const primitive of ["AnalysisButton", "AnalysisGraph", "AnalysisTable"]) {
+    assert.match(
+      reportSource,
+      new RegExp(`from ["']@/components/analysis/presentation/${primitive}["']`),
+      `FitModelAnalysisReport must import shared ${primitive}.`,
+    );
+  }
   for (const primitive of [
     "AnalysisButton",
     "AnalysisFrame",
@@ -766,6 +1060,10 @@ function testViewSourceContracts(): void {
 testLogWorthContracts();
 testEffectSummarySortAndPValueMapping();
 testMeanCenteringDoesNotRelabelMainEffect();
+testLeverageSelectionIsDeterministic();
+testLeverageSelectionReturnsNullWithoutFinitePValue();
+testLeverageSelectionReplacesNonEstimableCurrent();
+testLeverageSelectionSkipsFinitePValueWithNonEstimablePlot();
 testRemoveInteractionSucceeds();
 testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
 testRemovePowerAndHigherOrderInteractionSucceeds();

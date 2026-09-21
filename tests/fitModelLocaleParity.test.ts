@@ -3,6 +3,53 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const LOCALES = ["en", "zh-CN", "zh-TW", "vi"] as const;
+const REQUIRED_VISIBLE_KEYS = [
+  "fitModel.report.add",
+  "fitModel.report.addEffect.cancel",
+  "fitModel.report.addEffect.confirm",
+  "fitModel.report.addEffect.instructions",
+  "fitModel.report.addEffect.preview",
+  "fitModel.report.addEffect.previewEmpty",
+  "fitModel.report.addEffect.title",
+  "fitModel.report.addEffect.validation.duplicateEffect",
+  "fitModel.report.addEffect.validation.selectAtLeastTwo",
+  "fitModel.report.addEffect.validation.tooManyTerms",
+  "fitModel.report.chart.axis.adjustedResponse",
+  "fitModel.report.chart.axis.effect",
+  "fitModel.report.chart.axis.effectLeverage",
+  "fitModel.report.chart.axis.logWorth",
+  "fitModel.report.chart.reference.nullEffect",
+  "fitModel.report.chart.reference.significance",
+  "fitModel.report.chart.series.confidence",
+  "fitModel.report.chart.series.fitted",
+  "fitModel.report.chart.series.leveragePoints",
+  "fitModel.report.chart.series.logWorth",
+  "fitModel.report.chart.tooltip.adjustedResponse",
+  "fitModel.report.chart.tooltip.effect",
+  "fitModel.report.chart.tooltip.effectLeverage",
+  "fitModel.report.chart.tooltip.logWorth",
+  "fitModel.report.column.metric",
+  "fitModel.report.column.numberOfParameters",
+  "fitModel.report.column.probabilityGreaterThanF",
+  "fitModel.report.column.property",
+  "fitModel.report.column.value",
+  "fitModel.report.effect",
+  "fitModel.report.effects",
+  "fitModel.report.leverageUnavailable",
+  "fitModel.report.profiler.notEstimable",
+  "fitModel.report.reason.auxiliaryRankDeficient",
+  "fitModel.report.reason.constantFeature",
+  "fitModel.report.reason.inferenceNotEstimable",
+  "fitModel.report.reason.insufficientDiagnosticRows",
+  "fitModel.report.reason.lackOfFitDegreesOfFreedomZero",
+  "fitModel.report.reason.noReplicates",
+  "fitModel.report.reason.pureErrorZero",
+  "fitModel.report.rows",
+  "fitModel.report.section.effectTests",
+  "fitModel.report.section.leveragePlot",
+  "fitModel.report.summaryOfFit.meanOfResponse",
+  "fitModel.report.summaryOfFit.observations",
+] as const;
 
 function collectLeafValues(
   value: unknown,
@@ -32,6 +79,9 @@ const [referenceLocale, referenceLeaves] = localeLeaves[0];
 const referenceKeys = [...referenceLeaves.keys()].sort();
 for (const [locale, leaves] of localeLeaves) {
   assert.deepEqual([...leaves.keys()].sort(), referenceKeys, `${locale} fitModel keys must match ${referenceLocale}`);
+  for (const key of REQUIRED_VISIBLE_KEYS) {
+    assert.ok(leaves.has(key), `${locale} must define visible Fit Model key ${key}`);
+  }
   for (const [key, value] of leaves) {
     assert.ok(value.trim().length > 0, `${locale}:${key} must be a non-empty string`);
   }

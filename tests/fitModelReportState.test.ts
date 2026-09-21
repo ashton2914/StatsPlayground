@@ -98,6 +98,8 @@ function makeFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitMod
     },
     anova: [],
     parameterEstimates: [],
+    effectTests: [],
+    leveragePlots: [],
     plotRows: [],
     plotRowsSampled: false,
     warnings: [],

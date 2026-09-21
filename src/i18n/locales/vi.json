@@ -1725,6 +1725,24 @@
       "errorWithOldResult": "Làm mới thất bại. Đang hiển thị kết quả trước đó.",
       "undo": "Hoàn tác",
       "remove": "Xóa",
+      "add": "Thêm hiệu ứng",
+      "addEffect": {
+        "title": "Thêm hiệu ứng",
+        "instructions": "Chọn ít nhất hai biến dự báo để thêm một hiệu ứng tương tác.",
+        "preview": "Xem trước hiệu ứng",
+        "previewEmpty": "Chọn các biến dự báo",
+        "cancel": "Hủy",
+        "confirm": "Thêm hiệu ứng",
+        "validation": {
+          "selectAtLeastTwo": "Chọn ít nhất hai biến dự báo.",
+          "duplicateEffect": "Hiệu ứng này đã tồn tại.",
+          "tooManyTerms": "Mô hình không thể chứa quá 256 số hạng."
+        }
+      },
+      "effect": "Hiệu ứng",
+      "effects": "Các hiệu ứng",
+      "rows": "Các hàng",
+      "leverageUnavailable": "Không có hiệu ứng nào có thể ước lượng.",
       "notComputable": "Không thể tính toán",
       "usedRows": "Số hàng đã dùng",
       "excludedRows": "Số hàng bị loại",
@@ -1753,6 +1771,8 @@
       "section": {
         "modelSpecification": "Đặc tả mô hình",
         "effectSummary": "Tóm tắt hiệu ứng",
+        "effectTests": "Kiểm định hiệu ứng",
+        "leveragePlot": "Biểu đồ đòn bẩy",
         "summaryOfFit": "Tóm tắt độ khớp",
         "analysisOfVariance": "Phân tích phương sai",
         "lackOfFit": "Kiểm định thiếu khớp",
@@ -1768,11 +1788,16 @@
       "summaryOfFit": {
         "rSquared": "R bình phương",
         "adjustedRSquared": "R bình phương hiệu chỉnh",
-        "rootMeanSquareError": "Sai số RMS"
+        "rootMeanSquareError": "Sai số RMS",
+        "meanOfResponse": "Trung bình đáp ứng",
+        "observations": "Số quan sát"
       },
       "column": {
         "term": "Hạng",
         "source": "Nguồn",
+        "metric": "Chỉ số",
+        "property": "Thuộc tính",
+        "value": "Giá trị",
         "estimate": "Ước lượng",
         "standardError": "Sai số chuẩn",
         "tRatio": "Tỷ số t",
@@ -1783,6 +1808,8 @@
         "sumOfSquares": "Tổng bình phương",
         "meanSquare": "Bình phương trung bình",
         "fRatio": "Tỷ số F",
+        "numberOfParameters": "Nparm",
+        "probabilityGreaterThanF": "Prob > F",
         "lowerConfidenceLimit": "Cận dưới 95%", "upperConfidenceLimit": "Cận trên 95%", "featureVif": "VIF đặc trưng",
         "row": "Hàng", "observed": "Quan sát", "fitted": "Khớp", "residual": "Phần dư", "studentizedResidual": "Phần dư student hóa", "leverage": "Đòn bẩy", "cooksDistance": "Khoảng cách Cook", "meanConfidenceInterval": "Khoảng tin cậy trung bình", "predictionInterval": "Khoảng dự đoán", "flags": "Cờ"
       },
@@ -1810,20 +1837,20 @@
         "axis": {
           "predicted": "Dự đoán",
           "actual": "Thực tế",
-          "residual": "Phần dư", "theoreticalQuantile": "Phân vị lý thuyết", "studentizedResidual": "Phần dư student hóa"
+          "residual": "Phần dư", "effect": "Hiệu ứng", "logWorth": "LogWorth", "effectLeverage": "Đòn bẩy hiệu ứng", "adjustedResponse": "Đáp ứng đã hiệu chỉnh", "theoreticalQuantile": "Phân vị lý thuyết", "studentizedResidual": "Phần dư student hóa"
         },
         "series": {
           "actual": "Thực tế",
-          "residual": "Phần dư", "studentizedResidual": "Phần dư student hóa", "predicted": "Dự đoán", "meanConfidence": "Khoảng tin cậy trung bình"
+          "residual": "Phần dư", "logWorth": "LogWorth", "leveragePoints": "Các hàng", "fitted": "Đã khớp", "confidence": "Khoảng tin cậy", "studentizedResidual": "Phần dư student hóa", "predicted": "Dự đoán", "meanConfidence": "Khoảng tin cậy trung bình"
         },
         "reference": {
           "identity": "y=x",
-          "zero": "y=0", "qq": "Đường tham chiếu Q-Q"
+          "zero": "y=0", "significance": "LogWorth = 1.3", "nullEffect": "Hiệu ứng không", "qq": "Đường tham chiếu Q-Q"
         },
         "tooltip": {
           "x": "Dự đoán",
           "yActual": "Thực tế",
-          "yResidual": "Phần dư", "xQq": "Phân vị lý thuyết", "yQq": "Phần dư student hóa"
+          "yResidual": "Phần dư", "effect": "Hiệu ứng", "logWorth": "LogWorth", "effectLeverage": "Đòn bẩy hiệu ứng", "adjustedResponse": "Đáp ứng đã hiệu chỉnh", "xQq": "Phân vị lý thuyết", "yQq": "Phần dư student hóa"
         }
       }
     }

@@ -171,6 +171,42 @@ export type FitModelInferenceReason =
   | "auxiliaryRankDeficient"
   | "insufficientDiagnosticRows";
 
+export interface FitModelEffectTest {
+  termId: string;
+  termLabel: string;
+  numberOfParameters: number;
+  degreesOfFreedom: number;
+  sumOfSquares: number | null;
+  fRatio: number | null;
+  pValue: number | null;
+  reason: FitModelInferenceReason | null;
+}
+
+export interface FitModelLeveragePoint {
+  rowIndex: number;
+  effectLeverage: number;
+  adjustedResponse: number;
+}
+
+export interface FitModelLeverageBandPoint {
+  effectLeverage: number;
+  fitted: number;
+  lower: number;
+  upper: number;
+}
+
+export interface FitModelLeveragePlot {
+  termId: string;
+  termLabel: string;
+  pValue: number | null;
+  points: FitModelLeveragePoint[];
+  confidenceBand: FitModelLeverageBandPoint[];
+  nullLineY: number | null;
+  rowsSampled: boolean;
+  sourceRowCount: number;
+  reason: FitModelInferenceReason | null;
+}
+
 export interface FitModelLackOfFitResult {
   sumOfSquaresError: number;
   sumOfSquaresPureError: number;
@@ -240,6 +276,13 @@ export interface FitModelPrediction {
   inferenceReason: FitModelInferenceReason | null;
 }
 
+export interface FitModelActualByPredictedBandPoint {
+  predicted: number;
+  fitted: number;
+  lower: number;
+  upper: number;
+}
+
 export interface FitModelFittedResult {
   kind: "fitted";
   usedRows: number;
@@ -255,6 +298,9 @@ export interface FitModelFittedResult {
   summaryOfFit: FitModelSummaryOfFit;
   anova: FitModelAnovaRow[];
   parameterEstimates: FitModelParameterEstimate[];
+  effectTests: FitModelEffectTest[];
+  leveragePlots: FitModelLeveragePlot[];
+  actualByPredictedConfidenceBand: FitModelActualByPredictedBandPoint[];
   plotRows: FitModelPlotRow[];
   plotRowsSampled: boolean;
   warnings: FitModelWarningCode[];

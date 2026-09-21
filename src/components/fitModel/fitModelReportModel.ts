@@ -1,7 +1,9 @@
 import { canonicalizeFitModelTerms } from "@/components/fitModel/fitModelConfig";
 import type {
   FitModelCenteringMethod,
+  FitModelEffectTest,
   FitModelFittedResult,
+  FitModelLeveragePlot,
   FitModelRowDiagnostic,
   FitModelTerm,
 } from "@/types/fitModel";
@@ -193,17 +195,17 @@ export function logWorth(pValue: number | null): number | null {
 }
 
 export function buildEffectSummary(result: FitModelFittedResult): FitModelEffectRow[] {
-  const parameterByTermId = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termId, parameter]),
+  const effectByTermId = new Map(
+    result.effectTests.map((effect) => [effect.termId, effect]),
   );
-  const parameterByLabel = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termLabel, parameter]),
+  const effectByLabel = new Map(
+    result.effectTests.map((effect) => [effect.termLabel, effect]),
   );
 
   return result.terms
     .map((term) => {
-      const parameter = parameterByTermId.get(term.termId) ?? parameterByLabel.get(term.label);
-      const pValue = parameter?.pValue ?? null;
+      const effect = effectByTermId.get(term.termId) ?? effectByLabel.get(term.label);
+      const pValue = effect?.pValue ?? null;
 
       return {
         termId: term.termId,
@@ -228,6 +230,56 @@ export function buildEffectSummary(result: FitModelFittedResult): FitModelEffect
       }
       return left.termLabel.localeCompare(right.termLabel);
     });
+}
+
+function finitePValue(value: number | null): value is number {
+  return value !== null && Number.isFinite(value);
+}
+
+function selectSmallestFinitePValue(
+  candidates: readonly { termId: string; pValue: number | null }[],
+): string | null {
+  let selected: { termId: string; pValue: number } | null = null;
+  for (const candidate of candidates) {
+    if (
+      finitePValue(candidate.pValue)
+      && (selected === null || candidate.pValue < selected.pValue)
+    ) {
+      selected = { termId: candidate.termId, pValue: candidate.pValue };
+    }
+  }
+  return selected?.termId ?? null;
+}
+
+export function selectDefaultLeverageTermId(
+  effectTests: readonly FitModelEffectTest[],
+  plots: readonly FitModelLeveragePlot[],
+): string | null {
+  const eligibleTermIds = new Set(
+    plots
+      .filter((plot) => plot.reason === null && finitePValue(plot.pValue))
+      .map((plot) => plot.termId),
+  );
+  return selectSmallestFinitePValue(
+    effectTests.filter((effect) => eligibleTermIds.has(effect.termId)),
+  );
+}
+
+export function reconcileLeverageTermId(
+  current: string | null,
+  plots: readonly FitModelLeveragePlot[],
+): string | null {
+  if (
+    current !== null
+    && plots.some((plot) => (
+      plot.termId === current
+      && plot.reason === null
+      && finitePValue(plot.pValue)
+    ))
+  ) {
+    return current;
+  }
+  return selectSmallestFinitePValue(plots.filter((plot) => plot.reason === null));
 }
 
 export function removeFitModelTerm(

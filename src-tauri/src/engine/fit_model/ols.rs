@@ -1,8 +1,14 @@
+use std::collections::BTreeMap;
+
 use nalgebra::linalg::SVD;
 use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
+use crate::engine::fit_model::effects::{
+    compute_effect_leverage_plots, compute_effect_tests, compute_whole_model_confidence_band,
+};
+use crate::engine::fit_model::reporting_basis::reporting_basis;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
@@ -248,11 +254,30 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         _ => None,
     };
 
+    let resolved = resolved_terms(&input.model_matrix_spec);
+    let fitted_geometry = coefficient_covariance_geometry(&geometry)?;
+    let means = input
+        .predictor_ranges
+        .iter()
+        .map(|range| (range.column_name.clone(), range.mean))
+        .collect::<BTreeMap<_, _>>();
+    let reporting = reporting_basis(
+        &coefficients,
+        &fitted_geometry,
+        &resolved,
+        &means,
+        input.model_matrix_spec.centering_method(),
+    )?;
+    let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
+    coefficient_term_ids.push("Intercept".to_string());
+    coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
+
     let allow_parameter_inference = !saturated_model && !perfect_fit && df_error > 0;
     let parameter_estimates = parameter_estimates(
-        &input,
-        &coefficients,
-        &geometry,
+        &reporting.coefficients,
+        &coefficient_term_ids,
+        &reporting.term_labels,
+        &reporting.covariance_geometry,
         mse,
         df_error as u64,
         confidence_level,
@@ -286,14 +311,40 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         perfect_fit,
         ill_conditioned,
     );
-    let resolved = resolved_terms(&input.model_matrix_spec);
+    let effect_tests = compute_effect_tests(
+        &input.design_matrix,
+        &response,
+        &resolved,
+        Some(&reporting),
+        sse,
+        mse,
+        df_error as u64,
+    )?;
+    let leverage_plots = compute_effect_leverage_plots(
+        &input.design_matrix,
+        &response,
+        &input.row_indexes,
+        &resolved,
+        &reporting,
+        &effect_tests,
+        &means,
+        mse,
+        df_error as u64,
+        confidence_level,
+    )?;
+    let actual_by_predicted_confidence_band = compute_whole_model_confidence_band(
+        &fitted,
+        mean_response,
+        ssm,
+        df_model as u64,
+        mse,
+        df_error as u64,
+        confidence_level,
+    )?;
     let centering = FitModelCentering {
         method: input.model_matrix_spec.centering_method().clone(),
         centers: input.model_matrix_spec.centers().to_vec(),
     };
-    let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
-    coefficient_term_ids.push("Intercept".to_string());
-    coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
     let snapshot_covariance = if allow_parameter_inference {
         covariance_matrix(&geometry, mse)?
             .map(matrix_to_finite_rows)
@@ -378,6 +429,9 @@ pub(crate) fn fit_linear_model_with_diagnostics(
                 },
             ],
             parameter_estimates,
+            effect_tests,
+            leverage_plots,
+            actual_by_predicted_confidence_band,
             plot_rows,
             plot_rows_sampled: sampled,
             warnings,
@@ -434,30 +488,25 @@ fn matrix_to_finite_rows(matrix: DMatrix<f64>) -> Result<Vec<Vec<f64>>, FitModel
 }
 
 fn parameter_estimates(
-    input: &FitModelData,
     coefficients: &DVector<f64>,
-    geometry: &FitGeometry,
+    term_ids: &[String],
+    labels: &[String],
+    covariance_geometry: &DMatrix<f64>,
     mse: Option<f64>,
     df_error: u64,
     confidence_level: f64,
     allow_inference: bool,
 ) -> Result<Vec<FitModelParameterEstimate>, FitModelEngineError> {
-    let mut estimates = Vec::with_capacity(coefficients.len());
-    let mut term_ids = Vec::with_capacity(coefficients.len());
-    let mut labels = Vec::with_capacity(coefficients.len());
-
-    term_ids.push("Intercept".to_string());
-    labels.push("Intercept".to_string());
-    for term in input.model_matrix_spec.terms() {
-        term_ids.push(term.term_id().to_string());
-        labels.push(term.label().to_string());
+    if term_ids.len() != coefficients.len()
+        || labels.len() != coefficients.len()
+        || covariance_geometry.nrows() != coefficients.len()
+        || covariance_geometry.ncols() != coefficients.len()
+    {
+        return Err(FitModelEngineError::InvalidInput(
+            "parameter reporting dimensions must match coefficients".to_string(),
+        ));
     }
-
-    let covariance = if allow_inference {
-        covariance_matrix(geometry, mse)?
-    } else {
-        None
-    };
+    let mut estimates = Vec::with_capacity(coefficients.len());
     let t_critical = if allow_inference {
         t_critical(df_error, confidence_level)
     } else {
@@ -467,15 +516,13 @@ fn parameter_estimates(
     for index in 0..coefficients.len() {
         let estimate = normalize_signed_zero(coefficients[index]);
         let (standard_error, t_ratio, p_value, lower_confidence_limit, upper_confidence_limit) =
-            if let (Some(cov), Some(critical), Some(mse_value)) =
-                (covariance.as_ref(), t_critical, mse)
-            {
+            if let (Some(critical), Some(mse_value)) = (t_critical, mse) {
                 if !mse_value.is_finite() || mse_value < 0.0 {
                     return Err(FitModelEngineError::NumericalFailure(
                         "MSE for inference is invalid".to_string(),
                     ));
                 }
-                let variance = cov[(index, index)];
+                let variance = mse_value * covariance_geometry[(index, index)];
                 if variance < 0.0 {
                     return Err(FitModelEngineError::NumericalFailure(
                         "variance estimate became negative".to_string(),
@@ -561,6 +608,19 @@ fn covariance_matrix(
         _ => return Ok(None),
     };
 
+    let geometry_matrix = coefficient_covariance_geometry(geometry)?;
+    let covariance = geometry_matrix * mse_value;
+    if covariance.iter().any(|value| !value.is_finite()) {
+        return Err(FitModelEngineError::NumericalFailure(
+            "covariance matrix contains non-finite value".to_string(),
+        ));
+    }
+    Ok(Some(covariance))
+}
+
+fn coefficient_covariance_geometry(
+    geometry: &FitGeometry,
+) -> Result<DMatrix<f64>, FitModelEngineError> {
     if geometry.singular_values.len() != geometry.v_t.nrows() {
         return Err(FitModelEngineError::NumericalFailure(
             "SVD singular value count does not match design columns".to_string(),
@@ -581,14 +641,12 @@ fn covariance_matrix(
     let v = geometry.v_t.transpose();
     let xtx_inverse = &v * inverse_diag * &geometry.v_t;
 
-    let covariance = xtx_inverse * mse_value;
-    if covariance.iter().any(|value| !value.is_finite()) {
+    if xtx_inverse.iter().any(|value| !value.is_finite()) {
         return Err(FitModelEngineError::NumericalFailure(
-            "covariance matrix contains non-finite value".to_string(),
+            "coefficient covariance geometry contains non-finite value".to_string(),
         ));
     }
-
-    Ok(Some(covariance))
+    Ok(xtx_inverse)
 }
 
 fn resolved_terms(spec: &ModelMatrixSpec) -> Vec<FitModelResolvedTerm> {
@@ -625,7 +683,7 @@ fn warnings(
     values
 }
 
-fn deterministic_rank_grid(logical_n: u64, max_points: usize) -> Vec<u64> {
+pub(crate) fn deterministic_rank_grid(logical_n: u64, max_points: usize) -> Vec<u64> {
     if logical_n == 0 {
         return Vec::new();
     }
@@ -920,6 +978,330 @@ mod tests {
     }
 
     #[test]
+    fn whole_model_leverage_band_is_ordered_centered_and_row_diagnostic_independent() {
+        let input = build_input(
+            "Y",
+            vec![term(FitModelTermKind::Main, &["A"])],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([(
+                "A".to_string(),
+                vec![-2.0, -2.0, -1.0, -1.0, 1.0, 1.0, 2.0, 2.0],
+            )]),
+            vec![0.0, 2.0, 2.0, 4.0, 6.0, 8.0, 8.0, 10.0],
+            (1..=8).collect(),
+            0,
+        );
+
+        let FitModelResult::Fitted(fitted) = fit_linear_model(input, 0.95).expect("fit") else {
+            panic!("expected fitted result");
+        };
+        let band = &fitted.actual_by_predicted_confidence_band;
+
+        assert!(band.len() <= GRAPH_SCATTER_RENDER_BUDGET);
+        assert!(band
+            .windows(2)
+            .all(|pair| pair[0].predicted < pair[1].predicted));
+        assert!(band.iter().all(|point| {
+            point.fitted == point.predicted
+                && point.lower <= point.fitted
+                && point.fitted <= point.upper
+        }));
+        let center = band
+            .iter()
+            .find(|point| point.predicted == 5.0)
+            .expect("response mean should be included");
+        let center_width = center.upper - center.lower;
+        assert!(band
+            .iter()
+            .all(|point| { center_width <= point.upper - point.lower + f64::EPSILON }));
+
+        let expected_band = band.clone();
+        let mut fitted_with_changed_diagnostics = fitted.clone();
+        for row in &mut fitted_with_changed_diagnostics.diagnostics.rows {
+            row.mean_confidence_lower = Some(-1_000_000.0);
+            row.mean_confidence_upper = Some(1_000_000.0);
+        }
+        assert_eq!(
+            fitted_with_changed_diagnostics.actual_by_predicted_confidence_band,
+            expected_band
+        );
+    }
+
+    #[test]
+    fn equivalent_construction_bases_preserve_reports_predictions_and_leverage_hypotheses() {
+        let a = vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+        let b = vec![2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0];
+        let noise = [0.1, -0.2, 0.1, -0.2, 0.4, -0.2, 0.1, -0.2, 0.1];
+        let response = (0..9)
+            .map(|row| 1.0 + 0.6 * a[row] * b[row] + noise[row])
+            .collect::<Vec<_>>();
+        let mut results = Vec::new();
+        for construction in [FitModelCenteringMethod::None, FitModelCenteringMethod::Mean] {
+            let input = build_input(
+                "Y",
+                vec![
+                    term(FitModelTermKind::Main, &["A"]),
+                    term(FitModelTermKind::Main, &["B"]),
+                    term(FitModelTermKind::Interaction, &["A", "B"]),
+                ],
+                construction.clone(),
+                BTreeMap::from([("A".to_string(), a.clone()), ("B".to_string(), b.clone())]),
+                response.clone(),
+                (1..=9).collect(),
+                0,
+            );
+            let design = input.design_matrix.clone();
+            let FitModelResult::Fitted(fitted) = fit_linear_model(input, 0.95).expect("fit") else {
+                panic!("expected fitted result");
+            };
+            for (estimate, expected) in fitted.parameter_estimates.iter().zip([4.6, 1.8, 1.2, 0.6])
+            {
+                assert_close(estimate.estimate, expected);
+            }
+            let expected_snapshot = if construction == FitModelCenteringMethod::None {
+                [1.0, 0.0, 0.0, 0.6]
+            } else {
+                [-2.6, 1.8, 1.2, 0.6]
+            };
+            for (actual, expected) in fitted.snapshot.coefficients.iter().zip(expected_snapshot) {
+                assert_close(*actual, expected);
+            }
+            let predictions =
+                &design * nalgebra::DVector::from_vec(fitted.snapshot.coefficients.clone());
+            for (row, prediction) in fitted.plot_rows.iter().zip(predictions.iter()) {
+                assert_close(row.fitted, *prediction);
+                assert_close(row.residual, row.observed - prediction);
+            }
+            assert_close(fitted.anova[1].sum_of_squares, 0.36);
+            for (plot, expected) in fitted.leverage_plots.iter().zip(&fitted.effect_tests) {
+                assert_eq!(plot.p_value, expected.p_value);
+            }
+            if construction == FitModelCenteringMethod::None {
+                assert!(fitted.effect_tests[0].p_value.expect("centered p") < 0.001);
+                assert!(fitted.leverage_plots[0].p_value.expect("centered p") < 0.001);
+                let band = &fitted.leverage_plots[0].confidence_band;
+                let first = band.first().expect("band start");
+                let last = band.last().expect("band end");
+                assert_close(
+                    (last.fitted - first.fitted) / (last.effect_leverage - first.effect_leverage),
+                    1.8,
+                );
+            }
+            results.push(fitted);
+        }
+        for (raw, centered) in results[0]
+            .parameter_estimates
+            .iter()
+            .zip(&results[1].parameter_estimates)
+        {
+            assert_close(
+                raw.standard_error.expect("SE"),
+                centered.standard_error.expect("SE"),
+            );
+            assert_close(raw.t_ratio.expect("t"), centered.t_ratio.expect("t"));
+        }
+        for (raw, centered) in results[0].effect_tests.iter().zip(&results[1].effect_tests) {
+            assert_close(
+                raw.sum_of_squares.expect("SS"),
+                centered.sum_of_squares.expect("SS"),
+            );
+            assert_close(raw.p_value.expect("p"), centered.p_value.expect("p"));
+        }
+    }
+
+    #[test]
+    fn hierarchical_interactions_align_leverage_with_centered_effect_test() {
+        let a = vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0];
+        let b = vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 1.0, 4.0];
+        let c = vec![1.0, 2.0, 0.0, 3.0, 4.0, 1.0, 2.0, 5.0, 3.0, 0.0];
+        let noise = [0.1, -0.2, 0.05, 0.15, -0.1, 0.2, -0.05, 0.1, -0.15, -0.1];
+        let response = (0..a.len())
+            .map(|row| {
+                5.0 + 2.0 * a[row] - 3.0 * b[row] + 0.5 * c[row] - 4.0 * a[row] * b[row]
+                    + 0.5 * a[row] * c[row]
+                    + noise[row]
+            })
+            .collect::<Vec<_>>();
+        let input = build_input(
+            "Y",
+            vec![
+                term(FitModelTermKind::Main, &["A"]),
+                term(FitModelTermKind::Main, &["B"]),
+                term(FitModelTermKind::Main, &["C"]),
+                term(FitModelTermKind::Interaction, &["A", "B"]),
+                term(FitModelTermKind::Interaction, &["A", "C"]),
+            ],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([
+                ("A".to_string(), a),
+                ("B".to_string(), b),
+                ("C".to_string(), c),
+            ]),
+            response,
+            (1..=10).collect(),
+            0,
+        );
+        let raw_design = input.design_matrix.clone();
+        let raw_response = nalgebra::DVector::from_vec(input.response_values.clone());
+        let raw_svd = raw_design.clone().svd(true, true);
+        let raw_beta = raw_svd
+            .solve(&raw_response, 1e-12)
+            .expect("raw coefficients");
+        let raw_geometry = raw_svd
+            .pseudo_inverse(1e-12)
+            .expect("raw design pseudoinverse");
+        let raw_covariance_geometry = &raw_geometry * raw_geometry.transpose();
+        let expected_fitted = &raw_design * &raw_beta;
+        let expected_residuals = &raw_response - &expected_fitted;
+        let expected_mse = expected_residuals.dot(&expected_residuals) / 4.0;
+        let resolved = super::resolved_terms(&input.model_matrix_spec);
+        let means = input
+            .predictor_ranges
+            .iter()
+            .map(|range| (range.column_name.clone(), range.mean))
+            .collect::<BTreeMap<_, _>>();
+        let reporting = super::reporting_basis(
+            &raw_beta,
+            &raw_covariance_geometry,
+            &resolved,
+            &means,
+            input.model_matrix_spec.centering_method(),
+        )
+        .expect("reporting basis");
+        let reporting_design = reporting
+            .design_matrix(&raw_design)
+            .expect("reporting design");
+        let reduced_design = DMatrix::from_fn(
+            reporting_design.nrows(),
+            reporting_design.ncols() - 1,
+            |row, column| reporting_design[(row, if column == 0 { 0 } else { column + 1 })],
+        );
+        let reduced_svd = reduced_design.clone().svd(true, true);
+        let reduced_coefficients = reduced_svd
+            .solve(&raw_response, 1e-12)
+            .expect("constrained coefficients");
+        let constrained_residuals = &raw_response - reduced_design * reduced_coefficients;
+        let mean_a = 2.0;
+        let mean_b = 1.7;
+        let mean_c = 2.1;
+        let expected_intercept = raw_beta[0]
+            + mean_a * raw_beta[1]
+            + mean_b * raw_beta[2]
+            + mean_c * raw_beta[3]
+            + mean_a * mean_b * raw_beta[4]
+            + mean_a * mean_c * raw_beta[5];
+        let expected_main_a = raw_beta[1] + mean_b * raw_beta[4] + mean_c * raw_beta[5];
+        let centered_effect_tests = super::compute_effect_tests(
+            &raw_design,
+            &raw_response,
+            &resolved,
+            Some(&reporting),
+            expected_residuals.dot(&expected_residuals),
+            Some(expected_mse),
+            4,
+        )
+        .expect("centered effect tests");
+        let centered_effect_test = centered_effect_tests
+            .iter()
+            .find(|test| test.term_id == "A")
+            .expect("centered A effect test");
+
+        let result = fit_linear_model(input, 0.95).expect("fit should succeed");
+        let FitModelResult::Fitted(fitted) = result else {
+            panic!("expected fitted result");
+        };
+
+        assert_close(fitted.parameter_estimates[0].estimate, expected_intercept);
+        assert_close(fitted.parameter_estimates[1].estimate, expected_main_a);
+        assert!(raw_beta[1] > 0.0);
+        assert!(expected_main_a < 0.0);
+        assert_eq!(fitted.plot_rows.len(), raw_response.len());
+        for index in 0..raw_response.len() {
+            let row = &fitted.plot_rows[index];
+            assert_eq!(row.row_index, (index + 1) as u64);
+            assert_close(row.observed, raw_response[index]);
+            assert_close(row.fitted, expected_fitted[index]);
+            assert_close(row.residual, expected_residuals[index]);
+        }
+        assert_eq!(fitted.snapshot.coefficients.len(), raw_beta.len());
+        for (actual, expected) in fitted.snapshot.coefficients.iter().zip(raw_beta.iter()) {
+            assert_close(*actual, *expected);
+        }
+        let snapshot_covariance = fitted
+            .snapshot
+            .covariance
+            .as_ref()
+            .expect("raw snapshot covariance");
+        for row in 0..raw_covariance_geometry.nrows() {
+            for column in 0..raw_covariance_geometry.ncols() {
+                assert_close(
+                    snapshot_covariance[row][column],
+                    expected_mse * raw_covariance_geometry[(row, column)],
+                );
+            }
+        }
+        let response_mean = raw_response.iter().sum::<f64>() / raw_response.len() as f64;
+        let plot = fitted
+            .leverage_plots
+            .iter()
+            .find(|plot| plot.term_id == "A")
+            .expect("A leverage plot");
+        let non_center = plot
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - mean_a).abs() > 1e-9)
+            .expect("non-center band point");
+        let recovered_plot_slope =
+            (non_center.fitted - response_mean) / (non_center.effect_leverage - mean_a);
+        assert!(recovered_plot_slope < 0.0);
+        assert_eq!(plot.p_value, centered_effect_test.p_value);
+        assert_close(
+            plot.points
+                .iter()
+                .map(|point| point.effect_leverage)
+                .sum::<f64>()
+                / plot.points.len() as f64,
+            mean_a,
+        );
+        for (row, point) in plot.points.iter().enumerate() {
+            let fitted_on_plot = response_mean + expected_main_a * (point.effect_leverage - mean_a);
+            assert_close(
+                point.adjusted_response - fitted_on_plot,
+                expected_residuals[row],
+            );
+            assert_close(
+                point.adjusted_response - response_mean,
+                constrained_residuals[row],
+            );
+        }
+        assert_close(
+            constrained_residuals.dot(&constrained_residuals)
+                - expected_residuals.dot(&expected_residuals),
+            centered_effect_test
+                .sum_of_squares
+                .expect("centered hypothesis sum of squares"),
+        );
+        let interaction_plot = fitted
+            .leverage_plots
+            .iter()
+            .find(|plot| plot.term_id == "interaction:A*B")
+            .expect("interaction leverage plot");
+        let first = interaction_plot
+            .confidence_band
+            .first()
+            .expect("interaction band start");
+        let second = interaction_plot
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - first.effect_leverage).abs() > 1e-9)
+            .expect("distinct interaction band point");
+        assert_close(
+            (second.fitted - first.fitted) / (second.effect_leverage - first.effect_leverage),
+            1.0,
+        );
+    }
+
+    #[test]
     fn exact_line_fixture_matches_oracle() {
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let y = vec![3.0, 5.0, 7.0, 9.0, 11.0];
@@ -1066,6 +1448,37 @@ mod tests {
             8,
             0.95,
         );
+    }
+
+    #[test]
+    fn fitted_result_populates_effect_tests_and_leverage_plots() {
+        let input = build_input(
+            "Y",
+            vec![term(FitModelTermKind::Main, &["X"])],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([(String::from("X"), vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0])]),
+            vec![1.1, 2.8, 5.2, 6.9, 9.1, 10.9],
+            vec![1, 2, 3, 4, 5, 6],
+            0,
+        );
+
+        let result = fit_linear_model(input, 0.95).expect("fit should succeed");
+        let FitModelResult::Fitted(fitted) = result else {
+            panic!("expected fitted result");
+        };
+
+        assert_eq!(fitted.effect_tests.len(), 1);
+        assert_eq!(fitted.effect_tests[0].term_id, "X");
+        assert_eq!(fitted.effect_tests[0].number_of_parameters, 1);
+        assert_eq!(fitted.effect_tests[0].degrees_of_freedom, 1);
+        assert!(fitted.effect_tests[0].sum_of_squares.is_some());
+        assert!(fitted.effect_tests[0].f_ratio.is_some());
+        assert!(fitted.effect_tests[0].p_value.is_some());
+        assert_eq!(fitted.leverage_plots.len(), 1);
+        assert_eq!(fitted.leverage_plots[0].term_id, "X");
+        assert_eq!(fitted.leverage_plots[0].points.len(), 6);
+        assert!(!fitted.leverage_plots[0].confidence_band.is_empty());
+        assert_eq!(fitted.leverage_plots[0].reason, None);
     }
 
     #[test]
@@ -1324,7 +1737,7 @@ mod tests {
             panic!("expected fitted result");
         };
 
-        assert_close(fitted.parameter_estimates[0].estimate, 91.37860600474693);
+        assert_close(fitted.parameter_estimates[0].estimate, 59.416372946550865);
         assert_close(fitted.parameter_estimates[1].estimate, -3.059414649499809);
         assert_close(fitted.parameter_estimates[2].estimate, -0.0732501362581633);
         assert_close(fitted.parameter_estimates[3].estimate, 0.007953458492631182);
@@ -1358,9 +1771,9 @@ mod tests {
 
         assert_parameter_row(
             &fitted.parameter_estimates[0],
-            91.37860600474693,
-            8.162470741351981,
-            11.19496888874747,
+            59.416372946550865,
+            8.722066257724821,
+            6.812190046587633,
             26,
             0.95,
         );

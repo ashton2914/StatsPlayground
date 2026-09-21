@@ -20,11 +20,96 @@ export interface FitModelProfilerPoint extends FitModelPointPrediction {
   value: number;
 }
 
+export interface FitModelProfilerDomain {
+  min: number;
+  max: number;
+}
+
 function assertFinite(value: number, label: string): number {
   if (!Number.isFinite(value)) {
-    throw new Error(`Fit Model prediction requires finite ${label}`);
+    throw new Error(`Fit Model prediction received non-finite ${label}`);
   }
   return value;
+}
+
+const DOMAIN_BUFFER = new ArrayBuffer(8);
+const DOMAIN_FLOAT = new Float64Array(DOMAIN_BUFFER);
+const DOMAIN_BITS = new BigUint64Array(DOMAIN_BUFFER);
+
+function nextFinite(value: number, direction: "up" | "down"): number {
+  if (value === 0) return direction === "up" ? Number.MIN_VALUE : -Number.MIN_VALUE;
+  DOMAIN_FLOAT[0] = value;
+  const increment = (value > 0) === (direction === "up");
+  DOMAIN_BITS[0] += increment ? 1n : -1n;
+  return DOMAIN_FLOAT[0];
+}
+
+function profilerDomainError(): never {
+  throw new Error("Fit Model profiler Y domain has no finite representable padded range");
+}
+
+export function fitModelProfilerYDomain(
+  scans: readonly (readonly FitModelProfilerPoint[])[],
+): FitModelProfilerDomain {
+  const values: number[] = [];
+  scans.forEach((scan) => {
+    scan.forEach((point) => {
+      const candidates = [
+        point.predicted,
+        point.meanConfidenceLower,
+        point.meanConfidenceUpper,
+      ];
+      candidates.forEach((candidate) => {
+        if (candidate === null) return;
+        values.push(assertFinite(candidate, "profiler Y domain value"));
+      });
+    });
+  });
+  if (values.length === 0) {
+    throw new Error("Fit Model profiler Y domain requires finite values");
+  }
+
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  if (minimum === maximum) {
+    const delta = Math.max(Math.abs(minimum) * 0.05, 1);
+    const min = minimum - delta;
+    const max = maximum + delta;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || !(min < minimum && maximum < max)) {
+      return profilerDomainError();
+    }
+    return { min, max };
+  }
+
+  const scale = Math.max(Math.abs(minimum), Math.abs(maximum));
+  const normalizedSpan = scale === 0 ? 0 : (maximum / scale) - (minimum / scale);
+  const pad = Math.max(scale * (normalizedSpan * 0.02), Number.MIN_VALUE);
+  let min = minimum - pad;
+  let max = maximum + pad;
+  if (!(min < minimum)) min = nextFinite(minimum, "down");
+  if (!(max > maximum)) max = nextFinite(maximum, "up");
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !(min < max)) {
+    return profilerDomainError();
+  }
+
+  const span = maximum - minimum;
+  const snap = Number.isFinite(span) && span > 0
+    ? 10 ** (Math.floor(Math.log10(span)) - 1)
+    : 0;
+  if (Number.isFinite(snap) && snap > 0) {
+    const snappedMin = Number((Math.floor(min / snap) * snap).toPrecision(15));
+    const snappedMax = Number((Math.ceil(max / snap) * snap).toPrecision(15));
+    if (
+      Number.isFinite(snappedMin)
+      && Number.isFinite(snappedMax)
+      && snappedMin < minimum
+      && maximum < snappedMax
+    ) {
+      min = snappedMin;
+      max = snappedMax;
+    }
+  }
+  return { min, max };
 }
 
 function featureVector(

@@ -21,7 +21,7 @@ import type { FitModelReportState } from "@/components/fitModel/useFitModelRepor
 import { dataService } from "@/services/dataService";
 import { fitModelService } from "@/services/fitModelService";
 import { useHistoryStore } from "@/stores/useHistoryStore";
-import type { FitModelItem, FitModelSavedMetric } from "@/types/fitModel";
+import type { FitModelItem, FitModelSavedMetric, FitModelTerm } from "@/types/fitModel";
 
 import { FitModelAnalysisReport } from "./FitModelAnalysisReport";
 
@@ -107,6 +107,15 @@ export function FitModelAnalysisResults({
     setRemoveMessage(null);
   };
 
+  const handleAddEffect = (terms: FitModelTerm[]) => {
+    setUndoSnapshot(null);
+    setRemoveMessage(null);
+    submitDefinition(createFitModelDefinitionConfig({
+      terms,
+      centeringMethod: item.definition.centeringMethod,
+    }));
+  };
+
   const handleSaveColumns = async (metrics: FitModelSavedMetric[]) => {
     if (!dataset || !fittedResult || saveColumnsDisabled || !tryBeginTableMutation()) return;
     setSavePending(true);
@@ -174,6 +183,7 @@ export function FitModelAnalysisResults({
             datasetMissing={dataset == null}
             loadIssue={editorItem.loadIssue ?? null}
             removeMessage={removeMessage}
+            onAddEffect={canEditInputs && onDefinitionChange ? handleAddEffect : undefined}
             onRemoveTerm={handleRemoveTerm}
             onUndoRemove={undoSnapshot && onDefinitionChange ? handleUndo : null}
             onSaveColumns={canEditInputs ? () => setSaveDialogOpen(true) : undefined}

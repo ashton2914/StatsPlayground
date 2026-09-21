@@ -99,6 +99,52 @@
   max-width: min(92vw, 460px);
 }
 
+.sp-fit-model-add-effect-dialog {
+  width: min(92vw, 540px);
+  max-width: min(92vw, 540px);
+}
+
+.sp-fit-model-add-effect-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-fit-model-add-effect-instructions,
+.sp-fit-model-add-effect-preview,
+.sp-fit-model-add-effect-error {
+  margin: 0;
+}
+
+.sp-fit-model-add-effect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 6px;
+  max-height: min(42vh, 320px);
+  overflow-y: auto;
+}
+
+.sp-fit-model-add-effect-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  color: var(--fg-primary);
+}
+
+.sp-fit-model-add-effect-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sp-fit-model-add-effect-error {
+  color: var(--danger, #b42318);
+}
+
 .sp-fit-model-save-columns-body {
   display: grid;
   gap: 4px;
@@ -135,59 +181,51 @@
 
 .sp-fit-model-profiler {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
-  gap: 12px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
+}
+
+.sp-fit-model-profiler-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: clamp(280px, 32vw, 380px);
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
 }
 
 .sp-fit-model-profiler-column {
   min-width: 0;
   overflow: hidden;
+  scroll-snap-align: start;
   border: 1px solid var(--border-main);
   border-radius: 6px;
   background: var(--bg-panel);
 }
 
-.sp-fit-model-profiler-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px;
-  align-items: center;
-  gap: 8px 10px;
-  padding: 10px;
-  border-bottom: 1px solid var(--border-main);
-}
-
-.sp-fit-model-profiler-controls label {
-  grid-column: 1 / -1;
+.sp-fit-model-profiler-value {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  color: var(--fg-secondary);
-  font-size: 11px;
-}
-
-.sp-fit-model-profiler-controls label span:first-child {
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
   color: var(--fg-primary);
   font-size: 12px;
   font-weight: 600;
 }
 
-.sp-fit-model-profiler-controls input {
+.sp-fit-model-profiler-value input {
+  width: 112px;
   min-width: 0;
   box-sizing: border-box;
 }
 
-.sp-fit-model-profiler-controls input[type="range"] {
-  width: 100%;
-}
-
-.sp-fit-model-profiler-controls input[type="number"] {
-  width: 96px;
-}
-
 .sp-fit-model-profiler-result {
-  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
@@ -218,7 +256,6 @@
 }
 
 .sp-fit-model-profiler-warning {
-  grid-column: 1 / -1;
   margin: 0;
   padding: 8px 10px;
   border-left: 3px solid var(--danger, #b42318);
@@ -235,25 +272,59 @@
   height: 340px;
 }
 
-.sp-fit-model-diagnostic-chart-residualQq {
-  width: min(100%, 520px);
-  max-width: 520px;
-  height: auto;
-  aspect-ratio: 1;
-}
-
 .sp-fit-model-diagnostic-chart-predictionProfiler {
   max-width: none;
-  height: 360px;
+  height: 240px;
 }
 
-.sp-fit-model-analysis-graph-predicted {
-  width: min(100%, 680px);
+[data-fit-model-analysis-report] > [data-analysis-block="report"] {
+  box-sizing: border-box;
+  width: min(100%, 820px);
 }
 
-.sp-fit-model-analysis-graph-qq,
+.sp-fit-model-analysis-graph-predicted,
+.sp-fit-model-analysis-graph-leverage {
+  width: min(100%, 820px);
+}
+
 .sp-fit-model-analysis-graph-profiler-1 {
   width: min(100%, 520px);
+}
+
+.sp-fit-model-analysis-graph-residual {
+  width: min(100%, 820px);
+}
+
+.sp-fit-model-analysis-graph-residual .sp-fit-model-diagnostic-chart {
+  max-width: none;
+}
+
+.sp-fit-model-analysis-graph-effect-summary {
+  width: min(100%, 820px);
+}
+
+.sp-fit-model-diagnostic-chart-effectSummary,
+.sp-fit-model-diagnostic-chart-actualByPredicted,
+.sp-fit-model-diagnostic-chart-leveragePlot {
+  max-width: none;
+}
+
+.sp-fit-model-diagnostic-chart-actualByPredicted,
+.sp-fit-model-diagnostic-chart-leveragePlot {
+  height: 340px;
+}
+
+.sp-fit-model-leverage-selector {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 320px);
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-secondary);
+  font-size: 12px;
+}
+
+.sp-fit-model-leverage-selector select {
+  min-width: 0;
 }
 
 .sp-fit-model-analysis-graph-profiler-2 {
@@ -270,6 +341,10 @@
   }
 
   .sp-fit-model-profiler-result {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-fit-model-leverage-selector {
     grid-template-columns: 1fr;
   }
 }

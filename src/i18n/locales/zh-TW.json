@@ -1755,6 +1755,24 @@
       "errorWithOldResult": "重新整理失敗，正在顯示先前結果。",
       "undo": "還原",
       "remove": "移除",
+      "add": "新增效應",
+      "addEffect": {
+        "title": "新增效應",
+        "instructions": "選取兩個或更多預測變數以新增一個交互作用效應。",
+        "preview": "效應預覽",
+        "previewEmpty": "請選取預測變數",
+        "cancel": "取消",
+        "confirm": "新增效應",
+        "validation": {
+          "selectAtLeastTwo": "請至少選取兩個預測變數。",
+          "duplicateEffect": "此效應已存在。",
+          "tooManyTerms": "模型不能包含超過 256 個項。"
+        }
+      },
+      "effect": "效應",
+      "effects": "效應",
+      "rows": "列",
+      "leverageUnavailable": "沒有可估計的效應。",
       "notComputable": "無法計算",
       "usedRows": "使用列數",
       "excludedRows": "排除列數",
@@ -1783,6 +1801,8 @@
       "section": {
         "modelSpecification": "模型設定",
         "effectSummary": "效應摘要",
+        "effectTests": "效應檢定",
+        "leveragePlot": "槓桿圖",
         "summaryOfFit": "配適摘要",
         "analysisOfVariance": "變異數分析",
         "lackOfFit": "失配檢定",
@@ -1798,11 +1818,16 @@
       "summaryOfFit": {
         "rSquared": "R 平方",
         "adjustedRSquared": "調整後 R 平方",
-        "rootMeanSquareError": "均方根誤差"
+        "rootMeanSquareError": "均方根誤差",
+        "meanOfResponse": "反應平均值",
+        "observations": "觀測數"
       },
       "column": {
         "term": "項目",
         "source": "來源",
+        "metric": "指標",
+        "property": "屬性",
+        "value": "值",
         "estimate": "估計值",
         "standardError": "標準誤",
         "tRatio": "t 比",
@@ -1813,6 +1838,8 @@
         "sumOfSquares": "平方和",
         "meanSquare": "均方",
         "fRatio": "F 比",
+        "numberOfParameters": "Nparm",
+        "probabilityGreaterThanF": "Prob > F",
         "lowerConfidenceLimit": "95% 下限", "upperConfidenceLimit": "95% 上限", "featureVif": "特徵 VIF",
         "row": "列", "observed": "觀測值", "fitted": "配適值", "residual": "殘差", "studentizedResidual": "學生化殘差", "leverage": "槓桿值", "cooksDistance": "Cook 距離", "meanConfidenceInterval": "平均值信賴區間", "predictionInterval": "預測區間", "flags": "標記"
       },
@@ -1840,20 +1867,20 @@
         "axis": {
           "predicted": "預測值",
           "actual": "實際值",
-          "residual": "殘差", "theoreticalQuantile": "理論分位數", "studentizedResidual": "學生化殘差"
+          "residual": "殘差", "effect": "效應", "logWorth": "LogWorth", "effectLeverage": "效應槓桿值", "adjustedResponse": "調整後反應", "theoreticalQuantile": "理論分位數", "studentizedResidual": "學生化殘差"
         },
         "series": {
           "actual": "實際值",
-          "residual": "殘差", "studentizedResidual": "學生化殘差", "predicted": "預測值", "meanConfidence": "平均值信賴區間"
+          "residual": "殘差", "logWorth": "LogWorth", "leveragePoints": "列", "fitted": "配適值", "confidence": "信賴區間", "studentizedResidual": "學生化殘差", "predicted": "預測值", "meanConfidence": "平均值信賴區間"
         },
         "reference": {
           "identity": "y=x",
-          "zero": "y=0", "qq": "Q-Q 參考線"
+          "zero": "y=0", "significance": "LogWorth = 1.3", "nullEffect": "虛無效應", "qq": "Q-Q 參考線"
         },
         "tooltip": {
           "x": "預測值",
           "yActual": "實際值",
-          "yResidual": "殘差", "xQq": "理論分位數", "yQq": "學生化殘差"
+          "yResidual": "殘差", "effect": "效應", "logWorth": "LogWorth", "effectLeverage": "效應槓桿值", "adjustedResponse": "調整後反應", "xQq": "理論分位數", "yQq": "學生化殘差"
         }
       }
     }

@@ -4,14 +4,31 @@ export {
 } from "./FitModelRoleDialog";
 
 export {
+  FitModelAddEffectDialog,
+  type FitModelAddEffectDialogProps,
+} from "./FitModelAddEffectDialog";
+
+export {
   FitModelProfiler,
   type FitModelProfilerProps,
 } from "./FitModelProfiler";
 
 export {
+  FitModelEffectSummary,
+  type FitModelEffectSummaryProps,
+} from "./FitModelEffectSummary";
+
+export {
+  FitModelLeveragePlot,
+  type FitModelLeveragePlotProps,
+} from "./FitModelLeveragePlot";
+
+export {
+  fitModelProfilerYDomain,
   predictFitModelPoint,
   scanFitModelPredictor,
   type FitModelPointPrediction,
+  type FitModelProfilerDomain,
   type FitModelProfilerPoint,
 } from "./fitModelPrediction";
 
@@ -95,3 +112,9 @@ export {
   FitModelValidationError,
   validateFitModelDefinition,
 } from "./fitModelConfig";
+
+export {
+  addFitModelInteractionEffect,
+  type FitModelAddEffectError,
+  type FitModelAddEffectResult,
+} from "./fitModelAddEffect";
