@@ -927,6 +927,138 @@ Absolute timing thresholds do not run in normal CI because shared runner
 hardware varies. Normal tests assert fixture shape and bounded result sizes.
 Release acceptance compares phase timings and memory on the same machine class.
 
+## Issue 246 v4 Gate C Frozen-Source Qualification (2026-09-21)
+
+Status: **correctness and bounded-memory invariants passed; save and open
+latency targets failed**.
+
+Frozen source and environment:
+
+- Source SHA:
+  `b91146eaf75456f9e0c9bb01ec11def079b6f09f`
+  (`fix(project): stream tagged archive values`).
+- The worktree was clean and at the exact SHA before the release build.
+- Profile: Rust `release`, `perf-harness` feature,
+  `performance_baseline` example.
+- Binary SHA-256:
+  `148150f5b19e5bd7bb5679b82c599f71b9b1b71ee7820eef1c03350d31f11afb`.
+- Machine: macOS 27.0 (`Darwin 27.0.0`, `arm64`), Apple M3 Pro,
+  12 logical CPUs, 38,654,705,664 bytes physical memory.
+- All 16 samples ran sequentially from that same binary. No benchmark sample
+  was rerun.
+- Raw JSON, empty per-sample stderr logs, timestamps, commands, hashes, and
+  machine-readable validation are preserved in
+  `/Users/ashton/.copilot/session-state/bd3081fe-3a25-4165-9569-e6d804c8009c/files/issue246-final-qualification/`;
+  `manifest.json` is the index.
+
+Build and exact benchmark commands:
+
+```bash
+cargo build --release \
+  --manifest-path /Users/ashton/git/ashton2914/StatsPlayground.worktrees/issue-246-project-save-open-performance/src-tauri/Cargo.toml \
+  --features perf-harness \
+  --example performance_baseline
+
+BIN=/Users/ashton/git/ashton2914/StatsPlayground.worktrees/issue-246-project-save-open-performance/src-tauri/target/release/examples/performance_baseline
+
+# Run five times each, sequentially.
+"$BIN" --rows 2000000 --columns 20 --operation save
+"$BIN" --rows 2000000 --columns 20 --operation open
+
+# Run once for each size and operation, sequentially.
+"$BIN" --rows 300000 --columns 20 --operation save
+"$BIN" --rows 300000 --columns 20 --operation open
+"$BIN" --rows 1000000 --columns 20 --operation save
+"$BIN" --rows 1000000 --columns 20 --operation open
+
+# Default 300,000-row, five-data-column, 256-byte-string stress fixture.
+"$BIN" --operation save-string-stress
+"$BIN" --operation open-string-stress
+```
+
+### Two-million-row save samples
+
+All samples restored exactly 2,000,000 rows. Retained and combined peaks were
+at or below 8,388,608 bytes in every sample.
+
+| Sample | operationMs | resultRows | archive bytes | retained peak | encoded peak | combined peak | plan ms | query/fetch ms | encode ms | ZIP write ms | ZIP finish ms | sync ms | validation ms | replacement ms | RSS delta bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| save-2m-01 | 20,878 | 2,000,000 | 139,447,791 | 6,291,718 | 4,194,304 | 8,388,608 | 0 | 16,949 | 1,165 | 1,197 | 0 | 9 | 105 | 2 | 21,594,112 |
+| save-2m-02 | 19,433 | 2,000,000 | 139,448,117 | 6,291,718 | 4,194,304 | 8,388,608 | 0 | 15,756 | 1,100 | 1,161 | 0 | 9 | 4 | 0 | 24,674,304 |
+| save-2m-03 | 18,973 | 2,000,000 | 139,447,751 | 6,291,718 | 4,194,304 | 8,388,608 | 0 | 15,392 | 1,096 | 1,110 | 0 | 7 | 4 | 0 | 25,493,504 |
+| save-2m-04 | 19,822 | 2,000,000 | 139,447,743 | 6,291,718 | 4,194,304 | 8,388,608 | 0 | 16,125 | 1,128 | 1,161 | 0 | 7 | 3 | 0 | 23,724,032 |
+| save-2m-05 | 19,246 | 2,000,000 | 139,446,816 | 6,291,718 | 4,194,304 | 8,388,608 | 1 | 15,577 | 1,109 | 1,149 | 0 | 7 | 6 | 0 | 25,329,664 |
+
+The true median of the sorted operation values
+`[18,973, 19,246, 19,433, 19,822, 20,878]` is **19,433 ms**.
+The `<= 8,000 ms` target therefore **failed** by 11,433 ms. Compared with the
+recorded single-sample Issue 246 baseline of 13,090 ms, this five-sample median
+is 48.5% slower; the differing sample counts do not support a percentile claim.
+
+### Two-million-row open samples
+
+Every sample restored exactly 2,000,000 rows, included `openStageMs`, and stayed
+below the 1,610,612,736-byte RSS-delta ceiling.
+
+| Sample | operationMs | resultRows | archive bytes | archive read/parse ms | table restore ms | finalize ms | RSS delta bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| open-2m-01 | 9,935 | 2,000,000 | 139,450,984 | 4 | 9,872 | 59 | 508,215,296 |
+| open-2m-02 | 9,854 | 2,000,000 | 139,446,133 | 5 | 9,793 | 56 | 512,573,440 |
+| open-2m-03 | 9,904 | 2,000,000 | 139,445,787 | 5 | 9,842 | 57 | 506,658,816 |
+| open-2m-04 | 10,041 | 2,000,000 | 139,446,309 | 4 | 9,981 | 56 | 505,151,488 |
+| open-2m-05 | 9,892 | 2,000,000 | 139,442,922 | 4 | 9,834 | 54 | 507,035,648 |
+
+The true median of the sorted operation values
+`[9,854, 9,892, 9,904, 9,935, 10,041]` is **9,904 ms**.
+The `<= 5,000 ms` target therefore **failed** by 4,904 ms. The maximum RSS
+delta was **512,573,440 bytes**, so the per-sample 1.5 GiB memory target
+**passed** with 1,098,039,296 bytes of headroom. Compared with the recorded
+single-sample Issue 246 baseline of 8,210 ms, the median is 20.6% slower.
+
+### Standard-tier regression and string-stress samples
+
+| Sample | operationMs | resultRows | archive bytes | retained peak | encoded peak | combined peak | open read/parse ms | open restore ms | open finalize ms | RSS delta bytes | qualificationPassed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| save-300k | 1,813 | 300,000 | 20,637,585 | 6,291,718 | 4,194,304 | 8,388,608 | — | — | — | 19,234,816 | — |
+| open-300k | 1,517 | 300,000 | 20,634,437 | — | — | — | 6 | 1,489 | 22 | 155,746,304 | — |
+| save-1m | 7,033 | 1,000,000 | 68,985,260 | 6,291,718 | 4,194,304 | 8,388,608 | — | — | — | 19,382,272 | — |
+| open-1m | 4,948 | 1,000,000 | 68,986,070 | — | — | — | 3 | 4,911 | 34 | 347,045,888 | — |
+| save-string-stress | 1,249 | 300,000 | 6,970,067 | 5,603,368 | 4,194,304 | 8,388,608 | — | — | — | 10,862,592 | true |
+| open-string-stress | 1,447 | 300,000 | 6,969,755 | — | — | — | 5 | 1,413 | 29 | 353,566,720 | true |
+
+All six samples returned their exact requested row count. Both standard saves
+and the stress save passed both 8 MiB caps. Both stress operations reported
+`qualificationPassed = true`; the open result is issued only after exact
+full-table validation of the unique/repeated/nullable strings, BIGINT values,
+DOUBLE values, and exact row-ID domain.
+
+The standard tiers regressed against the recorded Issue 246 baseline:
+
+| Operation | Recorded baseline | Gate C | Change |
+| --- | ---: | ---: | ---: |
+| 300k save | 1,295 ms | 1,813 ms | +518 ms (+40.0%) |
+| 300k open | 1,173 ms | 1,517 ms | +344 ms (+29.3%) |
+| 1M save | 6,087 ms | 7,033 ms | +946 ms (+15.5%) |
+| 1M open | 3,876 ms | 4,948 ms | +1,072 ms (+27.7%) |
+
+### Gate decision and next step
+
+The v4 work qualifies its exact-row and bounded-memory goals, including the
+long-string fixture, and reduces the 2M open RSS delta far below the original
+3,378,462,720-byte baseline. It does **not** qualify either latency goal and it
+regresses every standard-tier latency sample on this machine.
+
+The remaining save bottleneck is DuckDB query/value materialization:
+`queryFetch` consumed 15,392-16,949 ms per 2M sample. The remaining open
+bottleneck is row-oriented JSON validation/conversion and DuckDB append/finalize
+work: `tableRestore` consumed 9,793-9,981 ms. More ZIP or archive-copy tuning
+cannot close those gaps.
+
+Recommendation: preserve the reviewed v4 compatibility and memory improvements,
+but do not claim v4 performance qualification. With explicit approval, begin a
+separate v5 typed-columnar/Parquet design and prototype targeting the measured
+materialization and restoration stages; retain the v4 reader for compatibility.
+
 ## Issue 246 Large Project Save/Open Investigation (2026-09-21)
 
 Commands:
