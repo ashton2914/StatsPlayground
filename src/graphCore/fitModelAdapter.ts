@@ -290,15 +290,6 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     return [x, y] as [number, number];
   });
 
-  const predictedExtent = resolvePredictedExtent(input.plotRows);
-  const observedExtent = resolveObservedExtent(input.plotRows);
-  const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
-  const observedAxisExtent = paddedNiceExtent(observedExtent.min, observedExtent.max);
-  const identityMin = Math.max(predictedAxisExtent.min, observedAxisExtent.min);
-  const identityMax = Math.min(predictedAxisExtent.max, observedAxisExtent.max);
-  const identityData: Array<[number, number]> = identityMin <= identityMax
-    ? [[identityMin, identityMin], [identityMax, identityMax]]
-    : [];
   const confidenceRows = (input.actualByPredictedConfidenceBand ?? []).map((row, index) => {
     const x = ensureFinite(row.predicted, "confidence.predicted", index);
     ensureFinite(row.fitted, "confidence.fitted", index);
@@ -310,6 +301,19 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     }
     return { x, lower, width };
   });
+  const predictedExtent = resolvePredictedExtent(input.plotRows);
+  const observedExtent = resolveObservedExtent(input.plotRows);
+  for (const row of confidenceRows) {
+    observedExtent.min = Math.min(observedExtent.min, row.lower);
+    observedExtent.max = Math.max(observedExtent.max, row.lower + row.width);
+  }
+  const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
+  const observedAxisExtent = paddedNiceExtent(observedExtent.min, observedExtent.max);
+  const identityMin = Math.max(predictedAxisExtent.min, observedAxisExtent.min);
+  const identityMax = Math.min(predictedAxisExtent.max, observedAxisExtent.max);
+  const identityData: Array<[number, number]> = identityMin <= identityMax
+    ? [[identityMin, identityMin], [identityMax, identityMax]]
+    : [];
   const confidenceLower = confidenceRows.map(({ x, lower }) => [x, lower] as [number, number]);
   const confidenceWidth = confidenceRows.map(({ x, width }) => [x, width] as [number, number]);
 

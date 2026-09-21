@@ -504,14 +504,15 @@ function testActualByPredictedWholeModelConfidenceBand(): void {
       { rowIndex: 2, observed: 12, fitted: 11, residual: 1 },
     ],
     actualByPredictedConfidenceBand: [
-      { predicted: 9, fitted: 9, lower: 8.5, upper: 9.5 },
-      { predicted: 11, fitted: 11, lower: 10.25, upper: 11.75 },
+      { predicted: 9, fitted: 9, lower: 6, upper: 9.5 },
+      { predicted: 11, fitted: 11, lower: 10.25, upper: 14 },
     ],
     confidenceRows: [
       { rowIndex: 1, fitted: 9, meanConfidenceLower: 7, meanConfidenceUpper: 12 },
     ],
   };
   const option = buildActualByPredictedOption(input) as {
+    yAxis: { min: number; max: number };
     series: Array<{
       name?: string;
       type?: string;
@@ -525,14 +526,16 @@ function testActualByPredictedWholeModelConfidenceBand(): void {
 
   const confidenceSeries = option.series.filter((series) => series.stack === "actual-confidence");
   assert.equal(confidenceSeries.length, 2);
-  assert.deepEqual(confidenceSeries[0]?.data, [[9, 8.5], [11, 10.25]]);
-  assert.deepEqual(confidenceSeries[1]?.data, [[9, 1], [11, 1.5]]);
+  assert.deepEqual(confidenceSeries[0]?.data, [[9, 6], [11, 10.25]]);
+  assert.deepEqual(confidenceSeries[1]?.data, [[9, 3.5], [11, 3.75]]);
   assert.equal(
     confidenceSeries.some((series) => series.data?.some(([x, y]) => x === 9 && y === 7)),
     false,
   );
   assert.ok((confidenceSeries[1]?.areaStyle?.opacity ?? 0) > 0);
   assert.ok(confidenceSeries.every((series) => series.silent === true));
+  assert.ok(option.yAxis.min < 6);
+  assert.ok(option.yAxis.max > 14);
   const identity = option.series.find((series) => series.type === "line" && !series.stack);
   assert.equal(identity?.lineStyle?.color, "#d92d20");
   assert.equal(identity?.lineStyle?.type, "solid");
