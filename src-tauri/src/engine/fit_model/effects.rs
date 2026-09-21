@@ -553,7 +553,7 @@ mod tests {
     use nalgebra::{DMatrix, DVector};
     use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
-    use crate::engine::fit_model::reporting_basis::FitModelReportingBasis;
+    use crate::engine::fit_model::reporting_basis::reporting_basis_test_fixture;
     use crate::models::fit_model::{
         FitModelEffectTest, FitModelInferenceReason, FitModelResolvedTerm, FitModelTermKind,
     };
@@ -650,19 +650,17 @@ mod tests {
     #[test]
     fn centered_effect_test_uses_reporting_hypothesis_geometry() {
         let (design, response, terms) = fixture();
-        let reporting = FitModelReportingBasis {
-            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
-            covariance_geometry: DMatrix::from_diagonal(&DVector::from_vec(vec![
-                1.0, 0.25, 0.5, 0.75,
-            ])),
-            term_labels: vec![
+        let reporting = reporting_basis_test_fixture(
+            DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            DMatrix::from_diagonal(&DVector::from_vec(vec![1.0, 0.25, 0.5, 0.75])),
+            vec![
                 "Intercept".to_string(),
                 "(A-0)".to_string(),
                 "(B-0)".to_string(),
                 "(A-0)*(B-0)".to_string(),
             ],
-            centered: true,
-        };
+            true,
+        );
 
         let tests = compute_effect_tests(
             &design,
@@ -693,17 +691,17 @@ mod tests {
     #[test]
     fn non_hierarchical_reporting_basis_retains_reduced_model_effect_tests() {
         let (design, response, terms) = fixture();
-        let reporting = FitModelReportingBasis {
-            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
-            covariance_geometry: DMatrix::identity(4, 4),
-            term_labels: vec![
+        let reporting = reporting_basis_test_fixture(
+            DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            DMatrix::identity(4, 4),
+            vec![
                 "Intercept".to_string(),
                 "A".to_string(),
                 "B".to_string(),
                 "A*B".to_string(),
             ],
-            centered: false,
-        };
+            false,
+        );
 
         let expected = compute_effect_tests(&design, &response, &terms, None, 8.0, Some(2.0), 4)
             .expect("raw effect tests");
@@ -728,9 +726,9 @@ mod tests {
     fn singular_centered_hypothesis_geometry_is_not_estimable() {
         let (design, response, mut terms) = fixture();
         terms[1].term_id = terms[0].term_id.clone();
-        let reporting = FitModelReportingBasis {
-            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
-            covariance_geometry: DMatrix::from_row_slice(
+        let reporting = reporting_basis_test_fixture(
+            DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            DMatrix::from_row_slice(
                 4,
                 4,
                 &[
@@ -740,14 +738,14 @@ mod tests {
                     0.0, 0.0, 0.0, 1.0,
                 ],
             ),
-            term_labels: vec![
+            vec![
                 "Intercept".to_string(),
                 "(A-0)".to_string(),
                 "(B-0)".to_string(),
                 "(A-0)*(B-0)".to_string(),
             ],
-            centered: true,
-        };
+            true,
+        );
 
         let tests = compute_effect_tests(
             &design,

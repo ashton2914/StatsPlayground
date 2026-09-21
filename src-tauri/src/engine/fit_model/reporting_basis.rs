@@ -11,6 +11,44 @@ pub(crate) struct FitModelReportingBasis {
     pub covariance_geometry: DMatrix<f64>,
     pub term_labels: Vec<String>,
     pub centered: bool,
+    fitted_coefficients_from_reporting: DMatrix<f64>,
+}
+
+impl FitModelReportingBasis {
+    pub(crate) fn design_matrix(
+        &self,
+        fitted_design: &DMatrix<f64>,
+    ) -> Result<DMatrix<f64>, FitModelEngineError> {
+        if fitted_design.ncols() != self.fitted_coefficients_from_reporting.nrows() {
+            return Err(FitModelEngineError::InvalidInput(
+                "fitted design width must match reporting basis".to_string(),
+            ));
+        }
+        let design = fitted_design * &self.fitted_coefficients_from_reporting;
+        if design.iter().any(|value| !value.is_finite()) {
+            return Err(FitModelEngineError::NumericalFailure(
+                "reporting design contained non-finite values".to_string(),
+            ));
+        }
+        Ok(design)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reporting_basis_test_fixture(
+    coefficients: DVector<f64>,
+    covariance_geometry: DMatrix<f64>,
+    term_labels: Vec<String>,
+    centered: bool,
+) -> FitModelReportingBasis {
+    let width = coefficients.len();
+    FitModelReportingBasis {
+        coefficients,
+        covariance_geometry,
+        term_labels,
+        centered,
+        fitted_coefficients_from_reporting: DMatrix::identity(width, width),
+    }
 }
 
 pub(crate) fn reporting_basis(
@@ -123,6 +161,9 @@ pub(crate) fn reporting_basis(
         }
     }
 
+    let fitted_coefficients_from_reporting = transform.clone().try_inverse().ok_or_else(|| {
+        FitModelEngineError::NumericalFailure("reporting basis transform is singular".to_string())
+    })?;
     let reporting_coefficients = &transform * coefficients;
     let reporting_geometry = &transform * covariance_geometry * transform.transpose();
     if reporting_coefficients
@@ -143,6 +184,7 @@ pub(crate) fn reporting_basis(
         covariance_geometry: reporting_geometry,
         term_labels,
         centered: true,
+        fitted_coefficients_from_reporting,
     })
 }
 
@@ -159,6 +201,10 @@ fn unchanged_basis(
         covariance_geometry: covariance_geometry.clone(),
         term_labels,
         centered: false,
+        fitted_coefficients_from_reporting: DMatrix::identity(
+            coefficients.len(),
+            coefficients.len(),
+        ),
     }
 }
 
@@ -286,7 +332,7 @@ mod tests {
         FitModelCenteringMethod, FitModelResolvedTerm, FitModelTermKind,
     };
 
-    use super::reporting_basis;
+    use super::{reporting_basis, FitModelEngineError};
 
     const TOLERANCE: f64 = 1e-4;
 
@@ -326,6 +372,86 @@ mod tests {
             (actual - expected).abs() <= TOLERANCE,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn assert_matrix_close(actual: &DVector<f64>, expected: &DVector<f64>) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_close(*actual, *expected);
+        }
+    }
+
+    #[test]
+    fn reporting_design_centers_raw_and_mean_constructed_interactions() {
+        let fitted_coefficients = DVector::from_vec(vec![0.7, -1.2, 2.3, 0.4]);
+        let geometry = DMatrix::identity(4, 4);
+        let terms = vec![main("X"), main("Z"), interaction(&["X", "Z"])];
+        let x = [1.0, 3.0, 5.0];
+        let z = [2.0, 4.0, 8.0];
+        let mean_x = 3.0;
+        let mean_z = 14.0 / 3.0;
+        let means = BTreeMap::from([("X".to_string(), mean_x), ("Z".to_string(), mean_z)]);
+
+        for construction in [FitModelCenteringMethod::None, FitModelCenteringMethod::Mean] {
+            let fitted_design = DMatrix::from_fn(x.len(), 4, |row, column| match column {
+                0 => 1.0,
+                1 => x[row],
+                2 => z[row],
+                3 if construction == FitModelCenteringMethod::Mean => {
+                    (x[row] - mean_x) * (z[row] - mean_z)
+                }
+                3 => x[row] * z[row],
+                _ => unreachable!(),
+            });
+            let reporting = reporting_basis(
+                &fitted_coefficients,
+                &geometry,
+                &terms,
+                &means,
+                &construction,
+            )
+            .expect("reporting basis");
+
+            let reporting_design = reporting
+                .design_matrix(&fitted_design)
+                .expect("reporting design");
+            assert_matrix_close(
+                &(&reporting_design * &reporting.coefficients),
+                &(&fitted_design * &fitted_coefficients),
+            );
+            for row in 0..x.len() {
+                assert_close(reporting_design[(row, 1)], x[row] - mean_x);
+                assert_close(reporting_design[(row, 2)], z[row] - mean_z);
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_reporting_design_is_identity_and_rejects_wrong_width() {
+        let coefficients = DVector::from_vec(vec![1.0, 2.0]);
+        let geometry = DMatrix::identity(2, 2);
+        let terms = vec![interaction(&["X", "Z"])];
+        let reporting = reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &BTreeMap::new(),
+            &FitModelCenteringMethod::None,
+        )
+        .expect("unchanged reporting basis");
+        let fitted_design = DMatrix::from_row_slice(2, 2, &[1.0, 3.0, 1.0, 7.0]);
+
+        assert_eq!(
+            reporting
+                .design_matrix(&fitted_design)
+                .expect("unchanged reporting design"),
+            fitted_design
+        );
+        assert!(matches!(
+            reporting.design_matrix(&DMatrix::zeros(2, 3)),
+            Err(FitModelEngineError::InvalidInput(message))
+                if message == "fitted design width must match reporting basis"
+        ));
     }
 
     #[test]
