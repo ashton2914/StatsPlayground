@@ -196,7 +196,26 @@ impl<'a> ProjectTableRestoreSession<'a> {
     }
 
     pub(crate) fn finish(self) -> Result<String, AppError> {
-        let restore_result = (|| -> Result<(), AppError> {
+        let display_props = self
+            .header
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| {
+                column.width.is_some() || column.format.is_some() || column.extras.is_some()
+            })
+            .map(|(col_index, column)| ColumnDisplayProps {
+                col_index,
+                width: column.width,
+                format: column.format.as_ref().map(|format| ColumnFormatInfo {
+                    kind: format.kind.clone(),
+                    decimals: format.decimals,
+                    currency: format.currency.clone(),
+                }),
+                extras: column.extras.clone(),
+            })
+            .collect::<Vec<_>>();
+        let restore_result = (|| {
             let table_ident = DuckDbEngine::quote_identifier(&format!(
                 "dataset_{}",
                 self.header.id.replace('-', "_")
@@ -234,44 +253,27 @@ impl<'a> ProjectTableRestoreSession<'a> {
                 self.db
                     .replace_archived_calculated_columns(&self.header.id, &[])?;
             }
-            Ok(())
+            self.state
+                .column_display
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))
         })();
 
-        if let Err(error) = restore_result {
-            let _ = self.db.conn().execute_batch("ROLLBACK");
-            return Err(error);
-        }
+        let mut display = match restore_result {
+            Ok(display) => display,
+            Err(error) => {
+                let _ = self.db.conn().execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        };
         if let Err(error) = self.db.conn().execute_batch("COMMIT") {
             let _ = self.db.conn().execute_batch("ROLLBACK");
             return Err(error.into());
         }
         drop(self.db);
 
-        let display_props = self
-            .header
-            .columns
-            .iter()
-            .enumerate()
-            .filter(|(_, column)| {
-                column.width.is_some() || column.format.is_some() || column.extras.is_some()
-            })
-            .map(|(col_index, column)| ColumnDisplayProps {
-                col_index,
-                width: column.width,
-                format: column.format.as_ref().map(|format| ColumnFormatInfo {
-                    kind: format.kind.clone(),
-                    decimals: format.decimals,
-                    currency: format.currency.clone(),
-                }),
-                extras: column.extras.clone(),
-            })
-            .collect::<Vec<_>>();
         if !display_props.is_empty() {
-            self.state
-                .column_display
-                .lock()
-                .map_err(|error| AppError::Database(error.to_string()))?
-                .insert(self.header.id.clone(), display_props);
+            display.insert(self.header.id.clone(), display_props);
         }
 
         Ok(self.header.id)
@@ -507,6 +509,39 @@ mod tests {
             serde_json::to_value(&expected.display).unwrap()
         );
         assert_eq!(actual.calculated, expected.calculated);
+        assert_eq!(
+            actual.columns,
+            vec![
+                ("base".into(), "DOUBLE".into()),
+                ("items".into(), "INTEGER[]".into()),
+                ("double_base".into(), "DOUBLE".into()),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&actual.display).unwrap(),
+            serde_json::json!([{
+                "colIndex": 0,
+                "width": 120.0,
+                "format": {"kind": "number", "decimals": 0},
+                "extras": {"unit": "widgets"}
+            }])
+        );
+        assert_eq!(actual.calculated, vec![calculated_column()]);
+        assert_eq!(
+            &actual.rows[0][..2],
+            &[DuckValue::Int(1), DuckValue::Double(4.0)]
+        );
+        assert_ne!(actual.rows[0][2], DuckValue::Null);
+        assert_eq!(actual.rows[0][3], DuckValue::Double(8.0));
+        assert_eq!(
+            actual.rows[1],
+            vec![
+                DuckValue::Int(2),
+                DuckValue::Null,
+                DuckValue::Null,
+                DuckValue::Null,
+            ]
+        );
     }
 
     #[test]
@@ -551,5 +586,28 @@ mod tests {
             progress.into_inner(),
             vec![(5_000, 0), (10_000, 0), (12_000, 0)]
         );
+    }
+
+    #[test]
+    fn restore_session_rolls_back_when_display_lock_is_poisoned() {
+        let state = AppState::new().unwrap();
+        let mut header = basic_streamed_header();
+        header.columns[0].width = Some(80.0);
+        let mut session = ProjectTableRestoreSession::begin(&state, header, Some(1), None).unwrap();
+        session.append_rows(&[json_row(1, 10)]).unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _display = state.column_display.lock().unwrap();
+            panic!("poison display mutex");
+        }));
+
+        let error = session.finish().unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::Database(_)));
+        assert!(state
+            .db
+            .lock()
+            .unwrap()
+            .get_dataset_meta("table-1")
+            .is_err());
     }
 }
