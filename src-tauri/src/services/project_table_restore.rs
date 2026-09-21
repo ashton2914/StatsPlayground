@@ -20,6 +20,26 @@ use crate::state::AppState;
 
 const RESTORE_BATCH_ROWS: usize = 5_000;
 
+#[cfg(test)]
+thread_local! {
+    static COMPLETED_APPEND_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_completed_append_count() {
+    COMPLETED_APPEND_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn completed_append_count() -> usize {
+    COMPLETED_APPEND_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn record_completed_append() {
+    COMPLETED_APPEND_COUNT.with(|count| count.set(count.get() + 1));
+}
+
 pub(crate) struct ProjectTableRestoreSession<'a> {
     state: &'a AppState,
     db: MutexGuard<'a, DuckDbEngine>,
@@ -173,6 +193,8 @@ impl<'a> ProjectTableRestoreSession<'a> {
             }
             appender.flush()?;
         }
+        #[cfg(test)]
+        record_completed_append();
 
         let previous_rows_written = self.rows_written;
         self.rows_written += rows.len();

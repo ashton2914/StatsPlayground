@@ -2053,6 +2053,9 @@ mod tests {
     use crate::models::table::CreateTableFromRowsRequest;
     use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
     use crate::services::data_service::DataService;
+    use crate::services::project_table_restore::{
+        completed_append_count, reset_completed_append_count,
+    };
     use crate::services::spprj_archive::{
         self, GraphEntryRef, ProjectManifest, TableColumn, TableDoc, TableEntryRef,
     };
@@ -2233,6 +2236,11 @@ mod tests {
                     return bytes;
                 }
                 let mut doc: TableDoc = serde_json::from_slice(&bytes).unwrap();
+                doc.columns[0].col_type = "VARCHAR".into();
+                let large_value = "x".repeat(1_024);
+                for row in &mut doc.rows {
+                    row[1] = serde_json::Value::String(large_value.clone());
+                }
                 doc.rows[5_001][0] = serde_json::json!(1);
                 serde_json::to_vec(&doc).unwrap()
             },
@@ -2313,6 +2321,7 @@ mod tests {
     fn streamed_open_failure_preserves_live_project() {
         let state = seeded_live_project();
         let rejected = v4_project_with_duplicate_row_id_after_first_batch();
+        reset_completed_append_count();
 
         let error = match ProjectService::new(&state).open_project(rejected.to_str().unwrap(), None)
         {
@@ -2321,6 +2330,10 @@ mod tests {
         };
 
         assert!(matches!(error, AppError::InvalidParam(_)));
+        assert!(
+            completed_append_count() >= 1,
+            "at least one bounded append must complete before rejection"
+        );
         assert_live_project_unchanged(&state);
     }
 
