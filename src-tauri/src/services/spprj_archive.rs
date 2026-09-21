@@ -921,6 +921,7 @@ pub(crate) trait ProjectArchiveTableSink {
         &mut self,
         entry: &TableEntryRef,
         header: &StreamedTableHeader,
+        archive_header: &StreamedTableHeader,
         reader: &mut dyn Read,
     ) -> Result<(), AppError>;
 
@@ -1713,6 +1714,13 @@ fn restore_table_payloads<R: Read + Seek, S: ProjectArchiveTableSink>(
 
         match payload {
             ProjectTablePayload::Stream { header, .. } => {
+                let resolved_header = StreamedTableHeader {
+                    id: current.id.clone(),
+                    name: current.name.clone(),
+                    source_type: current.source_type.clone(),
+                    version: current.version.clone(),
+                    columns: current.columns.clone(),
+                };
                 let zip = zip.as_deref_mut().ok_or_else(|| {
                     AppError::FileIO("Streaming table payload has no open ZIP archive".into())
                 })?;
@@ -1722,10 +1730,16 @@ fn restore_table_payloads<R: Read + Seek, S: ProjectArchiveTableSink>(
                         entry.file
                     ))
                 })?;
-                sink.restore_streamed(&resolved_entry, header, &mut reader)?;
+                sink.restore_streamed(&resolved_entry, &resolved_header, header, &mut reader)?;
             }
             ProjectTablePayload::Buffered { doc, .. } => {
-                sink.restore_buffered(&resolved_entry, doc)?;
+                let mut resolved_doc = doc.clone();
+                resolved_doc.id = current.id.clone();
+                resolved_doc.name = current.name.clone();
+                resolved_doc.source_type = current.source_type.clone();
+                resolved_doc.version = current.version.clone();
+                resolved_doc.columns = current.columns.clone();
+                sink.restore_buffered(&resolved_entry, &resolved_doc)?;
             }
         }
     }
@@ -1761,10 +1775,11 @@ impl ProjectArchiveTableSink for CollectingProjectTableSink {
         &mut self,
         _entry: &TableEntryRef,
         header: &StreamedTableHeader,
+        archive_header: &StreamedTableHeader,
         reader: &mut dyn Read,
     ) -> Result<(), AppError> {
         let mut row_sink = CollectingTableBatchSink { rows: Vec::new() };
-        stream_table_rows(reader, header, &mut row_sink)?;
+        stream_table_rows(reader, archive_header, &mut row_sink)?;
         let mut doc = table_doc_from_header(header);
         doc.rows = row_sink.rows;
         self.tables.push(doc);
@@ -7012,11 +7027,12 @@ mod tests {
         fn restore_streamed(
             &mut self,
             entry: &TableEntryRef,
-            header: &StreamedTableHeader,
+            _header: &StreamedTableHeader,
+            archive_header: &StreamedTableHeader,
             reader: &mut dyn Read,
         ) -> Result<(), AppError> {
             self.streamed_ids.push(entry.id.clone());
-            stream_table_rows(reader, header, &mut DiscardingTableBatchSink)?;
+            stream_table_rows(reader, archive_header, &mut DiscardingTableBatchSink)?;
             Ok(())
         }
 
