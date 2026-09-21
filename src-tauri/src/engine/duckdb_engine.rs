@@ -340,7 +340,6 @@ fn time_series_request<'a>(
 
 pub(crate) struct ArchiveKeysetReadPlan {
     select_sql: String,
-    cursor_lookup_sql: String,
     pub columns: Vec<ArchiveColumnPlan>,
 }
 
@@ -13039,46 +13038,10 @@ impl DuckDbEngine {
              ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
              LIMIT ?"
         );
-        let cursor_lookup_sql = format!(
-            "SELECT {NATURAL_ORDER_SQL}
-             FROM {table_name}
-             WHERE \"_row_id\" = ?"
-        );
-
         Ok(ArchiveKeysetReadPlan {
             select_sql,
-            cursor_lookup_sql,
             columns,
         })
-    }
-
-    pub(crate) fn read_archive_keyset_batch(
-        &self,
-        plan: &ArchiveKeysetReadPlan,
-        after_row_id: i64,
-        row_limit: usize,
-        target_batch_bytes: usize,
-        hard_batch_bytes: usize,
-    ) -> Result<ArchiveBatch, AppError> {
-        let after = if after_row_id == 0 {
-            None
-        } else {
-            let mut stmt = self.conn.prepare_cached(&plan.cursor_lookup_sql)?;
-            let mut rows = stmt.query(params![after_row_id])?;
-            let Some(row) = rows.next()? else {
-                return Ok(ArchiveBatch {
-                    rows: Vec::new(),
-                    retained_bytes_estimate: 0,
-                    next_cursor: None,
-                });
-            };
-            Some(ArchiveCursor {
-                natural_order_key: row.get(0)?,
-                row_id: after_row_id,
-            })
-        };
-
-        self.read_archive_cursor_batch(plan, after, row_limit, target_batch_bytes, hard_batch_bytes)
     }
 
     pub(crate) fn read_archive_cursor_batch(
@@ -23837,7 +23800,7 @@ mod tests {
         let plan = db.prepare_archive_keyset_read("archive-batch").unwrap();
         reset_archive_cell_to_json_call_count();
         let batch = db
-            .read_archive_keyset_batch(&plan, 0, 128, 1024 * 1024, 2 * 1024 * 1024)
+            .read_archive_cursor_batch(&plan, None, 128, 1024 * 1024, 2 * 1024 * 1024)
             .unwrap();
 
         assert_eq!(batch.rows.len(), 1);
@@ -23967,7 +23930,7 @@ mod tests {
 
         let plan = db.prepare_archive_keyset_read("archive-retained").unwrap();
         let batch = db
-            .read_archive_keyset_batch(&plan, 0, 16, 2 * 1024 * 1024, 8 * 1024 * 1024)
+            .read_archive_cursor_batch(&plan, None, 16, 2 * 1024 * 1024, 8 * 1024 * 1024)
             .unwrap();
         assert_eq!(batch.rows.len(), 1);
         assert!(batch.retained_bytes_estimate > payload.len());
