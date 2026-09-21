@@ -49,9 +49,19 @@ diagnostic values.
 Term labels expose the reporting basis, for example:
 `(GR80P-0.37388)*(BK11P-0.39633)`.
 
-The reporting transformation is always applied when interaction terms exist,
-independent of the persisted `centeringMethod`. The persisted setting continues
-to describe the model construction basis and remains backward compatible.
+The reporting transformation is applied when the interaction term set is
+strongly hierarchical: every lower-order interaction implied by a higher-order
+term is present. It is independent of the persisted `centeringMethod`. The
+persisted setting continues to describe the model construction basis and
+remains backward compatible.
+
+If a manually added higher-order interaction omits any implied lower-order
+interaction, the whole model remains in its uncentered fitted basis for
+Parameter Estimates and retains the existing reduced-model Effect Tests. The
+report must not label that model as centered or silently change its fitted
+values. This explicit fallback is necessary because a centered higher-order
+product introduces lower-order columns that are absent from the fitted column
+space.
 
 ### Parameter Estimates
 
@@ -70,10 +80,11 @@ backward compatibility, but the report does not render them.
 
 ### Effect Tests
 
-Effect Tests uses general linear hypotheses in the JMP reporting basis rather
-than reduced-model deletion of an uncentered raw design column. For each effect,
-Rust computes the hypothesis sum of squares from the transformed coefficient,
-its covariance geometry, and the full-model error mean square.
+For a strongly hierarchical model, Effect Tests uses general linear hypotheses
+in the JMP reporting basis rather than reduced-model deletion of an uncentered
+raw design column. For each effect, Rust computes the hypothesis sum of squares
+from the transformed coefficient, its covariance geometry, and the full-model
+error mean square.
 
 For one-degree-of-freedom continuous effects, the result is equivalent to the
 squared centered t test. The implementation remains grouped by effect identity
@@ -82,6 +93,9 @@ so multi-parameter effects retain a valid contract.
 Interaction tests remain invariant under the transformation. Main-effect tests
 change to represent the effect at the means of the interacting predictors,
 which explains and corrects the current mismatch with JMP.
+
+For a non-hierarchical higher-order model, Effect Tests retains the existing
+reduced-model calculation in the uncentered fitted basis.
 
 Rank-deficient or otherwise non-estimable hypotheses return nullable statistics
 with the existing explicit inference reason. They are never reported as zero.
@@ -149,6 +163,10 @@ The flow:
 - enforces the existing 256-term budget before applying the definition;
 - applies the change through the existing revisioned Analysis editor path.
 
+Creating a higher-order term without all lower-order interactions therefore
+opts that model into the explicit uncentered reporting fallback described
+above.
+
 ## Prediction Profiler
 
 Each profiler card contains:
@@ -200,7 +218,7 @@ No frontend statistical fallback is introduced.
   error rather than a partial success response.
 - Singular reporting hypotheses use explicit non-estimable result reasons.
 - Add Effect validation reports insufficient selection, duplicates, hierarchy
-  failures, and term-budget failures through the existing Analysis UI.
+  constraints, and term-budget failures through the existing Analysis UI.
 - Profiler pointer conversion ignores events outside the plotting coordinate
   system and rejects non-finite values.
 - Chart extent calculation throws on non-finite source values instead of
@@ -214,6 +232,8 @@ No frontend statistical fallback is introduced.
   intercept, main effects, interaction coefficients, standard errors, t ratios,
   effect sums of squares, F ratios, and p-values within documented tolerances.
 - Cover two-way and three-way interaction transformations.
+- Cover the uncentered reporting fallback for a non-hierarchical three-way
+  interaction.
 - Verify fitted values, SSE, residuals, and predictions are invariant.
 - Cover rank-deficient and non-estimable hypotheses.
 
