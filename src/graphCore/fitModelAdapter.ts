@@ -91,6 +91,72 @@ type AxisExtent = {
   max: number;
 };
 
+export interface NiceAxisExtent {
+  min: number;
+  max: number;
+  interval: number;
+}
+
+const formatAxisTick = (value: number) =>
+  value === 0 ? "0" : Number.parseFloat(value.toPrecision(10)).toString();
+
+function niceStep(rawStep: number): number {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) {
+    return 1;
+  }
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const factor = normalized <= 1
+    ? 1
+    : normalized <= 2
+      ? 2
+      : normalized <= 2.5
+        ? 2.5
+        : normalized <= 5
+          ? 5
+          : 10;
+  return factor * magnitude;
+}
+
+export function paddedNiceExtent(
+  rawMin: number,
+  rawMax: number,
+  options: { includeZero?: boolean; symmetric?: boolean } = {},
+): NiceAxisExtent {
+  if (!Number.isFinite(rawMin) || !Number.isFinite(rawMax)) {
+    throw new Error("fitModelAdapter: non-finite chart extent");
+  }
+
+  let min = Math.min(rawMin, rawMax);
+  let max = Math.max(rawMin, rawMax);
+  if (min === max) {
+    const delta = Math.max(Math.abs(min) * 0.1, 1);
+    min -= delta;
+    max += delta;
+  }
+  if (options.includeZero) {
+    min = Math.min(min, 0);
+    max = Math.max(max, 0);
+  }
+
+  if (options.symmetric) {
+    const paddedAbsolute = Math.max(Math.abs(min), Math.abs(max)) * 1.1;
+    const interval = niceStep((paddedAbsolute * 2) / 6);
+    const limit = Math.max(interval, Math.ceil(paddedAbsolute / interval) * interval);
+    return { min: -limit, max: limit, interval };
+  }
+
+  const padding = (max - min) * 0.1;
+  const paddedMin = min - padding;
+  const paddedMax = max + padding;
+  const interval = niceStep((paddedMax - paddedMin) / 6);
+  return {
+    min: Math.floor(paddedMin / interval) * interval,
+    max: Math.ceil(paddedMax / interval) * interval,
+    interval,
+  };
+}
+
 function ensureFinite(value: number, field: string, rowIndex: number): number {
   if (!Number.isFinite(value)) {
     throw new Error(`fitModelAdapter: non-finite ${field} at plotRows[${rowIndex}]`);
@@ -199,7 +265,7 @@ function baseOption(
       textStyle: { color: theme.fgPrimary, fontSize: 12 },
       subtextStyle: { color: theme.fgDim, fontSize: 11 },
     },
-    grid: { left: 20, right: 24, top: sampledSubtitle ? 52 : 36, bottom: 18, containLabel: true },
+    grid: { left: 56, right: 32, top: sampledSubtitle ? 56 : 40, bottom: 52, containLabel: true },
     legend: { show: false },
     tooltip: {
       trigger: "item",
@@ -225,8 +291,8 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
 
   const predictedExtent = resolvePredictedExtent(input.plotRows);
   const combinedExtent = resolveCombinedObservedFittedExtent(input.plotRows);
-  const predictedAxisExtent = axisExtentFromRaw(predictedExtent.min, predictedExtent.max);
-  const combinedAxisExtent = axisExtentFromRaw(combinedExtent.min, combinedExtent.max);
+  const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
+  const combinedAxisExtent = paddedNiceExtent(combinedExtent.min, combinedExtent.max);
 
   return {
     ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
@@ -234,24 +300,26 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
       type: "value",
       min: predictedAxisExtent.min,
       max: predictedAxisExtent.max,
+      interval: predictedAxisExtent.interval,
       name: input.labels.predictedAxisName,
       nameLocation: "middle",
-      nameGap: 30,
+      nameGap: 38,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     yAxis: {
       type: "value",
       min: combinedAxisExtent.min,
       max: combinedAxisExtent.max,
+      interval: combinedAxisExtent.interval,
       name: input.labels.actualAxisName,
       nameLocation: "middle",
-      nameGap: 42,
+      nameGap: 50,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     series: [
@@ -291,8 +359,12 @@ export function buildResidualByPredictedOption(input: FitModelChartInput): EChar
 
   const predictedExtent = resolvePredictedExtent(input.plotRows);
   const residualExtent = resolveResidualExtent(input.plotRows);
-  const predictedAxisExtent = axisExtentFromRaw(predictedExtent.min, predictedExtent.max);
-  const residualAxisExtent = axisExtentFromRaw(residualExtent.min, residualExtent.max);
+  const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
+  const residualAxisExtent = paddedNiceExtent(
+    residualExtent.min,
+    residualExtent.max,
+    { includeZero: true, symmetric: true },
+  );
 
   return {
     ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
@@ -300,24 +372,26 @@ export function buildResidualByPredictedOption(input: FitModelChartInput): EChar
       type: "value",
       min: predictedAxisExtent.min,
       max: predictedAxisExtent.max,
+      interval: predictedAxisExtent.interval,
       name: input.labels.predictedAxisName,
       nameLocation: "middle",
-      nameGap: 30,
+      nameGap: 38,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     yAxis: {
       type: "value",
       min: residualAxisExtent.min,
       max: residualAxisExtent.max,
+      interval: residualAxisExtent.interval,
       name: input.labels.residualAxisName,
       nameLocation: "middle",
-      nameGap: 42,
+      nameGap: 50,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     series: [
@@ -433,13 +507,13 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
         return `${input.labels.tooltipYLabel}: ${effect?.termLabel ?? ""}<br/>${input.labels.tooltipXLabel}: ${tooltipValue(value)}`;
       },
     },
-    grid: { left: 20, right: 24, top: 36, bottom: 18, containLabel: true },
+    grid: { left: 56, right: 32, top: 40, bottom: 52, containLabel: true },
     xAxis: {
       type: "value",
       min: 0,
       name: input.labels.logWorthAxisName,
       nameLocation: "middle",
-      nameGap: 30,
+      nameGap: 38,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
       axisLabel: { color: theme.fgSecondary, fontSize: 10 },
@@ -449,7 +523,7 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
       type: "category",
       name: input.labels.effectAxisName,
       nameLocation: "middle",
-      nameGap: 42,
+      nameGap: 50,
       inverse: true,
       data: categories,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
@@ -467,7 +541,7 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
           silent: true,
           symbol: "none",
           label: { show: true, color: theme.fgDim, formatter: input.labels.significanceReferenceName },
-          lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" },
+          lineStyle: { color: "#d92d20", width: 1.5, type: "solid" },
           data: [{ name: input.labels.significanceReferenceName, xAxis: significanceLogWorth }],
         },
       },

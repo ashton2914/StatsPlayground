@@ -2079,7 +2079,7 @@
         "reference": {
           "identity": "y=x",
           "zero": "y=0",
-          "significance": "p = 0.05",
+          "significance": "LogWorth = 1.3",
           "nullEffect": "Null effect",
           "qq": "Q-Q reference"
         },

@@ -42,7 +42,7 @@ export function FitModelEffectSummary({
       logWorthAxisName: t("fitModel.report.chart.axis.logWorth", { defaultValue: "LogWorth" }),
       effectAxisName: t("fitModel.report.chart.axis.effect", { defaultValue: "Effect" }),
       effectSeriesName: t("fitModel.report.chart.series.logWorth", { defaultValue: "LogWorth" }),
-      significanceReferenceName: t("fitModel.report.chart.reference.significance", { defaultValue: "p = 0.05" }),
+      significanceReferenceName: t("fitModel.report.chart.reference.significance", { defaultValue: "LogWorth = 1.3" }),
       tooltipXLabel: t("fitModel.report.chart.tooltip.logWorth", { defaultValue: "LogWorth" }),
       tooltipYLabel: t("fitModel.report.chart.tooltip.effect", { defaultValue: "Effect" }),
       unavailableValueLabel: undefinedValue,

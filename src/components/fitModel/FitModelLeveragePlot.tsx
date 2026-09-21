@@ -60,7 +60,11 @@ export function FitModelLeveragePlot({
     : t("fitModel.report.leverageUnavailable", { defaultValue: "No estimable effect is available." });
 
   return (
-    <AnalysisFrame title={title} data-analysis-block="report">
+    <AnalysisFrame
+      className="sp-fit-model-analysis-graph-leverage"
+      title={title}
+      data-analysis-block="report"
+    >
       <AnalysisStack>
         <label className="sp-fit-model-leverage-selector">
           <span>{t("fitModel.report.effect", { defaultValue: "Effect" })}</span>

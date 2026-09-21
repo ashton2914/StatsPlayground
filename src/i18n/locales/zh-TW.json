@@ -1821,7 +1821,7 @@
         },
         "reference": {
           "identity": "y=x",
-          "zero": "y=0", "significance": "p = 0.05", "nullEffect": "虛無效應", "qq": "Q-Q 參考線"
+          "zero": "y=0", "significance": "LogWorth = 1.3", "nullEffect": "虛無效應", "qq": "Q-Q 參考線"
         },
         "tooltip": {
           "x": "預測值",

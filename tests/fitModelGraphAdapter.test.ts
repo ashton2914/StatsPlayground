@@ -69,6 +69,41 @@ function testActualAndResidualPointsAndAxes(): void {
   assert.equal(residual.yAxis.name, "Residual");
 }
 
+function testDiagnosticAxesUsePaddedNiceExtents(): void {
+  const rows: FitModelPlotRow[] = [
+    { rowIndex: 0, observed: 66, fitted: 65, residual: -0.2 },
+    { rowIndex: 1, observed: 70, fitted: 71, residual: 0.3 },
+  ];
+  const actual = buildActualByPredictedOption({
+    title: "Actual by Predicted",
+    labels: SAMPLE_LABELS,
+    plotRows: rows,
+  }) as {
+    grid: { left: number; bottom: number };
+    xAxis: { min: number; max: number; interval: number };
+  };
+  const residual = buildResidualByPredictedOption({
+    title: "Residual by Predicted",
+    labels: { ...SAMPLE_LABELS, tooltipYLabel: "Residual" },
+    plotRows: rows,
+  }) as {
+    yAxis: {
+      min: number;
+      max: number;
+      interval: number;
+      axisLabel: { formatter: (value: number) => string };
+    };
+  };
+
+  assert.ok(actual.xAxis.min < 65);
+  assert.ok(actual.xAxis.max > 71);
+  assert.equal((actual.xAxis.max - actual.xAxis.min) / actual.xAxis.interval % 1, 0);
+  assert.equal(residual.yAxis.min, -residual.yAxis.max);
+  assert.doesNotMatch(residual.yAxis.axisLabel.formatter(residual.yAxis.min), /000000|999999/);
+  assert.ok(actual.grid.left >= 48);
+  assert.ok(actual.grid.bottom >= 48);
+}
+
 function testReferenceLinesFiniteAndCorrect(): void {
   const rows: FitModelPlotRow[] = [
     { rowIndex: 0, observed: 2, fitted: 1.5, residual: 0.5 },
@@ -85,8 +120,8 @@ function testReferenceLinesFiniteAndCorrect(): void {
   const identity = findLineSeries(actual, "y=x");
   const zero = findLineSeries(residual, "y=0");
 
-  assert.deepEqual(identity.data, [[1.5, 1.5], [4.5, 4.5]]);
-  assert.deepEqual(zero.data, [[1.5, 0], [4.5, 0]]);
+  assert.deepEqual(identity.data, [[1, 1], [5, 5]]);
+  assert.deepEqual(zero.data, [[1, 0], [5, 0]]);
   assertAllFinite(identity.data, "identity");
   assertAllFinite(zero.data, "zero");
 }
@@ -318,7 +353,7 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
       logWorthAxisName: "LogWorth",
       effectAxisName: "Effect",
       effectSeriesName: "LogWorth",
-      significanceReferenceName: "p = 0.05",
+      significanceReferenceName: "LogWorth = 1.3",
       tooltipXLabel: "LogWorth",
       tooltipYLabel: "Effect",
       unavailableValueLabel: "Unavailable",
@@ -330,7 +365,11 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
     series: Array<{
       type: string;
       data: Array<number | null>;
-      markLine?: { data?: Array<{ name?: string; xAxis?: number }> };
+      markLine?: {
+        data?: Array<{ name?: string; xAxis?: number }>;
+        label?: { formatter?: string };
+        lineStyle?: { color?: string; type?: string };
+      };
     }>;
   };
 
@@ -342,8 +381,11 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
     option.tooltip?.formatter?.({ dataIndex: 2, value: null }),
     "Effect: B<br/>LogWorth: Unavailable",
   );
-  assert.equal(option.series[0]?.markLine?.data?.[0]?.name, "p = 0.05");
+  assert.equal(option.series[0]?.markLine?.data?.[0]?.name, "LogWorth = 1.3");
   assert.equal(option.series[0]?.markLine?.data?.[0]?.xAxis, -Math.log10(0.05));
+  assert.equal(option.series[0]?.markLine?.label?.formatter, "LogWorth = 1.3");
+  assert.equal(option.series[0]?.markLine?.lineStyle?.color, "#d92d20");
+  assert.equal(option.series[0]?.markLine?.lineStyle?.type, "solid");
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
 }
 
@@ -442,6 +484,7 @@ function testChartLayoutContainsAxisText(): void {
 }
 
 testActualAndResidualPointsAndAxes();
+testDiagnosticAxesUsePaddedNiceExtents();
 testReferenceLinesFiniteAndCorrect();
 testTooltipValuesAreFinite();
 testEmptyInputProducesNonblankOption();

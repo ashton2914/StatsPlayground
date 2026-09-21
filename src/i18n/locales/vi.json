@@ -1791,7 +1791,7 @@
         },
         "reference": {
           "identity": "y=x",
-          "zero": "y=0", "significance": "p = 0.05", "nullEffect": "Hiệu ứng không", "qq": "Đường tham chiếu Q-Q"
+          "zero": "y=0", "significance": "LogWorth = 1.3", "nullEffect": "Hiệu ứng không", "qq": "Đường tham chiếu Q-Q"
         },
         "tooltip": {
           "x": "Dự đoán",

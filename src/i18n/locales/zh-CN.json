@@ -1898,7 +1898,7 @@
         },
         "reference": {
           "identity": "y=x",
-          "zero": "y=0", "significance": "p = 0.05", "nullEffect": "零效应", "qq": "Q-Q 参考线"
+          "zero": "y=0", "significance": "LogWorth = 1.3", "nullEffect": "零效应", "qq": "Q-Q 参考线"
         },
         "tooltip": {
           "x": "预测值",

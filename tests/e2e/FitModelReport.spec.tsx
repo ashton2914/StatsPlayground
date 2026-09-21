@@ -206,6 +206,7 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   const sectionTitles = await disclosureButtons.allTextContents();
   expect(sectionTitles.map((title) => title.replace(/^[▾▸]\s*/u, "").trim())).toEqual([
     "Model Specification",
+    "Leverage Plot",
     "Actual by Predicted",
     "Effect Summary",
     "Lack of Fit",
@@ -214,7 +215,6 @@ test("renders approved report order and effect interactions", async ({ mount }) 
     "Analysis of Variance",
     "Parameter Estimates",
     "Effect Tests",
-    "Leverage Plot",
     "Row Diagnostics",
     "Prediction Profiler",
     "Warnings",
@@ -229,6 +229,9 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   await expect(component.locator('[data-chart-kind="residualQq"]')).toHaveCount(0);
   await expect(component.getByText("Mean of Response", { exact: true })).toBeVisible();
   await expect(component.getByText("Observations", { exact: true })).toBeVisible();
+  await expect(
+    component.getByRole("table", { name: "Parameter Estimates" }).locator("thead th"),
+  ).toHaveText(["Term", "Estimate", "Std Error", "t Ratio", "Feature VIF"]);
 
   await component.getByRole("button", { name: "Add" }).click();
   expect(addCalls).toEqual(["add"]);
@@ -304,6 +307,20 @@ for (const viewport of [
   test(`renders diagnostics without page overflow at ${viewport.width}x${viewport.height}`, async ({ mount, page }) => {
     await page.setViewportSize(viewport);
     const component = await mount(report());
+    const matchedChartBoxes = await component.locator(
+      '[data-chart-kind="actualByPredicted"], [data-chart-kind="leveragePlot"]',
+    ).evaluateAll((elements) => elements.map((element) => {
+      const frame = element.closest<HTMLElement>(".analysis-ui-frame");
+      return {
+        width: frame?.getBoundingClientRect().width ?? 0,
+        chartHeight: element.getBoundingClientRect().height,
+      };
+    }));
+    expect(matchedChartBoxes).toHaveLength(2);
+    if (viewport.width >= 1000) {
+      expect(Math.abs(matchedChartBoxes[0].width - matchedChartBoxes[1].width)).toBeLessThanOrEqual(2);
+      expect(Math.abs(matchedChartBoxes[0].chartHeight - matchedChartBoxes[1].chartHeight)).toBeLessThanOrEqual(2);
+    }
     const chartBoxes = await component.locator('[data-chart-kind="actualByPredicted"], [data-chart-kind="residualByPredicted"]').evaluateAll((elements) => elements.map((element) => {
       const box = element.getBoundingClientRect();
       const frame = element.closest<HTMLElement>(".analysis-ui-frame");
@@ -379,6 +396,9 @@ for (const viewport of [
       })(),
     }));
     expect(overflow.amount, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
+    for (const chart of matchedChartBoxes) {
+      expect(chart.width).toBeLessThanOrEqual(viewport.width);
+    }
 
     const blocks = component.locator("[data-fit-model-analysis-report] > *");
     const boxes = await blocks.evaluateAll((elements) => elements.map((element) => {

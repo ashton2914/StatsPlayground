@@ -823,12 +823,15 @@ function testRenderFittedContracts(): void {
   assert.match(html, /Summary of Fit/);
   assert.match(html, /Analysis of Variance/);
   assert.match(html, /Parameter Estimates/);
-  assert.match(html, /Lower 95%/);
-  assert.match(html, /Upper 95%/);
+  const parameterTable = html.match(/<table[^>]*aria-label="Parameter Estimates"[\s\S]*?<\/table>/)?.[0] ?? "";
+  assert.deepEqual(
+    [...parameterTable.matchAll(/<th[^>]*>(.*?)<\/th>/g)].map((match) => match[1]?.replace(/<[^>]+>/g, "")),
+    ["Term", "Estimate", "Std Error", "t Ratio", "Feature VIF"],
+  );
   assert.match(html, /Lack of Fit/);
   assert.match(html, /pureErrorZero|fitModel\.report\.reason\.pureErrorZero/);
   assert.match(html, /Feature VIF/);
-  assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>0\.0500<\/td><td[^>]*>1<\/td><td[^>]*>3<\/td><td[^>]*>1<\/td>/);
+  assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>1<\/td>/);
   assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
   assert.doesNotMatch(html, /Residual Q-Q/);
   assert.match(html, /Mean of Response/);
@@ -845,6 +848,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, /data-diagnostic-filter="flagged"/);
   const orderedSections = [
     "Model Specification",
+    "Leverage Plot",
     "Actual by Predicted",
     "Effect Summary",
     "Lack of Fit",
@@ -853,7 +857,6 @@ function testRenderFittedContracts(): void {
     "Analysis of Variance",
     "Parameter Estimates",
     "Effect Tests",
-    "Leverage Plot",
     "Row Diagnostics",
     "Prediction Profiler",
     "Warnings",

@@ -225,6 +225,23 @@ export function FitModelAnalysisReport({
             />
           </AnalysisFrame>
 
+          <FitModelLeveragePlot
+            effectTests={fittedResult.effectTests}
+            leveragePlots={fittedResult.leveragePlots}
+            responseLabel={fittedResult.responseColumn}
+            chartLabels={{
+              leverageAxisName: t("fitModel.report.chart.axis.effectLeverage", { defaultValue: "Effect leverage" }),
+              adjustedResponseAxisName: t("fitModel.report.chart.axis.adjustedResponse", { defaultValue: "Adjusted response" }),
+              pointSeriesName: t("fitModel.report.chart.series.leveragePoints", { defaultValue: "Rows" }),
+              fittedSeriesName: t("fitModel.report.chart.series.fitted", { defaultValue: "Fitted" }),
+              confidenceSeriesName: t("fitModel.report.chart.series.confidence", { defaultValue: "Confidence" }),
+              nullSeriesName: t("fitModel.report.chart.reference.nullEffect", { defaultValue: "Null effect" }),
+              pValueLabel: t("fitModel.report.column.pValue", { defaultValue: "p-Value" }),
+              tooltipXLabel: t("fitModel.report.chart.tooltip.effectLeverage", { defaultValue: "Effect leverage" }),
+              tooltipYLabel: t("fitModel.report.chart.tooltip.adjustedResponse", { defaultValue: "Adjusted response" }),
+            }}
+          />
+
           {actualByPredictedOption ? (
             <AnalysisGraph
               title={t("fitModel.report.section.actualByPredicted", { defaultValue: "Actual by Predicted" })}
@@ -357,6 +374,7 @@ export function FitModelAnalysisReport({
           >
             <AnalysisTable
               title={t("fitModel.report.section.parameterEstimates", { defaultValue: "Parameter Estimates" })}
+              ariaLabel={t("fitModel.report.section.parameterEstimates", { defaultValue: "Parameter Estimates" })}
               framed={false}
               width="wide"
               columns={columns([
@@ -364,9 +382,6 @@ export function FitModelAnalysisReport({
                 ["estimate", t("fitModel.report.column.estimate", { defaultValue: "Estimate" }), true],
                 ["standardError", t("fitModel.report.column.standardError", { defaultValue: "Std Error" }), true],
                 ["tRatio", t("fitModel.report.column.tRatio", { defaultValue: "t Ratio" }), true],
-                ["pValue", t("fitModel.report.column.pValue", { defaultValue: "p-Value" }), true],
-                ["lowerConfidenceLimit", t("fitModel.report.column.lowerConfidenceLimit", { defaultValue: "Lower 95%" }), true],
-                ["upperConfidenceLimit", t("fitModel.report.column.upperConfidenceLimit", { defaultValue: "Upper 95%" }), true],
                 ["featureVif", t("fitModel.report.column.featureVif", { defaultValue: "Feature VIF" }), true],
               ])}
               rows={fittedResult.parameterEstimates.map((estimate) => {
@@ -376,9 +391,6 @@ export function FitModelAnalysisReport({
                   formatFitModelReportValue(estimate.estimate, undefinedValue),
                   formatFitModelReportValue(estimate.standardError, undefinedValue),
                   formatFitModelReportValue(estimate.tRatio, undefinedValue),
-                  formatFitModelReportPValue(estimate.pValue, undefinedValue),
-                  formatFitModelReportValue(estimate.lowerConfidenceLimit, undefinedValue),
-                  formatFitModelReportValue(estimate.upperConfidenceLimit, undefinedValue),
                   !vif ? undefinedValue : vif.reason
                     ? inferenceReasonText(vif.reason, (key) => t(key))
                     : formatFitModelReportValue(vif.value, undefinedValue),
@@ -415,23 +427,6 @@ export function FitModelAnalysisReport({
               ]))}
             />
           </AnalysisFrame>
-
-          <FitModelLeveragePlot
-            effectTests={fittedResult.effectTests}
-            leveragePlots={fittedResult.leveragePlots}
-            responseLabel={fittedResult.responseColumn}
-            chartLabels={{
-              leverageAxisName: t("fitModel.report.chart.axis.effectLeverage", { defaultValue: "Effect leverage" }),
-              adjustedResponseAxisName: t("fitModel.report.chart.axis.adjustedResponse", { defaultValue: "Adjusted response" }),
-              pointSeriesName: t("fitModel.report.chart.series.leveragePoints", { defaultValue: "Rows" }),
-              fittedSeriesName: t("fitModel.report.chart.series.fitted", { defaultValue: "Fitted" }),
-              confidenceSeriesName: t("fitModel.report.chart.series.confidence", { defaultValue: "Confidence" }),
-              nullSeriesName: t("fitModel.report.chart.reference.nullEffect", { defaultValue: "Null effect" }),
-              pValueLabel: t("fitModel.report.column.pValue", { defaultValue: "p-Value" }),
-              tooltipXLabel: t("fitModel.report.chart.tooltip.effectLeverage", { defaultValue: "Effect leverage" }),
-              tooltipYLabel: t("fitModel.report.chart.tooltip.adjustedResponse", { defaultValue: "Adjusted response" }),
-            }}
-          />
 
           <AnalysisFrame
             title={t("fitModel.report.section.rowDiagnostics", { defaultValue: "Row Diagnostics" })}

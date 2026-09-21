@@ -250,8 +250,9 @@
   height: 240px;
 }
 
-.sp-fit-model-analysis-graph-predicted {
-  width: min(100%, 680px);
+.sp-fit-model-analysis-graph-predicted,
+.sp-fit-model-analysis-graph-leverage {
+  width: min(100%, 820px);
 }
 
 .sp-fit-model-analysis-graph-profiler-1 {
@@ -266,14 +267,19 @@
   max-width: none;
 }
 
-.sp-fit-model-analysis-graph-effect-summary,
-.sp-fit-model-analysis-graph-leverage {
+.sp-fit-model-analysis-graph-effect-summary {
   width: min(100%, 820px);
 }
 
 .sp-fit-model-diagnostic-chart-effectSummary,
+.sp-fit-model-diagnostic-chart-actualByPredicted,
 .sp-fit-model-diagnostic-chart-leveragePlot {
   max-width: none;
+}
+
+.sp-fit-model-diagnostic-chart-actualByPredicted,
+.sp-fit-model-diagnostic-chart-leveragePlot {
+  height: 340px;
 }
 
 .sp-fit-model-leverage-selector {
