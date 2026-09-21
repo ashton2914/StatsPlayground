@@ -9,18 +9,17 @@ use crate::models::project::{DatasetNameMigration, DocumentNameMigration, Projec
 use crate::models::save::{
     SaveProgressCallback, SaveProjectRequest, SaveSnapshot, SaveWriteResult,
 };
-use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
-use crate::services::archive_cell::{
-    archive_cell_to_json, archive_export_expression, is_archive_scalar_type,
-};
+use crate::services::archive_cell::{archive_cell_to_json, archive_export_expression};
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaSqlColumn, TypedCalculatedExpression, TypedCalculatedOutput,
 };
+use crate::services::project_table_restore::ProjectTableRestoreSession;
 use crate::services::spprj_archive::{
     self, project_archive_table_columns, DatasetFilters, GraphDoc, ProjectBundle, TableColumn,
     TableDoc,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
+use crate::services::streaming_table_reader::StreamedTableHeader;
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
@@ -28,7 +27,6 @@ use crate::services::workflow_domain::{
 };
 use crate::services::workflow_executor::{document_commit_id, WorkflowRunCommitPacket};
 use crate::state::AppState;
-use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
 use std::io::Write;
 
@@ -1004,165 +1002,21 @@ impl<'a> ProjectService<'a> {
         doc: &TableDoc,
         progress_cb: Option<&dyn Fn(usize, usize)>,
     ) -> Result<String, AppError> {
-        if doc.version != "1" && doc.version != "2" && !table_doc_is_v3(&doc.version) {
-            return Err(AppError::InvalidParam(format!(
-                "unsupported table document version: {}",
-                doc.version
-            )));
-        }
-        let v3_validation = if table_doc_is_v3(&doc.version) {
-            Some(
-                spprj_archive::validate_table_doc_structure(doc).map_err(|error| match error {
-                    AppError::FileIO(message)
-                        if message.contains("calculated column graph invalid") =>
-                    {
-                        formula_archive_inconsistent(message)
-                    }
-                    other => other,
-                })?,
-            )
-        } else {
-            None
+        let header = StreamedTableHeader {
+            id: doc.id.clone(),
+            name: doc.name.clone(),
+            source_type: doc.source_type.clone(),
+            version: doc.version.clone(),
+            columns: doc.columns.clone(),
         };
-        let v3_archive_columns = v3_validation
-            .as_ref()
-            .map(|validation| {
-                table_doc_to_archive_column_plans(doc, Some(&validation.calculated_columns_by_id))
-            })
-            .transpose()?;
-
-        let expected_row_width = doc.columns.len() + 1;
-        if doc.rows.iter().any(|row| row.len() != expected_row_width) {
-            return Err(AppError::InvalidParam(format!(
-                "table rows must contain exactly {expected_row_width} values"
-            )));
-        }
-
-        let mut row_ids = std::collections::HashSet::with_capacity(doc.rows.len());
-        for row in &doc.rows {
-            let row_id = row[0]
-                .as_i64()
-                .ok_or_else(|| AppError::InvalidParam("table row IDs must be integers".into()))?;
-            if row_id <= 0 {
-                return Err(AppError::InvalidParam(
-                    "table row IDs must be positive".into(),
-                ));
-            }
-            if !row_ids.insert(row_id) {
-                return Err(AppError::InvalidParam(
-                    "table row IDs must be unique".into(),
-                ));
+        let mut session =
+            ProjectTableRestoreSession::begin(self.state, header, Some(doc.rows.len()), progress_cb)?;
+        for rows in doc.rows.chunks(5_000) {
+            if let Err(error) = session.append_rows(rows) {
+                return Err(session.abort(error));
             }
         }
-
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let archived_col_names: Vec<String> = doc
-            .columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect();
-        let col_names = DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
-        let col_types: Vec<String> = doc.columns.iter().map(|c| c.col_type.clone()).collect();
-        db.conn().execute_batch("BEGIN TRANSACTION")?;
-        let restore_result = (|| -> Result<(), AppError> {
-            db.create_empty_table(&doc.id, &doc.name, &col_names, &col_types)?;
-            let canonical_columns = db.get_user_columns(&doc.id)?;
-
-            if !doc.rows.is_empty() {
-                let table_name = format!("dataset_{}", doc.id.replace('-', "_"));
-                let mut appender = db.conn().appender(&table_name)?;
-                let rows_total = doc.rows.len();
-
-                for (row_index, row) in doc.rows.iter().enumerate() {
-                    let mut values = row
-                        .iter()
-                        .enumerate()
-                        .map(|(index, value)| {
-                            let column_type = index
-                                .checked_sub(1)
-                                .map(|column_index| canonical_columns[column_index].1.as_str());
-                            let decode_archive_tag = index > 0
-                                && doc.version != "1"
-                                && !is_archive_scalar_type(&canonical_columns[index - 1].1);
-                            json_to_duckdb_param(value, decode_archive_tag, column_type)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    values.push(DuckValue::Null);
-                    appender.append_row(appender_params_from_iter(values))?;
-                    let rows_done = row_index + 1;
-                    if rows_done % 5_000 == 0 || rows_done == rows_total {
-                        if let Some(cb) = progress_cb {
-                            cb(rows_done, rows_total);
-                        }
-                    }
-                }
-                appender.flush()?;
-            }
-
-            let table_ident = quote_identifier(&format!("dataset_{}", doc.id.replace('-', "_")));
-            let row_count: i64 =
-                db.conn()
-                    .query_row(&format!("SELECT COUNT(*) FROM {table_ident}"), [], |row| {
-                        row.get(0)
-                    })?;
-            db.conn().execute(
-                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
-                duckdb::params![row_count, doc.id],
-            )?;
-            if let Some(validation) = &v3_validation {
-                validate_restored_ready_calculated_columns(
-                    &db,
-                    doc,
-                    &validation.calculated_columns_by_id,
-                )?;
-            }
-            if let Some(v3_archive_columns) = &v3_archive_columns {
-                db.replace_archive_column_ids(&doc.id, v3_archive_columns)?;
-                db.replace_archived_calculated_columns(&doc.id, v3_archive_columns)?;
-            } else {
-                db.replace_archived_calculated_columns(&doc.id, &[])?;
-            }
-            Ok(())
-        })();
-
-        match restore_result {
-            Ok(()) => db.conn().execute_batch("COMMIT")?,
-            Err(error) => {
-                let _ = db.conn().execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-        // Re-register column display props.
-        let mut display_props: Vec<ColumnDisplayProps> = Vec::new();
-        for (i, col) in doc.columns.iter().enumerate() {
-            if col.width.is_some() || col.format.is_some() || col.extras.is_some() {
-                display_props.push(ColumnDisplayProps {
-                    col_index: i,
-                    width: col.width,
-                    format: col.format.as_ref().map(|f| ColumnFormatInfo {
-                        kind: f.kind.clone(),
-                        decimals: f.decimals,
-                        currency: f.currency.clone(),
-                    }),
-                    extras: col.extras.clone(),
-                });
-            }
-        }
-        if !display_props.is_empty() {
-            let mut display = self
-                .state
-                .column_display
-                .lock()
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            display.insert(doc.id.clone(), display_props);
-        }
-
-        Ok(doc.id.clone())
+        session.finish()
     }
 
     // ------------------------------------------------------------------
@@ -1288,11 +1142,11 @@ fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn table_doc_is_v3(version: &str) -> bool {
+pub(crate) fn table_doc_is_v3(version: &str) -> bool {
     version.split('.').next() == Some("3")
 }
 
-fn table_doc_to_archive_column_plans(
+pub(crate) fn table_doc_to_archive_column_plans(
     doc: &TableDoc,
     validated_calculated_columns_by_id: Option<
         &std::collections::HashMap<String, ArchivedCalculatedColumn>,
@@ -1408,7 +1262,7 @@ fn remap_imported_table_doc(doc: &TableDoc) -> Result<TableDoc, AppError> {
     Ok(remapped)
 }
 
-fn json_to_duckdb_param(
+pub(crate) fn json_to_duckdb_param(
     value: &serde_json::Value,
     decode_v2_tag: bool,
     column_type: Option<&str>,
@@ -1734,11 +1588,11 @@ fn set_object_name(value: &mut serde_json::Value, new_name: &str) {
     }
 }
 
-fn formula_archive_inconsistent(message: impl Into<String>) -> AppError {
+pub(crate) fn formula_archive_inconsistent(message: impl Into<String>) -> AppError {
     AppError::InvalidParam(format!("formula_archive_inconsistent:{}", message.into()))
 }
 
-fn validate_restored_ready_calculated_columns(
+pub(crate) fn validate_restored_ready_calculated_columns(
     db: &DuckDbEngine,
     doc: &TableDoc,
     calculated_columns_by_id: &std::collections::HashMap<String, ArchivedCalculatedColumn>,
