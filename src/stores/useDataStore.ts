@@ -39,6 +39,11 @@ interface DataStore {
   setActiveDataset: (id: string | null) => void;
   /** 从后端刷新数据集列表 */
   refreshDatasets: () => Promise<void>;
+  /** Apply authoritative metadata returned by a scoped table mutation. */
+  applyDatasetMutationMeta: (
+    datasetId: string,
+    patch: { generation: number; rowCount?: number; colCount?: number },
+  ) => void;
   /** 更新状态栏信息 */
   setStatusInfo: (info: StatusInfo | null) => void;
 }
@@ -54,6 +59,17 @@ export const useDataStore = create<DataStore>((set) => ({
     const datasets = await dataService.listDatasets();
     set({ datasets });
   },
+
+  applyDatasetMutationMeta: (datasetId, patch) => set((state) => ({
+    datasets: state.datasets.map((dataset) => dataset.id === datasetId
+      ? {
+          ...dataset,
+          generation: patch.generation,
+          ...(patch.rowCount === undefined ? {} : { rowCount: patch.rowCount }),
+          ...(patch.colCount === undefined ? {} : { colCount: patch.colCount }),
+        }
+      : dataset),
+  })),
 
   setStatusInfo: (info) => set({ statusInfo: info }),
 }));

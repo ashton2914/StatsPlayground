@@ -30,9 +30,90 @@ use crate::services::workflow_executor::{document_commit_id, WorkflowRunCommitPa
 use crate::state::AppState;
 use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
+use std::io::Write;
 
 pub struct ProjectService<'a> {
     state: &'a AppState,
+}
+
+fn reconcile_archived_history(
+    history: Vec<serde_json::Value>,
+    retained_change_set_ids: &std::collections::HashSet<String>,
+) -> Vec<serde_json::Value> {
+    history
+        .into_iter()
+        .map(|mut entry| {
+            let change_set_id = entry
+                .pointer("/action/kind")
+                .and_then(serde_json::Value::as_str)
+                .filter(|kind| *kind == "changeSet")
+                .and_then(|_| entry.pointer("/action/changeSetId"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            if let Some(change_set_id) = change_set_id {
+                if !retained_change_set_ids.contains(&change_set_id) {
+                    if let Some(object) = entry.as_object_mut() {
+                        object.remove("action");
+                        object.insert("replayable".into(), serde_json::Value::Bool(false));
+                        object.insert(
+                            "migrationError".into(),
+                            serde_json::Value::String(
+                                "This table change predates unified history archival and cannot be replayed"
+                                    .into(),
+                            ),
+                        );
+                        object.insert(
+                            "unavailableChangeSetId".into(),
+                            serde_json::Value::String(change_set_id),
+                        );
+                    }
+                }
+            }
+            entry
+        })
+        .collect()
+}
+
+fn archived_history_current_idx(
+    history: &[serde_json::Value],
+    timeline: Option<&crate::services::table_history_archive::HistoryTimelineArchive>,
+) -> Result<i64, AppError> {
+    if history.is_empty() {
+        return Ok(-1);
+    }
+    let Some(timeline) = timeline else {
+        return Ok(0);
+    };
+    let applied_by_id = timeline
+        .entries
+        .iter()
+        .map(|entry| (entry.change_set_id.as_str(), entry.applied))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut current_idx = 0_i64;
+    let mut saw_applied = false;
+    for (index, entry) in history.iter().enumerate() {
+        let change_set_id = entry
+            .pointer("/action/kind")
+            .and_then(serde_json::Value::as_str)
+            .filter(|kind| *kind == "changeSet")
+            .and_then(|_| entry.pointer("/action/changeSetId"))
+            .and_then(serde_json::Value::as_str);
+        let Some(applied) = change_set_id.and_then(|id| applied_by_id.get(id)).copied() else {
+            continue;
+        };
+        if applied {
+            saw_applied = true;
+        } else {
+            if saw_applied {
+                return Err(AppError::FileIO(
+                    "Frontend history order disagrees with backend applied cursor".into(),
+                ));
+            }
+            current_idx = i64::try_from(index + 1)
+                .map_err(|_| AppError::FileIO("Frontend history cursor is too large".into()))?;
+        }
+    }
+    Ok(current_idx)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -51,6 +132,8 @@ pub struct OpenProjectResult {
     pub project: ProjectInfo,
     #[serde(default)]
     pub history: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub history_current_idx: i64,
     #[serde(default)]
     pub snapshots: Vec<serde_json::Value>,
     #[serde(default)]
@@ -131,7 +214,9 @@ mod native_graph_persistence_tests {
             uuid::Uuid::new_v4()
         ));
         let service = ProjectService::new(&state);
-        service.create_project("Native Graphs", path.to_str().unwrap()).unwrap();
+        service
+            .create_project("Native Graphs", path.to_str().unwrap())
+            .unwrap();
         let documents = serde_json::json!([
             {
                 "version": 1, "id": "native-1", "name": "Native Trend",
@@ -152,7 +237,8 @@ mod native_graph_persistence_tests {
             "graphBuilders": legacy, "graphBuildersNew": documents, "graphNewFolders": folders,
             "folders": ["Graphs", "Graphs/Nested"], "tableFolders": {}, "graphFolders": {},
             "reportFolders": {}, "tabulateFolders": {}
-        })).unwrap();
+        }))
+        .unwrap();
         service.save_project(request.clone(), None).unwrap();
         let saved_bytes = std::fs::read(&path).unwrap();
         let mut invalid_request = request;
@@ -161,7 +247,8 @@ mod native_graph_persistence_tests {
         assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
         let reopened_state = AppState::new().unwrap();
         let reopened = ProjectService::new(&reopened_state)
-            .open_project(path.to_str().unwrap(), None).unwrap();
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
         let result = serde_json::to_value(reopened).unwrap();
         assert_eq!(result["graphBuildersNew"], documents);
         assert_eq!(result["graphNewFolders"], folders);
@@ -388,6 +475,113 @@ impl<'a> ProjectService<'a> {
                     .delete_dataset(&doc.id);
                 staged_service.restore_table_doc(doc)?;
             }
+            {
+                let db = staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                let mut generations = bundle
+                    .manifest
+                    .dataset_generations
+                    .clone()
+                    .unwrap_or_default();
+                if bundle.manifest.dataset_generations.is_none() {
+                    if let Some(history_timeline) = &bundle.history_timeline {
+                        for cursor in &history_timeline.metadata.datasets {
+                            generations.insert(
+                                cursor.dataset_id.clone(),
+                                cursor.current_generation,
+                            );
+                        }
+                    } else if let Some(delta_history) = &bundle.delta_history {
+                        for change_set in &delta_history.metadata.change_sets {
+                            let restored_generation = db
+                                .get_dataset_generation(&change_set.dataset_id)
+                                .map_err(|_| {
+                                    AppError::FileIO(format!(
+                                        "Delta history references unknown dataset {}",
+                                        change_set.dataset_id
+                                    ))
+                                })?;
+                            let required_generation = change_set
+                                .generation
+                                .max(change_set.before_generation)
+                                .max(change_set.after_generation)
+                                .max(restored_generation);
+                            generations
+                                .entry(change_set.dataset_id.clone())
+                                .and_modify(|generation| {
+                                    *generation = (*generation).max(required_generation)
+                                })
+                                .or_insert(required_generation);
+                        }
+                    }
+                }
+                for (dataset_id, generation) in &generations {
+                    db.get_dataset_meta(dataset_id).map_err(|_| {
+                        AppError::FileIO(format!(
+                            "Project generation references unknown dataset {dataset_id}"
+                        ))
+                    })?;
+                    db.conn().execute(
+                        "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
+                        duckdb::params![generation, dataset_id],
+                    )?;
+                    db.rebuild_natural_anchors(dataset_id, *generation)?;
+                }
+            }
+            if let Some(delta_history) = &bundle.delta_history {
+                let mut temporary_snapshots = Vec::with_capacity(delta_history.snapshots.len());
+                let mut restore_snapshots = Vec::with_capacity(delta_history.snapshots.len());
+                for (descriptor, bytes) in &delta_history.snapshots {
+                    let mut file = tempfile::Builder::new()
+                        .prefix(".statsplayground-open-history-")
+                        .suffix(".parquet")
+                        .tempfile()?;
+                    file.write_all(bytes)?;
+                    file.as_file_mut().sync_all()?;
+                    restore_snapshots.push((descriptor.clone(), file.path().to_path_buf()));
+                    temporary_snapshots.push(file);
+                }
+                staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .restore_delta_history(&delta_history.metadata, &restore_snapshots)?;
+                drop(temporary_snapshots);
+            }
+            if let Some(history_timeline) = &bundle.history_timeline {
+                let parent = std::path::Path::new(file_path).parent().ok_or_else(|| {
+                    AppError::FileIO("Project archive has no parent directory".into())
+                })?;
+                let mut temporary_snapshots =
+                    Vec::with_capacity(history_timeline.snapshots.len());
+                let mut restore_snapshots =
+                    Vec::with_capacity(history_timeline.snapshots.len());
+                for (change_set_id, descriptor, bytes) in &history_timeline.snapshots {
+                    let mut file = tempfile::Builder::new()
+                        .prefix(".statsplayground-open-history-v2-")
+                        .suffix(".parquet")
+                        .tempfile_in(parent)?;
+                    file.write_all(bytes)?;
+                    file.as_file_mut().sync_all()?;
+                    restore_snapshots.push((
+                        change_set_id.clone(),
+                        descriptor.clone(),
+                        file.path().to_path_buf(),
+                    ));
+                    temporary_snapshots.push(file);
+                }
+                staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .restore_unified_history(
+                        &history_timeline.metadata,
+                        &restore_snapshots,
+                    )?;
+                drop(temporary_snapshots);
+            }
         }
 
         let project = ProjectInfo {
@@ -436,6 +630,25 @@ impl<'a> ProjectService<'a> {
             })
             .collect();
 
+        let retained_change_set_ids = {
+            let db = staged_state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            db.conn()
+                .prepare("SELECT id FROM _history_change_sets")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<std::collections::HashSet<_>, _>>()?
+        };
+        let restored_history =
+            reconcile_archived_history(bundle.history, &retained_change_set_ids);
+        let history_current_idx = archived_history_current_idx(
+            &restored_history,
+            bundle
+                .history_timeline
+                .as_ref()
+                .map(|timeline| &timeline.metadata),
+        )?;
         let staged_db = staged_state
             .db
             .into_inner()
@@ -468,7 +681,8 @@ impl<'a> ProjectService<'a> {
 
         Ok(OpenProjectResult {
             project,
-            history: bundle.history,
+            history: restored_history,
+            history_current_idx,
             snapshots: bundle.snapshots,
             graph_builders,
             graph_builders_new: bundle.graph_builders_new,
@@ -777,7 +991,12 @@ impl<'a> ProjectService<'a> {
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let col_names: Vec<String> = doc.columns.iter().map(|c| c.name.clone()).collect();
+        let archived_col_names: Vec<String> = doc
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let col_names = DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
         let col_types: Vec<String> = doc.columns.iter().map(|c| c.col_type.clone()).collect();
         db.conn().execute_batch("BEGIN TRANSACTION")?;
         let restore_result = (|| -> Result<(), AppError> {
@@ -790,7 +1009,7 @@ impl<'a> ProjectService<'a> {
                 let rows_total = doc.rows.len();
 
                 for (row_index, row) in doc.rows.iter().enumerate() {
-                    let values = row
+                    let mut values = row
                         .iter()
                         .enumerate()
                         .map(|(index, value)| {
@@ -803,6 +1022,7 @@ impl<'a> ProjectService<'a> {
                             json_to_duckdb_param(value, decode_archive_tag, column_type)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
+                    values.push(DuckValue::Null);
                     appender.append_row(appender_params_from_iter(values))?;
                     let rows_done = row_index + 1;
                     if rows_done % 5_000 == 0 || rows_done == rows_total {
@@ -1759,7 +1979,11 @@ fn normalize_duplicate_dataset_names(docs: &mut [TableDoc]) -> Vec<DatasetNameMi
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_from_entry_path, normalize_duplicate_dataset_names, ProjectService};
+    use super::{
+        folder_from_entry_path, normalize_duplicate_dataset_names, reconcile_archived_history,
+        ProjectService,
+    };
+    use crate::engine::duckdb_engine::NATURAL_ORDER_SQL;
     use crate::error::AppError;
     use crate::models::calculated_column::{
         definition_fingerprint, expression_dependency_ids, ArchivedCalculatedColumn,
@@ -1868,6 +2092,1155 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
         )
+    }
+
+    fn rewrite_project_manifest(
+        path: &std::path::Path,
+        edit: impl FnOnce(&mut serde_json::Value),
+    ) {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entries = Vec::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+        drop(archive);
+
+        let mut edit = Some(edit);
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, mut bytes) in entries {
+            if name == "manifest.json" {
+                let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                edit.take().unwrap()(&mut manifest);
+                bytes = serde_json::to_vec(&manifest).unwrap();
+            }
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn rewrite_project_entries(
+        path: &std::path::Path,
+        mut edit: impl FnMut(&str, Vec<u8>) -> Vec<u8>,
+        additions: Vec<(String, Vec<u8>)>,
+    ) {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entries = Vec::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+        drop(archive);
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(&name, options).unwrap();
+            writer.write_all(&edit(&name, bytes)).unwrap();
+        }
+        for (name, bytes) in additions {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn read_project_json_entry(path: &std::path::Path, name: &str) -> serde_json::Value {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name(name).unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn replace_canonical_history_keys_with_legacy_numbers(bytes: Vec<u8>) -> Vec<u8> {
+        let mut json = String::from_utf8(bytes).unwrap();
+        for value in [
+            "18446744073709551616",
+            "-170141183460469231731687303715884105728",
+            "170141183460469231731687303715884105727",
+        ] {
+            let canonical = format!(":\"{value}\"");
+            assert!(json.contains(&canonical), "missing canonical key {value}");
+            json = json.replace(&canonical, &format!(":{value}"));
+        }
+        json.into_bytes()
+    }
+
+    #[test]
+    fn delta_history_archive_round_trips_row_and_column_replay() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-delta-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        let (row_change_set, column_change_set) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("archive-history", "Archive History", 4, 2)
+                .unwrap();
+            let row = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "archive-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+            let column = db.get_user_column_descriptors("archive-history").unwrap()[0].clone();
+            let column = crate::services::table_delta_mutation::delete_columns_compact(
+                &db,
+                "archive-history",
+                &[column],
+                1,
+            )
+            .unwrap();
+            (row.change_set_id, column.change_set_id)
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": column_change_set}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": row_change_set}}),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let result = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(result.history.len(), 2);
+        let db = reopened_state.db.lock().unwrap();
+        db.apply_change_set(&column_change_set, true).unwrap();
+        db.apply_change_set(&row_change_set, true).unwrap();
+        assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 4);
+        assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 2);
+        db.apply_change_set(&row_change_set, false).unwrap();
+        db.apply_change_set(&column_change_set, false).unwrap();
+        assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 3);
+        assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_round_trips_interleaved_delta_and_legacy_replay() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-unified-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Unified History".into(), &path_string)
+            .unwrap();
+        let (row_id, legacy_id, column_id) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("unified-archive", "Unified Archive", 4, 2)
+                .unwrap();
+            let row = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "unified-archive",
+                &[2],
+                0,
+            )
+            .unwrap();
+            let legacy = db
+                .paste_at_position_with_change_set(
+                    "unified-archive",
+                    0,
+                    0,
+                    &[vec!["19".into()]],
+                    None,
+                    &["DOUBLE".into()],
+                    Some(1),
+                )
+                .unwrap();
+            let column = db.get_user_column_descriptors("unified-archive").unwrap()[0].clone();
+            let column = crate::services::table_delta_mutation::delete_columns_compact(
+                &db,
+                "unified-archive",
+                &[column],
+                2,
+            )
+            .unwrap();
+            (row.change_set_id, legacy, column.change_set_id)
+        };
+        state
+            .db
+            .lock()
+            .unwrap()
+            .apply_change_set(&column_id, true)
+            .unwrap();
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": column_id}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": legacy_id}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": row_id}}),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(opened.history_current_idx, 1);
+        let db = reopened_state.db.lock().unwrap();
+        db.apply_change_set(&legacy_id, true).unwrap();
+        db.apply_change_set(&row_id, true).unwrap();
+        assert_eq!(db.get_dataset_meta("unified-archive").unwrap().row_count, 4);
+        assert_eq!(db.get_user_columns("unified-archive").unwrap().len(), 2);
+        db.apply_change_set(&row_id, false).unwrap();
+        db.apply_change_set(&legacy_id, false).unwrap();
+        db.apply_change_set(&column_id, false).unwrap();
+        assert_eq!(db.get_dataset_meta("unified-archive").unwrap().row_count, 3);
+        assert_eq!(db.get_user_columns("unified-archive").unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_reopens_gapped_partial_cursor_at_first_unapplied_before_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-gapped-cursor-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Gapped Cursor".into(), &path_string)
+            .unwrap();
+        let (first_id, pruned_id, last_id) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("gapped-cursor", "Gapped Cursor", 3, 1)
+                .unwrap();
+            let first = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "gapped-cursor",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            let added = crate::engine::duckdb_engine::UserColumnDescriptor {
+                column_id: uuid::Uuid::new_v4().to_string(),
+                col_index: 1,
+                name: "added_between".into(),
+                sql_type: "BIGINT".into(),
+            };
+            let pruned = crate::services::table_delta_mutation::add_columns_compact(
+                &db,
+                "gapped-cursor",
+                &[added],
+                1,
+                1,
+            )
+            .unwrap();
+            let last = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "gapped-cursor",
+                1,
+                None,
+                2,
+            )
+            .unwrap();
+            db.apply_change_set(&last.change_set_id, true).unwrap();
+            db.drop_change_set(&pruned.change_set_id).unwrap();
+            (first.change_set_id, pruned.change_set_id, last.change_set_id)
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({
+                "id": "last",
+                "action": {
+                    "kind": "changeSet",
+                    "datasetId": "gapped-cursor",
+                    "changeSetId": last_id
+                }
+            }),
+            serde_json::json!({
+                "id": "first",
+                "action": {
+                    "kind": "changeSet",
+                    "datasetId": "gapped-cursor",
+                    "changeSetId": first_id
+                }
+            }),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .expect("gapped partial cursor must reopen");
+        assert_eq!(opened.history_current_idx, 1);
+        assert_eq!(
+            opened.history[0].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(last_id.clone()))
+        );
+        assert_eq!(
+            opened.history[1].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(first_id))
+        );
+        let db = reopened_state.db.lock().unwrap();
+        let retained = db
+            .archive_unified_history()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.history_ordinal, entry.applied))
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec![(0, true), (2, false)]);
+        db.apply_change_set(&last_id, false).unwrap();
+        db.apply_change_set(&last_id, true).unwrap();
+        drop(db);
+
+        assert_ne!(pruned_id, last_id);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_reopens_all_applied_schema_change_at_last_after_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-all-applied-schema-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("All Applied Schema".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("all-applied-schema", "All Applied Schema", 2, 1)
+                .unwrap();
+            crate::services::table_delta_mutation::add_columns_compact(
+                &db,
+                "all-applied-schema",
+                &[crate::engine::duckdb_engine::UserColumnDescriptor {
+                    column_id: uuid::Uuid::new_v4().to_string(),
+                    col_index: 1,
+                    name: "applied_column".into(),
+                    sql_type: "BIGINT".into(),
+                }],
+                1,
+                0,
+            )
+            .unwrap()
+            .change_set_id
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![serde_json::json!({
+            "id": "applied",
+            "action": {
+                "kind": "changeSet",
+                "datasetId": "all-applied-schema",
+                "changeSetId": change_set_id
+            }
+        })];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(opened.history_current_idx, 0);
+        assert_eq!(
+            reopened_state
+                .db
+                .lock()
+                .unwrap()
+                .get_user_columns("all-applied-schema")
+                .unwrap()
+                .len(),
+            2
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_reopens_allocator_only_state_without_inventing_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-allocator-only-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Allocator Only".into(), &path_string)
+            .unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("allocator-only", "Allocator Only", 2, 1)
+                .unwrap();
+            let change = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "allocator-only",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            db.drop_change_set(&change.change_set_id).unwrap();
+        }
+        service.save_project(empty_save_request(None), None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(opened.history_current_idx, -1);
+        let db = reopened_state.db.lock().unwrap();
+        let next = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "allocator-only",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        let ordinal: u64 = db
+            .conn()
+            .query_row(
+                "SELECT history_ordinal FROM _history_timeline WHERE change_set_id = ?",
+                duckdb::params![next.change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ordinal, 1);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_round_trips_nullable_hugeint_extrema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-unified-hugeint-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Unified Hugeint".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "unified-hugeint",
+                "Unified Hugeint",
+                &["value".into()],
+                &["HUGEINT".into()],
+            )
+            .unwrap();
+            for (row_id, value, row_order) in [
+                (1_i64, None, Some(i128::MIN)),
+                (2, Some(i128::MIN), Some(-1)),
+                (3, Some(i128::MAX), Some(1)),
+                (4, Some(42), Some(i128::MAX)),
+            ] {
+                db.conn()
+                    .execute(
+                        "INSERT INTO dataset_unified_hugeint (_row_id, value, _row_order)
+                         VALUES (?, ?, ?)",
+                        duckdb::params![row_id, value, row_order],
+                    )
+                    .unwrap();
+            }
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 4, next_row_id = 5
+                     WHERE id = 'unified-hugeint'",
+                    [],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("unified-hugeint", 0).unwrap();
+            crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "unified-hugeint",
+                &[1, 2, 3, 4],
+                0,
+            )
+            .unwrap()
+            .change_set_id
+        };
+        service.save_project(empty_save_request(None), None).unwrap();
+
+        let reopened = AppState::new().unwrap();
+        ProjectService::new(&reopened)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened.db.lock().unwrap();
+        db.apply_change_set(&change_set_id, true).unwrap();
+        let rows = db
+            .conn()
+            .prepare(
+                "SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i128>>(0)?,
+                    row.get::<_, Option<i128>>(1)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (None, Some(i128::MIN)),
+                (Some(i128::MIN), Some(-1)),
+                (Some(i128::MAX), Some(1)),
+                (Some(42), Some(i128::MAX)),
+            ]
+        );
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_restores_legacy_numeric_rebalance_keys_and_replays() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".review-unified-legacy-numeric-rebalance-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Legacy numeric rebalance".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table(
+                "legacy-numeric-rebalance",
+                "Legacy numeric rebalance",
+                2,
+                1,
+            )
+            .unwrap();
+            let added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-numeric-rebalance",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_numeric_rebalance
+                     SET _row_order = CASE _row_id
+                         WHEN 1 THEN ?
+                         WHEN 2 THEN ?
+                         WHEN 3 THEN ?
+                     END",
+                    duckdb::params![i128::MIN, i128::MAX, 1_i128 << 64],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET ordinal = 1, row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![1_i128 << 64, &added.change_set_id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_natural_rebalances
+                     (change_set_id, ordinal, row_id, before_key, after_key)
+                     VALUES (?, 0, 1, NULL, ?), (?, 1, 2, ?, ?)",
+                    duckdb::params![
+                        &added.change_set_id,
+                        i128::MIN,
+                        &added.change_set_id,
+                        i128::MAX,
+                        i128::MAX
+                    ],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-numeric-rebalance", 1)
+                .unwrap();
+            added.change_set_id
+        };
+        service.save_project(empty_save_request(None), None).unwrap();
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if name == "history/timeline.v2.json" {
+                    replace_canonical_history_keys_with_legacy_numbers(bytes)
+                } else {
+                    bytes
+                }
+            },
+            Vec::new(),
+        );
+
+        let reopened = AppState::new().unwrap();
+        let reopened_service = ProjectService::new(&reopened);
+        reopened_service
+            .open_project(&path_string, None)
+            .unwrap();
+        {
+            let db = reopened.db.lock().unwrap();
+            let row_order: i128 = db
+                .conn()
+                .query_row(
+                    "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
+                    duckdb::params![&change_set_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(row_order, 1_i128 << 64);
+            let rebalance = db
+                .conn()
+                .prepare(
+                    "SELECT before_key, after_key FROM _history_natural_rebalances
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )
+                .unwrap()
+                .query_map(duckdb::params![&change_set_id], |row| {
+                    Ok((
+                        row.get::<_, Option<i128>>(0)?,
+                        row.get::<_, Option<i128>>(1)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rebalance,
+                vec![(None, Some(i128::MIN)), (Some(i128::MAX), Some(i128::MAX))]
+            );
+
+            db.apply_change_set(&change_set_id, true).unwrap();
+            let undone = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id, _row_order
+                     FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(undone, vec![(1, None), (2, Some(i128::MAX))]);
+
+            db.apply_change_set(&change_set_id, false).unwrap();
+            let redone = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id, _row_order
+                     FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                redone,
+                vec![
+                    (1, Some(i128::MIN)),
+                    (2, Some(i128::MAX)),
+                    (3, Some(1_i128 << 64)),
+                ]
+            );
+        }
+        reopened_service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
+        let timeline = read_project_json_entry(&path, "history/timeline.v2.json");
+        let archived_entry = timeline["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["changeSetId"] == change_set_id)
+            .unwrap();
+        let delta = &archived_entry["delta"];
+        let archived_row = delta["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["rowId"] == 3)
+            .unwrap();
+        assert_eq!(
+            archived_row["rowOrder"],
+            serde_json::Value::String((1_i128 << 64).to_string())
+        );
+        let archived_rebalances = delta["rowOrderRebalances"].as_array().unwrap();
+        let null_before = archived_rebalances
+            .iter()
+            .find(|rebalance| rebalance["rowId"] == 1)
+            .unwrap();
+        assert!(null_before["beforeRowOrder"].is_null());
+        assert_eq!(
+            null_before["afterRowOrder"],
+            serde_json::Value::String(i128::MIN.to_string())
+        );
+        let full_range = archived_rebalances
+            .iter()
+            .find(|rebalance| rebalance["rowId"] == 2)
+            .unwrap();
+        assert_eq!(
+            full_range["beforeRowOrder"],
+            serde_json::Value::String(i128::MAX.to_string())
+        );
+        assert_eq!(
+            full_range["afterRowOrder"],
+            serde_json::Value::String(i128::MAX.to_string())
+        );
+
+        let reopened_again = AppState::new().unwrap();
+        ProjectService::new(&reopened_again)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened_again.db.lock().unwrap();
+        db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_dataset_generation("legacy-numeric-rebalance")
+                .unwrap(),
+            4
+        );
+        let undone = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order
+                 FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(undone, vec![(1, None), (2, Some(i128::MAX))]);
+        db.apply_change_set(&change_set_id, false).unwrap();
+        assert_eq!(
+            db.get_dataset_generation("legacy-numeric-rebalance")
+                .unwrap(),
+            5
+        );
+        let redone = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order
+                 FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            redone,
+            vec![
+                (1, Some(i128::MIN)),
+                (2, Some(i128::MAX)),
+                (3, Some(1_i128 << 64)),
+            ]
+        );
+        let natural_order = db
+            .conn()
+            .prepare(&format!(
+                "SELECT _row_id FROM dataset_legacy_numeric_rebalance
+                 ORDER BY {NATURAL_ORDER_SQL}, _row_id"
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(natural_order, vec![1, 3, 2]);
+        let row_order: i128 = db
+            .conn()
+            .query_row(
+                "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
+                duckdb::params![change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(row_order, 1_i128 << 64);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_v1_archive_restores_full_range_numeric_row_order_and_replays() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".review-v1-legacy-numeric-row-order-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Legacy v1 numeric row order".into(), &path_string)
+            .unwrap();
+        let (min_change_set_id, max_change_set_id) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("legacy-v1-numeric", "Legacy v1 numeric", 2, 1)
+                .unwrap();
+            let min_added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-v1-numeric",
+                1,
+                Some(1),
+                0,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_v1_numeric SET _row_order = ? WHERE _row_id = 3",
+                    duckdb::params![i128::MIN],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![i128::MIN, &min_added.change_set_id],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-v1-numeric", 1).unwrap();
+            let max_added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-v1-numeric",
+                1,
+                None,
+                1,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_v1_numeric SET _row_order = ? WHERE _row_id = 4",
+                    duckdb::params![i128::MAX],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![i128::MAX, &max_added.change_set_id],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-v1-numeric", 2).unwrap();
+            (min_added.change_set_id, max_added.change_set_id)
+        };
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
+
+        let legacy_change_sets = format!(
+            r#"{{"version":1,"changeSets":[{{
+                "id":"{min_change_set_id}",
+                "datasetId":"legacy-v1-numeric",
+                "storageKind":"row_delta",
+                "generation":1,
+                "operation":"add_rows",
+                "beforeGeneration":0,
+                "afterGeneration":1,
+                "snapshotTable":null,
+                "applied":true,
+                "rows":[{{"ordinal":0,"rowId":3,"rowOrder":{}}}],
+                "columns":[]
+            }},{{
+                "id":"{max_change_set_id}",
+                "datasetId":"legacy-v1-numeric",
+                "storageKind":"row_delta",
+                "generation":2,
+                "operation":"add_rows",
+                "beforeGeneration":1,
+                "afterGeneration":2,
+                "snapshotTable":null,
+                "applied":true,
+                "rows":[{{"ordinal":3,"rowId":4,"rowOrder":{}}}],
+                "columns":[]
+            }}]}}"#,
+            i128::MIN,
+            i128::MAX
+        )
+        .into_bytes();
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if name != "manifest.json" {
+                    return bytes;
+                }
+                let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let object = manifest.as_object_mut().unwrap();
+                object.remove("historyTimeline");
+                object.insert(
+                    "deltaHistory".into(),
+                    serde_json::json!({
+                        "changeSetsFile": "history/change_sets.json",
+                        "snapshots": []
+                    }),
+                );
+                serde_json::to_vec(&manifest).unwrap()
+            },
+            vec![("history/change_sets.json".into(), legacy_change_sets)],
+        );
+
+        let reopened = AppState::new().unwrap();
+        ProjectService::new(&reopened)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened.db.lock().unwrap();
+        let mut restored = db
+            .conn()
+            .prepare(
+                "SELECT row_id, row_order FROM _history_row_deltas
+                 WHERE change_set_id IN (?, ?) ORDER BY row_id",
+            )
+            .unwrap();
+        let restored = restored
+            .query_map(
+                duckdb::params![&min_change_set_id, &max_change_set_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i128>(1)?)),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(restored, vec![(3, i128::MIN), (4, i128::MAX)]);
+        let initially_restored = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order FROM dataset_legacy_v1_numeric
+                 ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            initially_restored,
+            vec![(1, None), (2, None), (3, None), (4, None)]
+        );
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 2);
+        db.apply_change_set(&max_change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 3);
+        db.apply_change_set(&min_change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 4);
+        let count_after_undo: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM dataset_legacy_v1_numeric",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_after_undo, 2);
+        db.apply_change_set(&min_change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 5);
+        db.apply_change_set(&max_change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 6);
+        let mut redone = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order FROM dataset_legacy_v1_numeric
+                 WHERE _row_id IN (3, 4) ORDER BY _row_id",
+            )
+            .unwrap();
+        let redone = redone
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i128>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(redone, vec![(3, i128::MIN), (4, i128::MAX)]);
+        let natural_order = db
+            .conn()
+            .prepare(&format!(
+                "SELECT _row_id FROM dataset_legacy_v1_numeric
+                 ORDER BY {NATURAL_ORDER_SQL}, _row_id"
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(natural_order, vec![3, 1, 2, 4]);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_history_reference_without_backend_evidence_requires_migration() {
+        let retained_id = "00000000-0000-4000-8000-000000000021";
+        let missing_id = "00000000-0000-4000-8000-000000000022";
+        let history = vec![
+            serde_json::json!({
+                "id": "retained",
+                "action": {"kind": "changeSet", "changeSetId": retained_id}
+            }),
+            serde_json::json!({
+                "id": "missing",
+                "action": {"kind": "changeSet", "changeSetId": missing_id}
+            }),
+        ];
+        let reconciled = reconcile_archived_history(
+            history,
+            &std::collections::HashSet::from([retained_id.to_string()]),
+        );
+        assert_eq!(
+            reconciled[0].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(retained_id.into()))
+        );
+        assert!(reconciled[1].get("action").is_none());
+        assert_eq!(reconciled[1]["replayable"], serde_json::json!(false));
+        assert_eq!(
+            reconciled[1]["unavailableChangeSetId"],
+            serde_json::json!(missing_id)
+        );
+        assert!(reconciled[1]["migrationError"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be replayed"));
+    }
+
+    #[test]
+    fn delta_history_archive_pre_generation_field_preserves_later_legacy_generation() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-generation-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("generation-history", "Generation History", 4, 1)
+                .unwrap();
+            let deleted = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "generation-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+            deleted.change_set_id
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": change_set_id}}),
+        ];
+        service.save_project(request, None).unwrap();
+        rewrite_project_manifest(&path, |manifest| {
+            manifest.as_object_mut().unwrap().remove("datasetGenerations");
+        });
+
+        let reopened_state = AppState::new().unwrap();
+        ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened_state.db.lock().unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 1);
+        db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 2);
+        let legacy_change_set = db
+            .paste_at_position_with_change_set(
+                "generation-history",
+                0,
+                0,
+                &[vec!["99".into()]],
+                None,
+                &[],
+                Some(2),
+            )
+            .unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 3);
+        db.apply_change_set(&legacy_change_set, true).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 4);
+        db.apply_change_set(&legacy_change_set, false).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 5);
+        db.apply_change_set(&change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 6);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_explicit_generation_below_compact_history() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-low-generation-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("low-generation-history", "Low Generation History", 4, 1)
+                .unwrap();
+            crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "low-generation-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+        }
+        service.save_project(empty_save_request(None), None).unwrap();
+        rewrite_project_manifest(&path, |manifest| {
+            manifest["datasetGenerations"]["low-generation-history"] = serde_json::json!(0);
+        });
+
+        let reopened_state = AppState::new().unwrap();
+        let error = match ProjectService::new(&reopened_state).open_project(&path_string, None) {
+            Ok(_) => panic!("generation below compact history must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("generation")),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     fn seed_export_dataset(
@@ -3113,6 +4486,136 @@ mod tests {
     }
 
     #[test]
+    fn open_project_remaps_legacy_row_order_column_without_losing_metadata_or_values() {
+        let legacy = TableDoc {
+            id: "legacy-row-order".into(),
+            name: "Legacy Row Order".into(),
+            source_type: "manual".into(),
+            version: "2".into(),
+            columns: vec![
+                TableColumn {
+                    name: "_row_order".into(),
+                    col_type: "BIGINT".into(),
+                    width: Some(140.0),
+                    format: None,
+                    extras: Some(BTreeMap::from([(
+                        "notes".into(),
+                        serde_json::json!("legacy user data"),
+                    )])),
+                    ..Default::default()
+                },
+                TableColumn {
+                    name: "_row_order_user".into(),
+                    col_type: "VARCHAR".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    ..Default::default()
+                },
+            ],
+            rows: vec![
+                vec![
+                    serde_json::json!(1),
+                    serde_json::json!(101),
+                    serde_json::json!("alpha"),
+                ],
+                vec![
+                    serde_json::json!(2),
+                    serde_json::json!(202),
+                    serde_json::json!("beta"),
+                ],
+            ],
+        };
+        let folders = HashMap::new();
+        let bundle = spprj_archive::build_bundle(
+            "Legacy Collision".into(),
+            "2.0.0".into(),
+            "2026-09-20T00:00:00Z".into(),
+            vec![legacy],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Vec::new(),
+            vec![],
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            vec![],
+            vec![],
+        )
+        .expect("legacy bundle");
+        let project_path = std::env::current_dir()
+            .expect("current directory")
+            .join(format!(".legacy-row-order-{}.spprj", uuid::Uuid::new_v4()));
+        spprj_archive::write_project_archive(
+            &bundle,
+            project_path.to_str().expect("utf-8 project path"),
+        )
+        .expect("write legacy project");
+
+        let state = AppState::new().expect("state");
+        let opened = ProjectService::new(&state)
+            .open_project(project_path.to_str().expect("utf-8 project path"), None);
+        std::fs::remove_file(&project_path).expect("remove legacy project");
+        opened.expect("open legacy project");
+
+        let service = ProjectService::new(&state);
+        let restored = service
+            .compose_table_doc("legacy-row-order")
+            .expect("compose restored table");
+        assert_eq!(
+            restored
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["_row_order_user-2", "_row_order_user"],
+        );
+        assert_eq!(restored.columns[0].width, Some(140.0));
+        assert_eq!(
+            restored.columns[0]
+                .extras
+                .as_ref()
+                .and_then(|extras| extras.get("notes")),
+            Some(&serde_json::json!("legacy user data")),
+        );
+        assert_eq!(
+            restored.rows,
+            vec![
+                vec![
+                    serde_json::json!(1),
+                    serde_json::json!(101),
+                    serde_json::json!("alpha"),
+                ],
+                vec![
+                    serde_json::json!(2),
+                    serde_json::json!(202),
+                    serde_json::json!("beta"),
+                ],
+            ],
+        );
+
+        let db = state.db.lock().expect("database");
+        let internal_type: String = db
+            .conn()
+            .query_row(
+                "SELECT data_type FROM information_schema.columns
+                 WHERE table_name = 'dataset_legacy_row_order'
+                   AND column_name = '_row_order'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("internal row order type");
+        assert_eq!(internal_type, "HUGEINT");
+    }
+
+    #[test]
     fn restore_rejects_non_positive_and_duplicate_row_ids() {
         for rows in [
             vec![vec![serde_json::json!(0), serde_json::json!(10)]],
@@ -3940,6 +5443,9 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4164,6 +5670,9 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4377,6 +5886,9 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());

@@ -24,7 +24,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 duckdb = { version = "1.10505.0", features = ["bundled"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -56,13 +56,15 @@ base64 = "0.22"
 subtle = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["fs"] }
 
 [dev-dependencies]
+proc-macro2 = "1.0.107"
 proptest = "1.7.0"
+syn = { version = "=3.0.5", features = ["full", "visit"] }
 tokio = { version = "1", features = ["test-util"] }
 
 [profile.dev]

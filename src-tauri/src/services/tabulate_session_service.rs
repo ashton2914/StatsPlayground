@@ -856,12 +856,28 @@ mod tests {
     impl SessionHarness {
         fn new(budget: usize) -> Self {
             let source = DuckDbEngine::new_in_memory().expect("engine");
-            source.conn().execute_batch(
-                "CREATE TABLE dataset_session_test (region VARCHAR, product VARCHAR, sales DOUBLE);
-                 INSERT INTO dataset_session_test VALUES ('East', 'A', 1), ('West', 'B', 2), (NULL, 'A', 3);
-                 INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count)
-                 VALUES ('session-test', 'Session test', 'test', 3, 3);"
-            ).expect("fixture");
+            source
+                .create_empty_table(
+                    "session-test",
+                    "Session test",
+                    &["region".into(), "product".into(), "sales".into()],
+                    &["VARCHAR".into(), "VARCHAR".into(), "DOUBLE".into()],
+                )
+                .expect("create fixture");
+            source
+                .conn()
+                .execute_batch(
+                    "INSERT INTO dataset_session_test
+                     (_row_id, region, product, sales, _row_order) VALUES
+                     (1, 'East', 'A', 1, NULL),
+                     (2, 'West', 'B', 2, NULL),
+                     (3, NULL, 'A', 3, NULL);
+                     UPDATE _meta_datasets SET row_count = 3 WHERE id = 'session-test';",
+                )
+                .expect("seed fixture");
+            source
+                .rebuild_natural_anchors("session-test", 0)
+                .expect("publish fixture anchors");
             let milliseconds = Arc::new(AtomicU64::new(0));
             let clock_value = Arc::clone(&milliseconds);
             let service = TabulateSessionService::with_policy_and_clock(
@@ -930,6 +946,23 @@ mod tests {
                 .expect("tables");
             assert_eq!(count, 0);
         }
+
+        fn rebuild_source_anchors(&self, row_count: i64) {
+            self.source
+                .conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = ? WHERE id = 'session-test'",
+                    [row_count],
+                )
+                .expect("update fixture row count");
+            let generation = self
+                .source
+                .get_dataset_generation("session-test")
+                .expect("fixture generation");
+            self.source
+                .rebuild_natural_anchors("session-test", generation)
+                .expect("publish fixture anchors");
+        }
     }
 
     fn window_request(status: &TabulateSessionStatus) -> TabulateWindowRequest {
@@ -961,13 +994,15 @@ mod tests {
             "ALTER TABLE dataset_session_test ADD COLUMN detail VARCHAR;
              ALTER TABLE dataset_session_test ADD COLUMN channel VARCHAR;
              DELETE FROM dataset_session_test;
-             INSERT INTO dataset_session_test VALUES
-               ('West', 'A', NULL, 'two', 'web'),
-               ('East', 'A', 2, 'one', 'web'),
-               ('East', 'A', 4, 'one', 'web'),
-               (NULL, NULL, 8, 'one', 'web'),
-               ('East', 'Missing', 6, 'one', 'web');"
+             INSERT INTO dataset_session_test
+               (_row_id, region, product, sales, _row_order, detail, channel) VALUES
+               (1, 'West', 'A', NULL, NULL, 'two', 'web'),
+               (2, 'East', 'A', 2, NULL, 'one', 'web'),
+               (3, 'East', 'A', 4, NULL, 'one', 'web'),
+               (4, NULL, NULL, 8, NULL, 'one', 'web'),
+               (5, 'East', 'Missing', 6, NULL, 'one', 'web');"
         ).unwrap();
+        harness.rebuild_source_anchors(5);
         let mut definition = harness.request();
         definition.row_fields.push("detail".into());
         definition.column_fields.push("channel".into());
@@ -1068,6 +1103,16 @@ mod tests {
         assert_eq!(&table.rows[0][5..8], &[serde_json::json!(0.0), serde_json::json!(0.0), serde_json::json!(0.0)]);
         harness.source.conn().execute_batch("DELETE FROM dataset_session_test").unwrap();
         harness.source.bump_dataset_generation("session-test").unwrap();
+        harness.rebuild_source_anchors(0);
+        let previous_manifest = harness
+            .source
+            .validate_natural_anchor_manifest("session-test", 0, 3)
+            .expect_err("controlled rebuild removes stale manifests");
+        assert!(previous_manifest.to_string().contains("manifest is missing"));
+        harness
+            .source
+            .validate_natural_anchor_manifest("session-test", 1, 0)
+            .expect("empty source manifest");
         definition.source_generation += 1;
         definition.row_fields.clear();
         definition.column_fields.clear();
@@ -1137,9 +1182,12 @@ mod tests {
         harness.source.conn().execute_batch(
             "DELETE FROM dataset_session_test;
              INSERT INTO dataset_session_test
-             SELECT printf('row%03d', value), printf('col%03d', value % 100), value::DOUBLE
+               (_row_id, region, product, sales, _row_order)
+             SELECT value + 1, printf('row%03d', value), printf('col%03d', value % 100),
+                    value::DOUBLE, NULL
              FROM range(101) AS generated(value);"
         ).unwrap();
+        harness.rebuild_source_anchors(101);
         let status = harness.ready(&harness.request());
         assert_eq!(status.logical_cell_count, 10100);
         let mut request = materialize_request(&status);
@@ -1200,12 +1248,15 @@ mod tests {
             .conn()
             .execute_batch(
                 "DELETE FROM dataset_session_test;
-             INSERT INTO dataset_session_test VALUES
-             ('A', 'X', 10), ('A', 'Y', 30), ('A', 'Y', NULL),
-             ('B', 'X', 15), ('B', 'Y', 30),
-             ('C', 'X', NULL), ('C', 'X', NULL), (NULL, NULL, 15);",
+             INSERT INTO dataset_session_test
+               (_row_id, region, product, sales, _row_order) VALUES
+             (1, 'A', 'X', 10, NULL), (2, 'A', 'Y', 30, NULL),
+             (3, 'A', 'Y', NULL, NULL), (4, 'B', 'X', 15, NULL),
+             (5, 'B', 'Y', 30, NULL), (6, 'C', 'X', NULL, NULL),
+             (7, 'C', 'X', NULL, NULL), (8, NULL, NULL, 15, NULL);",
             )
             .unwrap();
+        harness.rebuild_source_anchors(8);
         harness
     }
 
@@ -1781,12 +1832,17 @@ mod tests {
                 "ALTER TABLE dataset_session_test ADD COLUMN subregion VARCHAR;
              ALTER TABLE dataset_session_test ADD COLUMN variant VARCHAR;
              DELETE FROM dataset_session_test;
-             INSERT INTO dataset_session_test VALUES
-             ('A', 'X', 10, 'a', 'x'), ('A', 'X', 20, 'a', 'x'),
-             ('A', 'Y', 30, 'b', 'y'), ('B', 'X', 40, 'a', 'z'),
-             ('B', NULL, NULL, 'b', NULL), (NULL, 'Y', 60, NULL, 'y');",
+             INSERT INTO dataset_session_test
+               (_row_id, region, product, sales, _row_order, subregion, variant) VALUES
+             (1, 'A', 'X', 10, NULL, 'a', 'x'),
+             (2, 'A', 'X', 20, NULL, 'a', 'x'),
+             (3, 'A', 'Y', 30, NULL, 'b', 'y'),
+             (4, 'B', 'X', 40, NULL, 'a', 'z'),
+             (5, 'B', NULL, NULL, NULL, 'b', NULL),
+             (6, NULL, 'Y', 60, NULL, NULL, 'y');",
             )
             .expect("nested fixture");
+        harness.rebuild_source_anchors(6);
         let mut definition = harness.request();
         definition.row_fields = vec!["region".into(), "subregion".into()];
         definition.column_fields = vec!["product".into(), "variant".into()];
@@ -1920,8 +1976,12 @@ mod tests {
         let harness = SessionHarness::new(256 * 1024 * 1024);
         harness.source.conn().execute_batch(
             "DELETE FROM dataset_session_test;
-             INSERT INTO dataset_session_test SELECT printf('%06d', range), printf('%06d', range), range FROM range(10000);"
+             INSERT INTO dataset_session_test
+               (_row_id, region, product, sales, _row_order)
+             SELECT range + 1, printf('%06d', range), printf('%06d', range), range, NULL
+             FROM range(10000);"
         ).unwrap();
+        harness.rebuild_source_anchors(10_000);
         let status = harness.ready(&harness.request());
         let result = harness
             .service

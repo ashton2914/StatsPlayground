@@ -380,6 +380,23 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.graph_builders_new.clone(),
             snapshot.request.graph_new_folders.clone(),
         )?;
+        bundle.manifest.dataset_generations = Some(snapshot.dataset_generations.clone());
+        let history_timeline = {
+            let db = self
+                .state
+                .db
+                .lock()
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            db.archive_unified_history()?
+        };
+        if !history_timeline.datasets.is_empty() {
+            bundle.manifest.history_timeline = Some(
+                crate::services::table_history_archive::HistoryTimelineRef {
+                    timeline_file: "history/timeline.v2.json".into(),
+                },
+            );
+            bundle.manifest.delta_history = None;
+        }
 
         thread::scope(|scope| {
             let mut perf = SaveRunPerf::default();
@@ -409,6 +426,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 &bundle.snapshots,
                 &bundle.workflows,
                 &bundle.table_transforms,
+                &history_timeline,
                 &temp_path,
                 temp_file,
                 total_rows,
@@ -467,6 +485,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
         table_transform_docs: &[crate::services::table_transform_domain::TableTransformDefinition],
+        history_timeline:
+            &crate::services::table_history_archive::HistoryTimelineArchive,
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -878,6 +898,42 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 .map_err(|e| AppError::FileIO(e.to_string()))?;
             serde_json::to_writer(&mut zip, &snapshot.request.history)
                 .map_err(|e| AppError::FileIO(format!("failed to serialize history: {e}")))?;
+        }
+        if !history_timeline.datasets.is_empty() {
+            zip.start_file("history/timeline.v2.json", file_opts)
+                .map_err(|error| AppError::FileIO(error.to_string()))?;
+            serde_json::to_writer(&mut zip, history_timeline).map_err(|error| {
+                AppError::FileIO(format!("failed to serialize unified history: {error}"))
+            })?;
+            let parent = temp_path.parent().ok_or_else(|| {
+                AppError::FileIO("Project archive destination has no parent directory".into())
+            })?;
+            for descriptor in history_timeline
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.snapshots)
+            {
+                let mut parquet = tempfile::Builder::new()
+                    .prefix(".statsplayground-history-")
+                    .suffix(".parquet")
+                    .tempfile_in(parent)?;
+                {
+                    let db = self
+                        .state
+                        .db
+                        .lock()
+                        .map_err(|error| AppError::Database(error.to_string()))?;
+                    let path = parquet.path().to_str().ok_or_else(|| {
+                        AppError::FileIO("Snapshot path is not valid UTF-8".into())
+                    })?;
+                    db.export_unified_history_snapshot(descriptor, path)?;
+                }
+                parquet.as_file_mut().sync_all()?;
+                let mut parquet_reader = std::fs::File::open(parquet.path())?;
+                zip.start_file(&descriptor.file, file_opts)
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                std::io::copy(&mut parquet_reader, &mut zip)?;
+            }
         }
         dispatcher.emit(SaveProgress {
             phase: SavePhase::Compressing,

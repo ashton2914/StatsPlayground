@@ -11,6 +11,8 @@
 //! snapshots/<name>.json        Snapshot docs (indexed in manifest)
 //! .history.json                opaque [HistoryEntry] (optional)
 //! .snapshots.json              legacy snapshot fallback (optional)
+//! history/change_sets.json     compact table change-set metadata (optional)
+//! history/snapshots/<uuid>.parquet typed compact-history snapshots (optional)
 //! ```
 //!
 //! v3 and earlier archives may still include legacy logical folder paths.
@@ -203,6 +205,139 @@ pub struct ProjectManifest {
     pub relationships: Vec<ProjectRelationship>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub dataset_filters: DatasetFilters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_generations: Option<HashMap<String, u64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_history: Option<DeltaHistoryRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_timeline: Option<crate::services::table_history_archive::HistoryTimelineRef>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryRef {
+    pub change_sets_file: String,
+    #[serde(default)]
+    pub snapshots: Vec<DeltaHistorySnapshotRef>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistorySnapshotRef {
+    pub change_set_id: String,
+    pub file: String,
+    pub table_name: String,
+    pub columns: Vec<DeltaHistorySnapshotColumn>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistorySnapshotColumn {
+    pub name: String,
+    pub duckdb_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_type: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryArchive {
+    pub version: u32,
+    pub change_sets: Vec<DeltaHistoryChangeSet>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryChangeSet {
+    pub id: String,
+    pub dataset_id: String,
+    pub storage_kind: String,
+    pub generation: u64,
+    pub operation: String,
+    pub before_generation: u64,
+    pub after_generation: u64,
+    pub snapshot_table: Option<String>,
+    pub applied: bool,
+    pub rows: Vec<DeltaHistoryRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_order_rebalances: Vec<DeltaHistoryRowOrderRebalance>,
+    pub columns: Vec<DeltaHistoryColumn>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryRow {
+    pub ordinal: i32,
+    pub row_id: i64,
+    #[serde(default, with = "optional_i128_string")]
+    pub row_order: Option<i128>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryRowOrderRebalance {
+    pub ordinal: i32,
+    pub row_id: i64,
+    #[serde(default, with = "optional_i128_string")]
+    pub before_row_order: Option<i128>,
+    #[serde(default, with = "optional_i128_string")]
+    pub after_row_order: Option<i128>,
+}
+
+mod optional_i128_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use serde_json::value::RawValue;
+
+    pub fn serialize<S>(value: &Option<i128>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_some(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<i128>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(raw) = Option::<Box<RawValue>>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let raw = raw.get();
+        let decimal = if raw.starts_with('"') {
+            serde_json::from_str::<String>(raw).map_err(serde::de::Error::custom)?
+        } else {
+            raw.to_string()
+        };
+        let value = decimal
+            .parse::<i128>()
+            .map_err(serde::de::Error::custom)?;
+        if value.to_string() != decimal {
+            return Err(serde::de::Error::custom(
+                "row-order key must be a canonical decimal integer",
+            ));
+        }
+        Ok(Some(value))
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryColumn {
+    pub ordinal: i32,
+    pub column_id: String,
+    pub col_index: i32,
+    pub col_name: String,
+    pub col_type: String,
+    pub calculated_definition_json: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DeltaHistoryBundle {
+    pub metadata: DeltaHistoryArchive,
+    pub snapshots: Vec<(DeltaHistorySnapshotRef, Vec<u8>)>,
 }
 
 pub type DatasetFilters = HashMap<String, Vec<ProjectFilterRuleItem>>;
@@ -712,6 +847,8 @@ pub struct ProjectBundle {
     pub snapshots: Vec<Value>,
     pub workflows: Vec<workflow_domain::WorkflowDefinition>,
     pub table_transforms: Vec<crate::services::table_transform_domain::TableTransformDefinition>,
+    pub delta_history: Option<DeltaHistoryBundle>,
+    pub history_timeline: Option<crate::services::table_history_archive::HistoryTimelineBundle>,
 }
 
 // ----------------------------------------------------------------------------
@@ -1098,6 +1235,11 @@ pub fn validate_archive_manifest_and_entries(
             )));
         }
     }
+    if expected_manifest.history_timeline.is_some() {
+        read_history_timeline(&mut zip, expected_manifest.history_timeline.as_ref())?;
+    } else {
+        read_delta_history(&mut zip, expected_manifest.delta_history.as_ref())?;
+    }
     for entry in expected_extra_entries {
         let mut extra_entry = zip
             .by_name(entry)
@@ -1342,6 +1484,12 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         &manifest.table_transform_files,
         strict_v4_name_checks,
     )?;
+    let history_timeline = read_history_timeline(&mut zip, manifest.history_timeline.as_ref())?;
+    let delta_history = if history_timeline.is_some() {
+        None
+    } else {
+        read_delta_history(&mut zip, manifest.delta_history.as_ref())?
+    };
 
     validate_workflow_collections(
         &workflows,
@@ -1364,7 +1512,371 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         snapshots,
         workflows,
         table_transforms,
+        delta_history,
+        history_timeline,
     })
+}
+
+fn read_history_timeline<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    history_ref: Option<&crate::services::table_history_archive::HistoryTimelineRef>,
+) -> Result<Option<crate::services::table_history_archive::HistoryTimelineBundle>, AppError> {
+    use crate::services::table_history_archive::{
+        validate_history_timeline, HistoryTimelineArchive, HistoryTimelineBundle,
+    };
+
+    let Some(history_ref) = history_ref else {
+        return Ok(None);
+    };
+    if history_ref.timeline_file != "history/timeline.v2.json" {
+        return Err(AppError::FileIO(
+            "Invalid unified history timeline path".into(),
+        ));
+    }
+    let bytes = read_entry_bytes(zip, &history_ref.timeline_file)
+        .ok_or_else(|| AppError::FileIO("Missing unified history timeline".into()))?;
+    let metadata: HistoryTimelineArchive = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::FileIO(format!("Malformed history timeline: {error}")))?;
+    validate_history_timeline(&metadata)?;
+    let mut snapshots = Vec::new();
+    let expected_files = metadata
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .snapshots
+                .iter()
+                .map(move |snapshot| (entry.change_set_id.as_str(), snapshot))
+        })
+        .collect::<Vec<_>>();
+    for (change_set_id, descriptor) in &expected_files {
+        let snapshot_bytes = read_entry_bytes(zip, &descriptor.file).ok_or_else(|| {
+            AppError::FileIO(format!(
+                "Missing history snapshot for {change_set_id}:{}",
+                descriptor.kind
+            ))
+        })?;
+        snapshots.push((
+            (*change_set_id).to_string(),
+            (*descriptor).clone(),
+            snapshot_bytes,
+        ));
+    }
+    let expected = expected_files
+        .iter()
+        .map(|(_, snapshot)| snapshot.file.as_str())
+        .collect::<HashSet<_>>();
+    if zip.file_names().any(|name| {
+        name.starts_with("history/snapshots/")
+            && name.ends_with(".parquet")
+            && !expected.contains(name)
+    }) {
+        return Err(AppError::FileIO(
+            "Unified history contains an unreferenced snapshot".into(),
+        ));
+    }
+    Ok(Some(HistoryTimelineBundle {
+        metadata,
+        snapshots,
+    }))
+}
+
+fn read_delta_history<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    history_ref: Option<&DeltaHistoryRef>,
+) -> Result<Option<DeltaHistoryBundle>, AppError> {
+    let Some(history_ref) = history_ref else {
+        return Ok(None);
+    };
+    if history_ref.change_sets_file != "history/change_sets.json" {
+        return Err(AppError::FileIO(
+            "Invalid delta history metadata path".into(),
+        ));
+    }
+    let metadata_bytes = read_entry_bytes(zip, &history_ref.change_sets_file)
+        .ok_or_else(|| AppError::FileIO("Missing delta history change sets".into()))?;
+    let metadata: DeltaHistoryArchive = serde_json::from_slice(&metadata_bytes)
+        .map_err(|error| AppError::FileIO(format!("Malformed delta history metadata: {error}")))?;
+    if metadata.version != 1 {
+        return Err(AppError::FileIO(format!(
+            "Unsupported delta history version: {}",
+            metadata.version
+        )));
+    }
+    validate_delta_history_contract(&metadata, &history_ref.snapshots)?;
+
+    let mut descriptor_ids = HashSet::new();
+    let mut snapshots = Vec::with_capacity(history_ref.snapshots.len());
+    for descriptor in &history_ref.snapshots {
+        let parsed = uuid::Uuid::parse_str(&descriptor.change_set_id)
+            .map_err(|_| AppError::FileIO("Invalid delta history change-set UUID".into()))?;
+        let expected_file = format!("history/snapshots/{}.parquet", parsed.hyphenated());
+        if descriptor.file != expected_file
+            || !descriptor_ids.insert(descriptor.change_set_id.clone())
+        {
+            return Err(AppError::FileIO(
+                "Invalid or duplicate delta history snapshot path".into(),
+            ));
+        }
+
+        let bytes = read_entry_bytes(zip, &descriptor.file).ok_or_else(|| {
+            AppError::FileIO(format!(
+                "Missing delta history snapshot for {}",
+                descriptor.change_set_id
+            ))
+        })?;
+        snapshots.push((descriptor.clone(), bytes));
+    }
+
+    let referenced = metadata
+        .change_sets
+        .iter()
+        .filter_map(|change_set| {
+            change_set
+                .snapshot_table
+                .as_ref()
+                .map(|table| (change_set.id.as_str(), table.as_str()))
+        })
+        .collect::<HashMap<_, _>>();
+    if referenced.len() != history_ref.snapshots.len()
+        || history_ref.snapshots.iter().any(|snapshot| {
+            referenced.get(snapshot.change_set_id.as_str()).copied()
+                != Some(snapshot.table_name.as_str())
+        })
+    {
+        return Err(AppError::FileIO(
+            "Delta history snapshot descriptors do not match metadata".into(),
+        ));
+    }
+    let expected_files = history_ref
+        .snapshots
+        .iter()
+        .map(|snapshot| snapshot.file.as_str())
+        .collect::<HashSet<_>>();
+    let has_extra = zip.file_names().any(|name| {
+        name.starts_with("history/snapshots/")
+            && name.ends_with(".parquet")
+            && !expected_files.contains(name)
+    });
+    if has_extra {
+        return Err(AppError::FileIO(
+            "Delta history contains an unreferenced snapshot".into(),
+        ));
+    }
+    Ok(Some(DeltaHistoryBundle {
+        metadata,
+        snapshots,
+    }))
+}
+
+pub(crate) fn validate_delta_history_contract(
+    archive: &DeltaHistoryArchive,
+    snapshots: &[DeltaHistorySnapshotRef],
+) -> Result<(), AppError> {
+    let snapshot_by_id = snapshots
+        .iter()
+        .map(|snapshot| (snapshot.change_set_id.as_str(), snapshot))
+        .collect::<HashMap<_, _>>();
+    if snapshot_by_id.len() != snapshots.len() {
+        return Err(AppError::FileIO(
+            "Duplicate delta history snapshot descriptor".into(),
+        ));
+    }
+    let mut change_set_ids = HashSet::new();
+    for change_set in &archive.change_sets {
+        let parsed = uuid::Uuid::parse_str(&change_set.id)
+            .map_err(|_| AppError::FileIO("Invalid delta history change-set UUID".into()))?;
+        if !change_set_ids.insert(change_set.id.as_str()) || change_set.dataset_id.trim().is_empty()
+        {
+            return Err(AppError::FileIO(
+                "Invalid or duplicate delta history change set".into(),
+            ));
+        }
+        let snapshot = snapshot_by_id.get(change_set.id.as_str()).copied();
+        let requires_snapshot = matches!(
+            (
+                change_set.storage_kind.as_str(),
+                change_set.operation.as_str()
+            ),
+            ("row_delta", "delete_rows") | ("column_delta", "delete_columns")
+        );
+        let forbids_snapshot = matches!(
+            (
+                change_set.storage_kind.as_str(),
+                change_set.operation.as_str()
+            ),
+            ("row_delta", "add_rows") | ("column_delta", "add_columns")
+        );
+        if !requires_snapshot && !forbids_snapshot {
+            return Err(AppError::FileIO(format!(
+                "Unsupported delta history operation {}:{}",
+                change_set.storage_kind, change_set.operation
+            )));
+        }
+        if requires_snapshot && (change_set.snapshot_table.is_none() || snapshot.is_none()) {
+            return Err(AppError::FileIO(format!(
+                "{} requires a snapshot",
+                change_set.operation
+            )));
+        }
+        if forbids_snapshot && (change_set.snapshot_table.is_some() || snapshot.is_some()) {
+            return Err(AppError::FileIO(format!(
+                "{} forbids a snapshot",
+                change_set.operation
+            )));
+        }
+
+        match change_set.storage_kind.as_str() {
+            "row_delta" => {
+                if change_set.rows.is_empty() || !change_set.columns.is_empty() {
+                    return Err(AppError::FileIO(
+                        "Row delta metadata has an invalid shape".into(),
+                    ));
+                }
+                let mut row_ids = HashSet::new();
+                if change_set
+                    .rows
+                    .iter()
+                    .any(|row| row.row_id <= 0 || !row_ids.insert(row.row_id))
+                {
+                    return Err(AppError::FileIO(
+                        "Row delta metadata contains invalid row IDs".into(),
+                    ));
+                }
+                validate_row_order_rebalance_metadata(change_set)?;
+            }
+            "column_delta" => {
+                if !change_set.rows.is_empty()
+                    || !change_set.row_order_rebalances.is_empty()
+                    || change_set.columns.is_empty()
+                {
+                    return Err(AppError::FileIO(
+                        "Column delta metadata has an invalid shape".into(),
+                    ));
+                }
+                let mut column_ids = HashSet::new();
+                let mut column_names = HashSet::new();
+                for column in &change_set.columns {
+                    uuid::Uuid::parse_str(&column.column_id).map_err(|_| {
+                        AppError::FileIO("Column delta contains an invalid column UUID".into())
+                    })?;
+                    if column.col_index < 0
+                        || column.col_name.trim().is_empty()
+                        || column.col_type.trim().is_empty()
+                        || !column_ids.insert(column.column_id.as_str())
+                        || !column_names.insert(column.col_name.as_str())
+                    {
+                        return Err(AppError::FileIO("Column delta metadata is invalid".into()));
+                    }
+                    if let Some(definition) = &column.calculated_definition_json {
+                        serde_json::from_str::<
+                            crate::models::calculated_column::ArchivedCalculatedColumn,
+                        >(definition)
+                        .map_err(|error| {
+                            AppError::FileIO(format!(
+                                "Invalid calculated-column delta metadata: {error}"
+                            ))
+                        })?;
+                    }
+                }
+            }
+            _ => {
+                return Err(AppError::FileIO(
+                    "Unsupported delta history storage kind".into(),
+                ))
+            }
+        }
+
+        if let (Some(table_name), Some(snapshot)) = (change_set.snapshot_table.as_deref(), snapshot)
+        {
+            let prefix = if change_set.storage_kind == "row_delta" {
+                "_history_rows_"
+            } else {
+                "_history_columns_"
+            };
+            if table_name != format!("{prefix}{}", parsed.simple())
+                || snapshot.table_name != table_name
+            {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot identity does not match its change set".into(),
+                ));
+            }
+            let mut names = HashSet::new();
+            if snapshot.columns.is_empty()
+                || snapshot.columns.iter().any(|column| {
+                    column.name.trim().is_empty()
+                        || column.duckdb_type.trim().is_empty()
+                        || !names.insert(column.name.as_str())
+                })
+            {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot schema is invalid".into(),
+                ));
+            }
+            let valid_schema = if change_set.storage_kind == "row_delta" {
+                names.contains("_row_id") && names.contains("_row_order")
+            } else {
+                snapshot.columns.first().map(|column| column.name.as_str()) == Some("_row_id")
+                    && snapshot.columns.len() == change_set.columns.len() + 1
+                    && change_set.columns.iter().all(|column| {
+                        snapshot.columns.iter().any(|snapshot_column| {
+                            snapshot_column.name == column.col_name
+                                && snapshot_column.duckdb_type == column.col_type
+                        })
+                    })
+            };
+            if !valid_schema {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot schema does not match its operation".into(),
+                ));
+            }
+        }
+    }
+    if snapshot_by_id.keys().any(|id| !change_set_ids.contains(id)) {
+        return Err(AppError::FileIO(
+            "Delta history contains an unreferenced snapshot descriptor".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_row_order_rebalance_metadata(
+    change_set: &DeltaHistoryChangeSet,
+) -> Result<(), AppError> {
+    if change_set.row_order_rebalances.is_empty() {
+        return Ok(());
+    }
+    if change_set.storage_kind != "row_delta" || change_set.operation != "add_rows" {
+        return Err(AppError::FileIO(
+            "Row-order rebalance metadata belongs to an invalid operation".into(),
+        ));
+    }
+    if change_set.row_order_rebalances.len()
+        > crate::services::natural_row_order::MAX_REBALANCE_WINDOW
+    {
+        return Err(AppError::FileIO(
+            "Row-order rebalance metadata exceeds its bounded window".into(),
+        ));
+    }
+    let inserted_ids = change_set
+        .rows
+        .iter()
+        .map(|row| row.row_id)
+        .collect::<HashSet<_>>();
+    let mut existing_ids = HashSet::with_capacity(change_set.row_order_rebalances.len());
+    for (expected_ordinal, row) in change_set.row_order_rebalances.iter().enumerate() {
+        if row.ordinal != i32::try_from(expected_ordinal).unwrap_or(-1)
+            || row.row_id <= 0
+            || row.after_row_order.is_none()
+            || inserted_ids.contains(&row.row_id)
+            || !existing_ids.insert(row.row_id)
+        {
+            return Err(AppError::FileIO(
+                "Row-order rebalance metadata has invalid row ownership".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_indexed_table_transforms<R: Read + Seek>(
@@ -1628,6 +2140,9 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         lineage_graph: workflow_domain::ProjectLineageGraph::default(),
         relationships: Vec::new(),
         dataset_filters: HashMap::new(),
+        dataset_generations: None,
+        delta_history: None,
+        history_timeline: None,
     };
 
     let mut bundle = ProjectBundle {
@@ -1645,8 +2160,14 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         snapshots: legacy.snapshots.unwrap_or_default(),
         workflows: Vec::new(),
         table_transforms: Vec::new(),
+        delta_history: None,
+        history_timeline: None,
     };
-    set_graph_builders_new(&mut bundle, legacy.graph_builders_new, legacy.graph_new_folders)?;
+    set_graph_builders_new(
+        &mut bundle,
+        legacy.graph_builders_new,
+        legacy.graph_new_folders,
+    )?;
     Ok(bundle)
 }
 
@@ -2221,6 +2742,9 @@ pub fn build_bundle_with_workflows_and_fit_models(
             lineage_graph,
             relationships,
             dataset_filters,
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         },
         tables,
         graphs,
@@ -2235,12 +2759,20 @@ pub fn build_bundle_with_workflows_and_fit_models(
         snapshots,
         workflows,
         table_transforms,
+        delta_history: None,
+        history_timeline: None,
     })
 }
 
 fn validate_native_graph_string(value: &str, field: &str, limit: usize) -> Result<(), AppError> {
-    if value.trim().is_empty() || value.trim() != value || value.len() > limit || value.chars().any(char::is_control) {
-        return Err(AppError::InvalidParam(format!("Invalid graphBuildersNew {field}")));
+    if value.trim().is_empty()
+        || value.trim() != value
+        || value.len() > limit
+        || value.chars().any(char::is_control)
+    {
+        return Err(AppError::InvalidParam(format!(
+            "Invalid graphBuildersNew {field}"
+        )));
     }
     Ok(())
 }
@@ -2249,9 +2781,9 @@ fn validate_graph_builder_new_hidden_overlay_group_ids(
     overlay_column_id: Option<&str>,
     value: &Value,
 ) -> Result<(), AppError> {
-    let ids = value
-        .as_array()
-        .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into()))?;
+    let ids = value.as_array().ok_or_else(|| {
+        AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into())
+    })?;
     if ids.len() > 64 {
         return Err(AppError::InvalidParam(
             "Invalid graphBuildersNew hiddenOverlayGroupIds".into(),
@@ -2259,9 +2791,9 @@ fn validate_graph_builder_new_hidden_overlay_group_ids(
     }
     let mut unique = HashSet::new();
     for id in ids {
-        let id = id
-            .as_str()
-            .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into()))?;
+        let id = id.as_str().ok_or_else(|| {
+            AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into())
+        })?;
         let valid_group_id = id.len() == 71
             && id.starts_with("sha256:")
             && id
@@ -2284,13 +2816,41 @@ fn validate_graph_builder_new_hidden_overlay_group_ids(
 }
 
 fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
-    let object = value.as_object().ok_or_else(|| AppError::InvalidParam("graphBuildersNew document must be an object".into()))?;
-    let version = value["version"]
-        .as_u64()
-        .ok_or_else(|| AppError::InvalidParam("Unsupported graphBuildersNew document version (expected 1 or 2)".into()))?;
+    let object = value.as_object().ok_or_else(|| {
+        AppError::InvalidParam("graphBuildersNew document must be an object".into())
+    })?;
+    let version = value["version"].as_u64().ok_or_else(|| {
+        AppError::InvalidParam(
+            "Unsupported graphBuildersNew document version (expected 1 or 2)".into(),
+        )
+    })?;
     let fields: &[&str] = match version {
-        1 => &["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "showMean", "xMode", "rawMode", "camera"],
-        2 => &["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "showMean", "xMode", "rawMode", "camera"],
+        1 => &[
+            "version",
+            "id",
+            "name",
+            "datasetId",
+            "xColumnId",
+            "yColumnId",
+            "showMean",
+            "xMode",
+            "rawMode",
+            "camera",
+        ],
+        2 => &[
+            "version",
+            "id",
+            "name",
+            "datasetId",
+            "xColumnId",
+            "yColumnId",
+            "overlayColumnId",
+            "hiddenOverlayGroupIds",
+            "showMean",
+            "xMode",
+            "rawMode",
+            "camera",
+        ],
         _ => {
             return Err(AppError::InvalidParam(
                 "Unsupported graphBuildersNew document version (expected 1 or 2)".into(),
@@ -2304,30 +2864,46 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
         if matches!(field, "xColumnId" | "yColumnId") && value[field].is_null() {
             continue;
         }
-        let text = value[field].as_str().ok_or_else(|| AppError::InvalidParam(format!("Invalid graphBuildersNew {field}")))?;
+        let text = value[field]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidParam(format!("Invalid graphBuildersNew {field}")))?;
         validate_native_graph_string(text, field, if field == "name" { 255 } else { 256 })?;
         if field == "name" {
             validate_display_basename(text)?;
         }
     }
     if value["showMean"].as_bool().is_none()
-        || !matches!(value["xMode"].as_str(), Some("auto" | "numeric" | "time" | "duration" | "category"))
-        || !matches!(value["rawMode"].as_str(), Some("scatter" | "line" | "pointsLine"))
+        || !matches!(
+            value["xMode"].as_str(),
+            Some("auto" | "numeric" | "time" | "duration" | "category")
+        )
+        || !matches!(
+            value["rawMode"].as_str(),
+            Some("scatter" | "line" | "pointsLine")
+        )
     {
-        return Err(AppError::InvalidParam("Invalid graphBuildersNew modes or showMean".into()));
+        return Err(AppError::InvalidParam(
+            "Invalid graphBuildersNew modes or showMean".into(),
+        ));
     }
     if !value["camera"].is_null() {
-        let camera: crate::models::graph_new::GraphNewCameraDomain = serde_json::from_value(value["camera"].clone())
-            .map_err(|error| AppError::InvalidParam(format!("Invalid graphBuildersNew camera: {error}")))?;
-        camera.validate().map_err(|_| AppError::InvalidParam("graphBuildersNew camera must have finite increasing bounds and spans".into()))?;
+        let camera: crate::models::graph_new::GraphNewCameraDomain =
+            serde_json::from_value(value["camera"].clone()).map_err(|error| {
+                AppError::InvalidParam(format!("Invalid graphBuildersNew camera: {error}"))
+            })?;
+        camera.validate().map_err(|_| {
+            AppError::InvalidParam(
+                "graphBuildersNew camera must have finite increasing bounds and spans".into(),
+            )
+        })?;
     }
     if version == 2 {
         let overlay_column_id = if value["overlayColumnId"].is_null() {
             None
         } else {
-            let overlay_column_id = value["overlayColumnId"]
-                .as_str()
-                .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew overlayColumnId".into()))?;
+            let overlay_column_id = value["overlayColumnId"].as_str().ok_or_else(|| {
+                AppError::InvalidParam("Invalid graphBuildersNew overlayColumnId".into())
+            })?;
             validate_native_graph_string(overlay_column_id, "overlayColumnId", 256)?;
             Some(overlay_column_id)
         };
@@ -2355,7 +2931,12 @@ pub(crate) fn set_graph_builders_new(
         let (name, file) = allocate_archive_name(&name, &id, ".spgn", "graphs-new", &mut paths)?;
         validate_native_graph_string(&name, "name", 255)?;
         set_value_name(document, &name, "graphBuildersNew")?;
-        entries.push(DocumentEntryRef { id, name, file, kind: DocumentKind::GraphBuilderNew });
+        entries.push(DocumentEntryRef {
+            id,
+            name,
+            file,
+            kind: DocumentKind::GraphBuilderNew,
+        });
     }
     validate_graph_new_folders(&entries, &folders)?;
     bundle.manifest.graph_builders_new = entries;
@@ -2364,11 +2945,16 @@ pub(crate) fn set_graph_builders_new(
     Ok(())
 }
 
-fn validate_graph_new_folders(entries: &[DocumentEntryRef], folders: &HashMap<String, String>) -> Result<(), AppError> {
+fn validate_graph_new_folders(
+    entries: &[DocumentEntryRef],
+    folders: &HashMap<String, String>,
+) -> Result<(), AppError> {
     let ids: HashSet<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
     for (id, folder) in folders {
         if !ids.contains(id.as_str()) {
-            return Err(AppError::InvalidParam(format!("graphNewFolders references unknown graph: {id}")));
+            return Err(AppError::InvalidParam(format!(
+                "graphNewFolders references unknown graph: {id}"
+            )));
         }
         validate_native_graph_string(folder, "folder", 4096)?;
         for component in folder.split('/') {
@@ -2378,29 +2964,44 @@ fn validate_graph_new_folders(entries: &[DocumentEntryRef], folders: &HashMap<St
     Ok(())
 }
 
-fn validate_native_graph_payloads(manifest: &ProjectManifest, documents: &[Value]) -> Result<(), AppError> {
+fn validate_native_graph_payloads(
+    manifest: &ProjectManifest,
+    documents: &[Value],
+) -> Result<(), AppError> {
     if manifest.graph_builders_new.len() != documents.len() {
-        return Err(AppError::InvalidParam("graphBuildersNew index/payload count mismatch".into()));
+        return Err(AppError::InvalidParam(
+            "graphBuildersNew index/payload count mismatch".into(),
+        ));
     }
     let mut ids = HashSet::new();
     for document in documents {
         validate_graph_builder_new_value(document)?;
         let id = value_required_id(document, "graphBuildersNew")?;
         ensure_unique_bundle_id(&mut ids, &id, "graphBuildersNew")?;
-        if !manifest.graph_builders_new.iter().any(|entry| entry.id == id && document["name"].as_str() == Some(entry.name.as_str())) {
-            return Err(AppError::InvalidParam("graphBuildersNew index/payload mismatch".into()));
+        if !manifest
+            .graph_builders_new
+            .iter()
+            .any(|entry| entry.id == id && document["name"].as_str() == Some(entry.name.as_str()))
+        {
+            return Err(AppError::InvalidParam(
+                "graphBuildersNew index/payload mismatch".into(),
+            ));
         }
     }
     Ok(())
 }
 
 pub(crate) fn write_graph_builders_new<W: Write + Seek>(
-    zip: &mut zip::ZipWriter<W>, manifest: &ProjectManifest, documents: &[Value],
+    zip: &mut zip::ZipWriter<W>,
+    manifest: &ProjectManifest,
+    documents: &[Value],
     options: zip::write::SimpleFileOptions,
 ) -> Result<(), AppError> {
     validate_native_graph_payloads(manifest, documents)?;
     for entry in &manifest.graph_builders_new {
-        let document = documents.iter().find(|document| document["id"].as_str() == Some(entry.id.as_str()))
+        let document = documents
+            .iter()
+            .find(|document| document["id"].as_str() == Some(entry.id.as_str()))
             .ok_or_else(|| AppError::InvalidParam("Missing graphBuildersNew payload".into()))?;
         write_zip_json_entry(zip, &entry.file, document, options)?;
     }
@@ -4318,11 +4919,18 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
         validate_native_graph_string(&entry.id, "id", 256)?;
         validate_native_graph_string(&entry.name, "name", 255)?;
         if entry.kind != DocumentKind::GraphBuilderNew {
-            return Err(AppError::FileIO("graphBuildersNew entry has unexpected kind".into()));
+            return Err(AppError::FileIO(
+                "graphBuildersNew entry has unexpected kind".into(),
+            ));
         }
         validate_indexed_path(&entry.file, "graphs-new", ".spgn", "graphBuildersNew")?;
         validate_display_basename(&entry.name)?;
-        validate_manifest_name_matches_file_basename(&entry.file, &entry.name, ".spgn", "graphBuildersNew")?;
+        validate_manifest_name_matches_file_basename(
+            &entry.file,
+            &entry.name,
+            ".spgn",
+            "graphBuildersNew",
+        )?;
         ensure_unique_file(&mut seen_files, &entry.file)?;
     }
     validate_graph_new_folders(&manifest.graph_builders_new, &manifest.graph_new_folders)?;
@@ -6048,22 +6656,116 @@ mod tests {
 
     fn native_graph_bundle() -> ProjectBundle {
         let mut bundle = build_bundle(
-            "Native Project".into(), "4.0.0".into(), "now".into(),
-            vec![], vec![graph_doc("legacy-1", "Native Graph")], vec![], vec![], vec![],
-            vec!["Graphs".into()], &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), vec![], vec![],
-        ).unwrap();
-        set_graph_builders_new(&mut bundle, vec![native_graph_document()], HashMap::from([("native-1".into(), "Graphs".into())])).unwrap();
+            "Native Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![],
+            vec![graph_doc("legacy-1", "Native Graph")],
+            vec![],
+            vec![],
+            vec![],
+            vec!["Graphs".into()],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        set_graph_builders_new(
+            &mut bundle,
+            vec![native_graph_document()],
+            HashMap::from([("native-1".into(), "Graphs".into())]),
+        )
+        .unwrap();
         bundle
+    }
+
+    fn malformed_delta_history_archive(
+        change_set: Value,
+        snapshot_descriptors: Vec<Value>,
+    ) -> Vec<u8> {
+        let bundle = build_bundle(
+            "History Project".into(),
+            "4.0.0".into(),
+            "2026-09-20T00:00:00Z".into(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest["deltaHistory"] = serde_json::json!({
+            "changeSetsFile": "history/change_sets.json",
+            "snapshots": snapshot_descriptors
+        });
+        let snapshot_files = manifest["deltaHistory"]["snapshots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|snapshot| snapshot["file"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            serde_json::to_writer(&mut zip, &manifest).unwrap();
+            zip.start_file("history/change_sets.json", opts).unwrap();
+            serde_json::to_writer(
+                &mut zip,
+                &serde_json::json!({"version": 1, "changeSets": [change_set]}),
+            )
+            .unwrap();
+            for file in snapshot_files {
+                zip.start_file(file, opts).unwrap();
+                zip.write_all(b"PAR1invalid-test-payloadPAR1").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn assert_delta_history_file_io(bytes: &[u8], expected: &str) {
+        let error = match read_zip_bundle(bytes) {
+            Ok(_) => panic!("malformed delta history must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains(expected)),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn native_graph_persistence_reference_bounds_match_renderer() {
         for field in ["id", "datasetId", "xColumnId", "yColumnId"] {
-            for invalid in [" padded".to_string(), "padded ".to_string(), "".into(), " ".into(), "a\nb".into(), "a".repeat(257)] {
+            for invalid in [
+                " padded".to_string(),
+                "padded ".to_string(),
+                "".into(),
+                " ".into(),
+                "a\nb".into(),
+                "a".repeat(257),
+            ] {
                 let mut document = native_graph_document();
                 document[field] = Value::String(invalid);
-                assert!(validate_graph_builder_new_value(&document).is_err(), "accepted invalid {field}: {document}");
+                assert!(
+                    validate_graph_builder_new_value(&document).is_err(),
+                    "accepted invalid {field}: {document}"
+                );
             }
             let mut document = native_graph_document();
             document[field] = Value::String("a".repeat(256));
@@ -6072,30 +6774,261 @@ mod tests {
     }
 
     #[test]
+    fn delta_history_archive_requires_every_referenced_snapshot() {
+        let bundle = build_bundle(
+            "History Project".into(),
+            "4.0.0".into(),
+            "2026-09-20T00:00:00Z".into(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        let mut compatible_bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut compatible_bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            serde_json::to_writer(&mut zip, &bundle.manifest).unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(read_zip_bundle(&compatible_bytes).is_ok());
+
+        let change_set_id = "00000000-0000-4000-8000-000000000001";
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest["deltaHistory"] = serde_json::json!({
+            "changeSetsFile": "history/change_sets.json",
+            "snapshots": [{
+                "changeSetId": change_set_id,
+                "file": format!("history/snapshots/{change_set_id}.parquet"),
+                "tableName": "_history_rows_00000000000040008000000000000001",
+                "columns": [
+                    {"name": "_row_id", "duckdbType": "BIGINT"},
+                    {"name": "_row_order", "duckdbType": "HUGEINT"},
+                    {"name": "value", "duckdbType": "BIGINT"}
+                ]
+            }]
+        });
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            serde_json::to_writer(&mut zip, &manifest).unwrap();
+            zip.start_file("history/change_sets.json", opts).unwrap();
+            serde_json::to_writer(
+                &mut zip,
+                &serde_json::json!({
+                    "version": 1,
+                    "changeSets": [{
+                        "id": change_set_id,
+                        "datasetId": "dataset-id",
+                        "storageKind": "row_delta",
+                        "generation": 1,
+                        "operation": "delete_rows",
+                        "beforeGeneration": 0,
+                        "afterGeneration": 1,
+                        "snapshotTable": "_history_rows_00000000000040008000000000000001",
+                        "applied": true,
+                        "rows": [{"ordinal": 0, "rowId": 1, "rowOrder": 10}],
+                        "columns": []
+                    }]
+                }),
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let error = match read_zip_bundle(&bytes) {
+            Ok(_) => panic!("missing snapshot must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, AppError::FileIO(message) if message.contains("snapshot")));
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_delete_without_required_snapshot() {
+        let bytes = malformed_delta_history_archive(
+            serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000011",
+                "datasetId": "dataset-id",
+                "storageKind": "row_delta",
+                "generation": 1,
+                "operation": "delete_rows",
+                "beforeGeneration": 0,
+                "afterGeneration": 1,
+                "snapshotTable": null,
+                "applied": true,
+                "rows": [{"ordinal": 0, "rowId": 1, "rowOrder": 10}],
+                "columns": []
+            }),
+            vec![],
+        );
+        assert_delta_history_file_io(&bytes, "requires a snapshot");
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_matching_but_invalid_snapshot_schema() {
+        for (storage_kind, operation, table_name, rows, columns) in [
+            (
+                "row_delta",
+                "delete_rows",
+                "_history_rows_00000000000040008000000000000012",
+                serde_json::json!([{"ordinal": 0, "rowId": 1, "rowOrder": 10}]),
+                serde_json::json!([]),
+            ),
+            (
+                "column_delta",
+                "delete_columns",
+                "_history_columns_00000000000040008000000000000012",
+                serde_json::json!([]),
+                serde_json::json!([{
+                    "ordinal": 0,
+                    "columnId": "00000000-0000-4000-8000-000000000099",
+                    "colIndex": 0,
+                    "colName": "value",
+                    "colType": "BIGINT",
+                    "calculatedDefinitionJson": null
+                }]),
+            ),
+        ] {
+            let change_set_id = "00000000-0000-4000-8000-000000000012";
+            let bytes = malformed_delta_history_archive(
+                serde_json::json!({
+                    "id": change_set_id,
+                    "datasetId": "dataset-id",
+                    "storageKind": storage_kind,
+                    "generation": 1,
+                    "operation": operation,
+                    "beforeGeneration": 0,
+                    "afterGeneration": 1,
+                    "snapshotTable": table_name,
+                    "applied": true,
+                    "rows": rows,
+                    "columns": columns
+                }),
+                vec![serde_json::json!({
+                    "changeSetId": change_set_id,
+                    "file": format!("history/snapshots/{change_set_id}.parquet"),
+                    "tableName": table_name,
+                    "columns": [{"name": "wrong", "duckdbType": "BIGINT"}]
+                })],
+            );
+            assert_delta_history_file_io(&bytes, "snapshot schema");
+        }
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_add_operation_with_snapshot() {
+        for (storage_kind, operation, table_prefix, rows, columns) in [
+            (
+                "row_delta",
+                "add_rows",
+                "_history_rows_",
+                serde_json::json!([{"ordinal": 0, "rowId": 1, "rowOrder": 10}]),
+                serde_json::json!([]),
+            ),
+            (
+                "column_delta",
+                "add_columns",
+                "_history_columns_",
+                serde_json::json!([]),
+                serde_json::json!([{
+                    "ordinal": 0,
+                    "columnId": "00000000-0000-4000-8000-000000000098",
+                    "colIndex": 0,
+                    "colName": "value",
+                    "colType": "BIGINT",
+                    "calculatedDefinitionJson": null
+                }]),
+            ),
+        ] {
+            let change_set_id = "00000000-0000-4000-8000-000000000013";
+            let table_name = format!("{table_prefix}00000000000040008000000000000013");
+            let bytes = malformed_delta_history_archive(
+                serde_json::json!({
+                    "id": change_set_id,
+                    "datasetId": "dataset-id",
+                    "storageKind": storage_kind,
+                    "generation": 1,
+                    "operation": operation,
+                    "beforeGeneration": 0,
+                    "afterGeneration": 1,
+                    "snapshotTable": table_name,
+                    "applied": true,
+                    "rows": rows,
+                    "columns": columns
+                }),
+                vec![serde_json::json!({
+                    "changeSetId": change_set_id,
+                    "file": format!("history/snapshots/{change_set_id}.parquet"),
+                    "tableName": table_name,
+                    "columns": [{"name": "_row_id", "duckdbType": "BIGINT"}]
+                })],
+            );
+            assert_delta_history_file_io(&bytes, "forbids a snapshot");
+        }
+    }
+
+    #[test]
     fn native_graph_persistence_rejects_invalid_versions_modes_and_runtime_fields() {
         let valid = native_graph_document();
         for (field, invalid) in [
-            ("version", serde_json::json!(2)), ("version", serde_json::json!(0)),
-            ("version", serde_json::json!("1")), ("version", serde_json::json!(1.5)),
-            ("xMode", serde_json::json!("future")), ("rawMode", serde_json::json!("bar")),
-            ("showMean", serde_json::json!(1)), ("datasetId", Value::Null),
-            ("xColumnId", serde_json::json!(1)), ("name", serde_json::json!("CON")),
-            ("name", serde_json::json!("../Graph")), ("name", serde_json::json!("Graph.")),
+            ("version", serde_json::json!(2)),
+            ("version", serde_json::json!(0)),
+            ("version", serde_json::json!("1")),
+            ("version", serde_json::json!(1.5)),
+            ("xMode", serde_json::json!("future")),
+            ("rawMode", serde_json::json!("bar")),
+            ("showMean", serde_json::json!(1)),
+            ("datasetId", Value::Null),
+            ("xColumnId", serde_json::json!(1)),
+            ("name", serde_json::json!("CON")),
+            ("name", serde_json::json!("../Graph")),
+            ("name", serde_json::json!("Graph.")),
             ("name", serde_json::json!("a".repeat(256))),
         ] {
             let mut document = valid.clone();
             document[field] = invalid;
-            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
+            assert!(
+                validate_graph_builder_new_value(&document).is_err(),
+                "accepted {document}"
+            );
         }
         for field in valid.as_object().unwrap().keys() {
             let mut document = valid.clone();
             document.as_object_mut().unwrap().remove(field);
-            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted missing {field}");
+            assert!(
+                validate_graph_builder_new_value(&document).is_err(),
+                "accepted missing {field}"
+            );
         }
-        for field in ["datasetGeneration", "sessionId", "cachePath", "runtime", "pixels", "requestId", "result"] {
+        for field in [
+            "datasetGeneration",
+            "sessionId",
+            "cachePath",
+            "runtime",
+            "pixels",
+            "requestId",
+            "result",
+        ] {
             let mut document = valid.clone();
             document[field] = serde_json::json!(1);
-            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted runtime field {field}");
+            assert!(
+                validate_graph_builder_new_value(&document).is_err(),
+                "accepted runtime field {field}"
+            );
         }
         for x_mode in ["auto", "numeric", "time", "duration", "category"] {
             for raw_mode in ["scatter", "line", "pointsLine"] {
@@ -6154,29 +7087,48 @@ mod tests {
                 "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
             }),
         ] {
-            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
+            assert!(
+                validate_graph_builder_new_value(&document).is_err(),
+                "accepted {document}"
+            );
         }
     }
 
     #[test]
     fn native_graph_persistence_camera_checks_finite_bounds_and_spans() {
-        for (min, max) in [(0.0, 0.0), (1.0, 0.0), (-f64::MAX, f64::MAX), (f64::NAN, 1.0), (0.0, f64::INFINITY)] {
+        for (min, max) in [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (-f64::MAX, f64::MAX),
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+        ] {
             for (min_key, max_key) in [("xMin", "xMax"), ("yMin", "yMax")] {
                 let mut document = native_graph_document();
-                document["camera"] = serde_json::json!({"xMin": 0.0, "xMax": 1.0, "yMin": 0.0, "yMax": 1.0});
+                document["camera"] =
+                    serde_json::json!({"xMin": 0.0, "xMax": 1.0, "yMin": 0.0, "yMax": 1.0});
                 document["camera"][min_key] = serde_json::json!(min);
                 document["camera"][max_key] = serde_json::json!(max);
-                assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
+                assert!(
+                    validate_graph_builder_new_value(&document).is_err(),
+                    "accepted {document}"
+                );
             }
         }
-        for camera in [serde_json::json!({}), serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0}), serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0, "yMax": 1, "extra": 1}), serde_json::json!({"xMin": "0", "xMax": 1, "yMin": 0, "yMax": 1})] {
+        for camera in [
+            serde_json::json!({}),
+            serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0}),
+            serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0, "yMax": 1, "extra": 1}),
+            serde_json::json!({"xMin": "0", "xMax": 1, "yMin": 0, "yMax": 1}),
+        ] {
             let mut document = native_graph_document();
             document["camera"] = camera;
             assert!(validate_graph_builder_new_value(&document).is_err());
         }
         for (min, max) in [(1e-280, 2e-280), (1e300, 1.01e300)] {
             let mut document = native_graph_document();
-            document["camera"] = serde_json::json!({"xMin": min, "xMax": max, "yMin": min, "yMax": max});
+            document["camera"] =
+                serde_json::json!({"xMin": min, "xMax": max, "yMin": min, "yMax": max});
             validate_graph_builder_new_value(&document).unwrap();
         }
     }
@@ -6187,11 +7139,28 @@ mod tests {
             let mut bundle = native_graph_bundle();
             let mut duplicate = native_graph_document();
             duplicate["id"] = serde_json::json!(duplicate_id);
-            assert!(set_graph_builders_new(&mut bundle, vec![native_graph_document(), duplicate], HashMap::new()).is_err());
+            assert!(set_graph_builders_new(
+                &mut bundle,
+                vec![native_graph_document(), duplicate],
+                HashMap::new()
+            )
+            .is_err());
         }
-        for (id, folder) in [("unknown", "Graphs"), ("native-1", "../Graphs"), ("native-1", "/Graphs"), ("native-1", "Graphs/"), ("native-1", "Graphs//Sub"), ("native-1", "Graphs\\Sub")] {
+        for (id, folder) in [
+            ("unknown", "Graphs"),
+            ("native-1", "../Graphs"),
+            ("native-1", "/Graphs"),
+            ("native-1", "Graphs/"),
+            ("native-1", "Graphs//Sub"),
+            ("native-1", "Graphs\\Sub"),
+        ] {
             let mut bundle = native_graph_bundle();
-            assert!(set_graph_builders_new(&mut bundle, vec![native_graph_document()], HashMap::from([(id.into(), folder.into())])).is_err());
+            assert!(set_graph_builders_new(
+                &mut bundle,
+                vec![native_graph_document()],
+                HashMap::from([(id.into(), folder.into())])
+            )
+            .is_err());
         }
     }
 
@@ -6201,9 +7170,20 @@ mod tests {
         let mut second = native_graph_document();
         second["id"] = serde_json::json!("native-2");
         second["name"] = serde_json::json!("native graph");
-        set_graph_builders_new(&mut bundle, vec![native_graph_document(), second], HashMap::new()).unwrap();
-        assert_eq!(bundle.manifest.graph_builders_new[0].file, "graphs-new/Native Graph.spgn");
-        assert_eq!(bundle.manifest.graph_builders_new[1].file, "graphs-new/native graph-2.spgn");
+        set_graph_builders_new(
+            &mut bundle,
+            vec![native_graph_document(), second],
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            bundle.manifest.graph_builders_new[0].file,
+            "graphs-new/Native Graph.spgn"
+        );
+        assert_eq!(
+            bundle.manifest.graph_builders_new[1].file,
+            "graphs-new/native graph-2.spgn"
+        );
         let path = temp_project_path("native-graph-direct");
         write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
         validate_archive_manifest_and_entries(&path, &bundle.manifest, &[]).unwrap();
@@ -6213,7 +7193,8 @@ mod tests {
         assert_eq!(reopened.graphs[0].name, "Native Graph");
         let bytes = std::fs::read(&path).unwrap();
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let body: Value = serde_json::from_reader(zip.by_name("graphs-new/Native Graph.spgn").unwrap()).unwrap();
+        let body: Value =
+            serde_json::from_reader(zip.by_name("graphs-new/Native Graph.spgn").unwrap()).unwrap();
         assert_eq!(body, native_graph_document());
         std::fs::remove_file(path).unwrap();
     }
@@ -6228,7 +7209,13 @@ mod tests {
         let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
         manifest.as_object_mut().unwrap().remove("graphBuildersNew");
         manifest.as_object_mut().unwrap().remove("graphNewFolders");
-        rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        rewrite_named_entry_in_archive(
+            &source,
+            &target,
+            "manifest.json",
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         let reopened = read_project_file(target.to_str().unwrap()).unwrap();
         assert!(reopened.graph_builders_new.is_empty());
         assert!(reopened.manifest.graph_new_folders.is_empty());
@@ -6251,11 +7238,26 @@ mod tests {
         let source = temp_project_path("native-graph-valid-source");
         let target = temp_project_path("native-graph-invalid-payload");
         write_project_archive(&bundle, source.to_str().unwrap()).unwrap();
-        for (field, value) in [("version", serde_json::json!(2)), ("id", serde_json::json!("wrong-id")), ("name", serde_json::json!("Wrong Name")), ("datasetGeneration", serde_json::json!(1)), ("xMode", serde_json::json!("unknown"))] {
+        for (field, value) in [
+            ("version", serde_json::json!(2)),
+            ("id", serde_json::json!("wrong-id")),
+            ("name", serde_json::json!("Wrong Name")),
+            ("datasetGeneration", serde_json::json!(1)),
+            ("xMode", serde_json::json!("unknown")),
+        ] {
             let mut document = native_graph_document();
             document[field] = value;
-            rewrite_named_entry_in_archive(&source, &target, "graphs-new/Native Graph.spgn", &serde_json::to_vec(&document).unwrap()).unwrap();
-            assert!(read_project_file(target.to_str().unwrap()).is_err(), "accepted payload {document}");
+            rewrite_named_entry_in_archive(
+                &source,
+                &target,
+                "graphs-new/Native Graph.spgn",
+                &serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                read_project_file(target.to_str().unwrap()).is_err(),
+                "accepted payload {document}"
+            );
             assert!(validate_archive_manifest_and_entries(&target, &bundle.manifest, &[]).is_err());
         }
         std::fs::remove_file(source).unwrap();
@@ -6268,17 +7270,41 @@ mod tests {
         let source = temp_project_path("native-graph-manifest-source");
         let target = temp_project_path("native-graph-manifest-invalid");
         write_project_archive(&bundle, source.to_str().unwrap()).unwrap();
-        for (field, value) in [("file", serde_json::json!("graphs-new/../Native Graph.spgn")), ("file", serde_json::json!("graphs-new/Missing.spgn")), ("kind", serde_json::json!("analysis")), ("id", serde_json::json!("wrong-id")), ("name", serde_json::json!("Wrong Name"))] {
+        for (field, value) in [
+            ("file", serde_json::json!("graphs-new/../Native Graph.spgn")),
+            ("file", serde_json::json!("graphs-new/Missing.spgn")),
+            ("kind", serde_json::json!("analysis")),
+            ("id", serde_json::json!("wrong-id")),
+            ("name", serde_json::json!("Wrong Name")),
+        ] {
             let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
             manifest["graphBuildersNew"][0][field] = value;
-            rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
-            assert!(read_project_file(target.to_str().unwrap()).is_err(), "accepted manifest {manifest}");
+            rewrite_named_entry_in_archive(
+                &source,
+                &target,
+                "manifest.json",
+                &serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                read_project_file(target.to_str().unwrap()).is_err(),
+                "accepted manifest {manifest}"
+            );
         }
         let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
         let mut duplicate = manifest["graphBuildersNew"][0].clone();
         duplicate["id"] = serde_json::json!("NATIVE-1");
-        manifest["graphBuildersNew"].as_array_mut().unwrap().push(duplicate);
-        rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        manifest["graphBuildersNew"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        rewrite_named_entry_in_archive(
+            &source,
+            &target,
+            "manifest.json",
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         assert!(read_project_file(target.to_str().unwrap()).is_err());
         std::fs::remove_file(source).unwrap();
         std::fs::remove_file(target).unwrap();
@@ -8230,6 +9256,9 @@ mod tests {
             lineage_graph: workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         };
 
         let json = serde_json::to_vec(&manifest).expect("serialize manifest");
@@ -8663,6 +9692,9 @@ mod tests {
                     },
                 ],
             )]),
+            dataset_generations: None,
+            delta_history: None,
+            history_timeline: None,
         };
 
         let file = std::fs::File::create(&path).unwrap();

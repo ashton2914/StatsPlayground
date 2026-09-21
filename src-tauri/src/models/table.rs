@@ -40,6 +40,24 @@ pub struct AddedRowsResult {
     pub generation: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowMutationResult {
+    pub row_ids: Vec<i64>,
+    pub generation: u64,
+    pub row_count: usize,
+    pub change_set_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnMutationResult {
+    pub column_ids: Vec<String>,
+    pub generation: u64,
+    pub column_count: usize,
+    pub change_set_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnDefinition {
@@ -292,6 +310,13 @@ pub struct TableNavigationResult {
     pub column_types: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
     pub timings: TableNavigationTimings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NaturalNavigationAnchor {
+    pub ordinal: i64,
+    pub order_key: i128,
+    pub row_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

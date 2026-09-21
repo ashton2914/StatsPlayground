@@ -530,7 +530,8 @@ export function CalculatedColumnHarness({
         warningCount: { total: 0, expression: 0, dependencyGraph: 0, validation: 0 },
       };
     };
-    dataService.deleteColumnsWithChangeSet = async (datasetId, columnNames, expectedGeneration) => {
+    dataService.deleteColumnsWithChangeSet = async (datasetId, columns, expectedGeneration) => {
+      const columnNames = columns.map((column) => column.name);
       snapshot.deleteColumnRequests.push({ datasetId, columnNames, expectedGeneration });
       if (columnNames.includes("Length")) {
         throw new Error("formula_dependency_in_use|Length|Area>DoubleArea");
@@ -540,7 +541,12 @@ export function CalculatedColumnHarness({
       updateDescriptors(currentDescriptors);
       updateWindowColumns(currentDescriptors);
       setDatasetGeneration(currentGeneration);
-      return `delete-columns-${currentGeneration}`;
+      return {
+        columnIds: columns.map((column) => column.columnId),
+        generation: currentGeneration,
+        columnCount: currentDescriptors.length,
+        changeSetId: `delete-columns-${currentGeneration}`,
+      };
     };
     dataService.alterColumnsTypeWithChangeSet = async (datasetId, columnNames, newType, expectedGeneration) => {
       snapshot.alterColumnsTypeRequests.push({ datasetId, columnNames, newType, expectedGeneration });

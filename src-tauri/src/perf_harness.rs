@@ -5,7 +5,10 @@ use std::time::Instant;
 use duckdb::params;
 use serde::Serialize;
 
-use crate::engine::duckdb_engine::DuckDbEngine;
+use crate::engine::duckdb_engine::{
+    full_anchor_rebuild_counter, reset_full_anchor_rebuild_counter, DuckDbEngine,
+    NATURAL_ANCHOR_STRIDE, NATURAL_ORDER_SQL,
+};
 use crate::error::AppError;
 #[cfg(test)]
 use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
@@ -20,7 +23,7 @@ use crate::models::graph_new_data::{
     GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
 };
 use crate::models::save::SaveProjectRequest;
-use crate::models::table::TableNavigationRequest;
+use crate::models::table::{ColumnDescriptor, TableNavigationRequest};
 use crate::models::tabulate::{
     StatisticKind, TabulateSessionRequest, TabulateSessionState, TabulateStatistic,
     TabulateTotalsKind, TabulateTotalsRequest, TabulateWindowRequest,
@@ -34,9 +37,17 @@ use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
+#[cfg(test)]
+use crate::services::row_order_update_boundary::execute_global_row_order_update_for_test;
+use crate::services::row_order_update_boundary::{
+    full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
+};
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
+use crate::services::table_delta_mutation::{
+    reset_table_mutation_perf_metrics, table_mutation_perf_metrics,
+};
 use crate::services::table_mutation_coordinator::{execute_table_mutation, TableMutationEffects};
 use crate::state::AppState;
 
@@ -57,6 +68,35 @@ enum Operation {
     Calculated,
     TableNavigation,
     Tabulate,
+    AppendRow,
+    InsertMiddleRow,
+    AddColumn,
+    DeleteRows,
+    DeleteColumn,
+}
+
+impl Operation {
+    fn is_table_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::AppendRow
+                | Self::InsertMiddleRow
+                | Self::AddColumn
+                | Self::DeleteRows
+                | Self::DeleteColumn
+        )
+    }
+
+    fn qualification_threshold_ms(self) -> Option<u128> {
+        Some(match self {
+            Self::AppendRow => 1_000,
+            Self::InsertMiddleRow => 2_000,
+            Self::AddColumn => 2_000,
+            Self::DeleteRows => 2_000,
+            Self::DeleteColumn => 5_000,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -138,6 +178,76 @@ struct PerformanceReport {
     machine: Option<MachineReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tabulate: Option<TabulatePerformanceReport>,
+    #[serde(
+        rename = "mutationQualification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    table_mutation: Option<TableMutationPerformanceReport>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TableMutationPerformanceReport {
+    mutation_ms: u128,
+    mutation_max_ms: u128,
+    history_ms: u128,
+    history_max_ms: u128,
+    anchor_ms: u128,
+    anchor_max_ms: u128,
+    metadata_ms: u128,
+    metadata_max_ms: u128,
+    reload_ms: Option<u128>,
+    reload_max_ms: Option<u128>,
+    median_ms: u128,
+    max_ms: u128,
+    threshold_ms: u128,
+    sample_count: usize,
+    warmup_count: usize,
+    warmup_sample: Box<TableMutationSampleReport>,
+    samples: Vec<TableMutationSampleReport>,
+    full_snapshot_tables: usize,
+    full_anchor_rebuilds: usize,
+    full_table_row_updates: usize,
+    rebalanced_rows: usize,
+    sparse_anchor_integrity: bool,
+    compact_snapshot_shape: bool,
+    inserted_precedes_target: Option<bool>,
+    memory_near_doubling: bool,
+    binary_source_commit: String,
+    binary_source_clean: bool,
+    runtime_head: String,
+    runtime_source_clean: bool,
+    build_profile: String,
+    process_memory_method: Option<&'static str>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TableMutationSampleReport {
+    report_kind: String,
+    process_id: u32,
+    sample_kind: String,
+    binary_source_commit: String,
+    binary_source_clean: bool,
+    build_profile: String,
+    machine: MachineReport,
+    setup_ms: u128,
+    mutation_ms: u128,
+    history_ms: u128,
+    anchor_ms: u128,
+    metadata_ms: u128,
+    reload_ms: Option<u128>,
+    total_wall_ms: u128,
+    full_snapshot_tables: usize,
+    full_anchor_rebuilds: usize,
+    full_table_row_updates: usize,
+    rebalanced_rows: usize,
+    sparse_anchor_integrity: bool,
+    compact_snapshot_shape: bool,
+    inserted_precedes_target: Option<bool>,
+    retained_memory_before_bytes: u64,
+    retained_memory_after_bytes: u64,
+    process_memory: Option<ProcessMemoryReport>,
 }
 
 #[derive(Serialize)]
@@ -420,7 +530,7 @@ struct SaveStageReport {
     replacement: u128,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProcessMemoryReport {
     baseline_working_set_bytes: u64,
@@ -428,7 +538,7 @@ struct ProcessMemoryReport {
     delta_working_set_bytes: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MachineReport {
     os: String,
@@ -707,6 +817,7 @@ where
         payload_stdout: false,
     };
     let mut args = args.into_iter();
+    let mut runs_explicit = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--graph-new-axis" => {
@@ -725,7 +836,10 @@ where
             "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
-            "--runs" => options.runs = parse_positive_usize(&flag, args.next())?,
+            "--runs" => {
+                options.runs = parse_positive_usize(&flag, args.next())?;
+                runs_explicit = true;
+            }
             "--position-percent" => {
                 options.position_percent = Some(parse_position_percent(&flag, args.next())?);
             }
@@ -756,6 +870,11 @@ where
                     "calculated" => Operation::Calculated,
                     "table-navigation" => Operation::TableNavigation,
                     "tabulate" => Operation::Tabulate,
+                    "append-row" => Operation::AppendRow,
+                    "insert-middle-row" => Operation::InsertMiddleRow,
+                    "add-column" => Operation::AddColumn,
+                    "delete-rows" => Operation::DeleteRows,
+                    "delete-column" => Operation::DeleteColumn,
                     _ => {
                         return Err(AppError::InvalidParam(format!(
                             "unknown operation: {value}"
@@ -802,6 +921,21 @@ where
         return Err(AppError::InvalidParam(
             "--payload-stdout is only valid with table-navigation".into(),
         ));
+    }
+    if options.operation.is_table_mutation()
+        && (options.rows != 2_000_000 || options.columns != 8)
+    {
+        return Err(AppError::InvalidParam(
+            "table mutation qualification requires exactly 2000000 rows and 8 columns".into(),
+        ));
+    }
+    if options.operation.is_table_mutation() {
+        if runs_explicit && options.runs != 5 {
+            return Err(AppError::InvalidParam(
+                "table mutation qualification requires exactly 5 measured samples".into(),
+            ));
+        }
+        options.runs = 5;
     }
 
     Ok(options)
@@ -947,6 +1081,7 @@ fn execute_table_navigation(
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -961,6 +1096,8 @@ fn benchmark_cache_directory(dataset_id: &str, overlay_groups: Option<u16>) -> R
     let suffix = overlay_groups
         .map(|groups| format!("overlay-{groups}"))
         .unwrap_or_else(|| "plain".to_string());
+    #[cfg(test)]
+    let suffix = format!("{suffix}-{}", uuid::Uuid::new_v4());
     let directory = std::env::current_dir()
         .map_err(|error| AppError::FileIO(error.to_string()))?
         .join(".cache/issue235-overlay/performance/harness")
@@ -1740,6 +1877,7 @@ fn execute_graph_new_runs_with_config(
         qualification_failure,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -2115,6 +2253,7 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -2217,8 +2356,11 @@ fn execute_time_series_graph(
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
+
+include!("perf_table_mutation.rs");
 
 fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     if let Some(graph_new_rows) = &options.graph_new_rows {
@@ -2235,6 +2377,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     }
     if options.operation == Operation::Tabulate {
         return execute_tabulate(options);
+    }
+    if options.operation.is_table_mutation() {
+        return execute_table_mutation_report(options);
     }
 
     let total_started = Instant::now();
@@ -2306,6 +2451,13 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             unreachable!("table-navigation is handled before this branch")
         }
         Operation::Tabulate => unreachable!("tabulate is handled before this branch"),
+        Operation::AppendRow
+        | Operation::InsertMiddleRow
+        | Operation::AddColumn
+        | Operation::DeleteRows
+        | Operation::DeleteColumn => {
+            unreachable!("table mutations are handled before this branch")
+        }
     };
     let operation_ms = operation_started.elapsed().as_millis();
 
@@ -2353,6 +2505,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -2388,6 +2541,7 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
             .map_err(|_| AppError::InvalidParam("logical cell count is too large".into()))?;
         db.conn().execute(
             r#"INSERT INTO "dataset_performance_tabulate_baseline"
+                      ("_row_id", "row_group", "column_group", "value")
                SELECT i + 1,
                       'row_' || CAST((i // ?1) % ?2 AS VARCHAR),
                       'column_' || CAST(i % ?1 AS VARCHAR),
@@ -2542,6 +2696,7 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
         calculated_result_bytes: None, memory_budget_bytes: None,
         memory_growth_budget_multiplier: None, qualification_passed: None,
         qualification_failure: None, machine: None, tabulate: Some(tabulate),
+        table_mutation: None,
     })
 }
 
@@ -2655,6 +2810,7 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_failure,
         machine: Some(machine_report(duckdb_version)),
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -3042,6 +3198,7 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -3204,6 +3361,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_failure: None,
         machine: None,
         tabulate: None,
+        table_mutation: None,
     })
 }
 
@@ -3235,7 +3393,35 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 }
 
 pub fn run_cli() -> Result<(), String> {
-    let options = parse_args(std::env::args().skip(1)).map_err(|error| error.to_string())?;
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mutation_child =
+        take_mutation_child_request(&mut args).map_err(|error| error.to_string())?;
+    if let Some(request) = &mutation_child {
+        let environment_nonce = std::env::var(MUTATION_CHILD_NONCE_ENV).ok();
+        let environment_parent_pid = std::env::var(MUTATION_CHILD_PARENT_PID_ENV).ok();
+        validate_mutation_child_authorization(
+            request,
+            environment_nonce.as_deref(),
+            environment_parent_pid.as_deref(),
+            actual_parent_process_id(),
+            std::process::id(),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    let options = parse_args(args).map_err(|error| error.to_string())?;
+    if mutation_child.is_some() {
+        let sample = execute_table_mutation_sample(
+            options.operation,
+            options.rows,
+            options.columns,
+        )
+        .map_err(|error| error.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&sample).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     let payload_stdout = options.payload_stdout;
     if let Some((source, artifacts)) = &options.graph_new_csv {
         let report = execute_graph_new_csv(source, artifacts, options.graph_new_axis.as_ref()).map_err(|error| error.to_string())?;
@@ -3567,6 +3753,287 @@ mod tests {
         .unwrap();
 
         assert_eq!(options.operation, Operation::Tabulate);
+    }
+
+    #[test]
+    fn table_mutation_cli_parses_every_qualified_operation() {
+        for operation in [
+            "append-row",
+            "insert-middle-row",
+            "add-column",
+            "delete-rows",
+            "delete-column",
+        ] {
+            let options = parse_args(
+                [
+                    "--rows",
+                    "2000000",
+                    "--columns",
+                    "8",
+                    "--operation",
+                    operation,
+                ]
+                .map(String::from),
+            )
+            .unwrap_or_else(|error| panic!("{operation} must parse: {error}"));
+            assert_eq!(
+                serde_json::to_value(options.operation).expect("serialize operation"),
+                operation.replace('-', "_")
+            );
+        }
+    }
+
+    #[test]
+    fn table_mutation_cli_rejects_undersized_qualification_fixture() {
+        let error = parse_args(
+            ["--rows", "1999999", "--operation", "append-row"].map(String::from),
+        )
+        .expect_err("qualification must reject an undersized fixture");
+        assert!(error.to_string().contains("exactly 2000000 rows"));
+    }
+
+    #[test]
+    fn non_mutation_cli_preserves_single_run_default() {
+        let options = parse_args(["--operation", "query"].map(String::from)).expect("query");
+        assert_eq!(options.runs, 1);
+    }
+
+    #[test]
+    fn table_mutation_cli_enforces_fixed_columns_and_samples() {
+        for args in [
+            vec!["--rows", "2000000", "--columns", "7", "--operation", "append-row"],
+            vec![
+                "--rows",
+                "2000000",
+                "--columns",
+                "8",
+                "--runs",
+                "4",
+                "--operation",
+                "append-row",
+            ],
+        ] {
+            assert!(parse_args(args.into_iter().map(String::from)).is_err());
+        }
+        let options = parse_args(
+            ["--rows", "2000000", "--columns", "8", "--operation", "append-row"]
+                .map(String::from),
+        )
+        .expect("fixed mutation protocol");
+        assert_eq!(options.runs, 5);
+    }
+
+    #[test]
+    fn table_mutation_json_nests_qualification_without_flattening() {
+        let source = include_str!("perf_harness.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production harness");
+        assert!(!source.contains("#[serde(flatten, skip_serializing_if"));
+        assert!(source.contains("rename = \"mutationQualification\""));
+    }
+
+    #[test]
+    fn duplicate_child_processes_are_rejected() {
+        assert!(validate_distinct_child_processes(&[41, 42, 42, 43, 44, 45]).is_err());
+        assert!(validate_distinct_child_processes(&[41, 42, 43, 44, 45, 46]).is_ok());
+    }
+
+    #[test]
+    fn direct_mutation_child_requires_parent_authorization() {
+        let mut bare_args = vec!["--mutation-child".into()];
+        assert!(take_mutation_child_request(&mut bare_args).is_err());
+        let request = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "parent-secret".into(),
+        };
+        let error = validate_mutation_child_authorization(
+            &request, None, None, Some(41), 42,
+        )
+        .expect_err("direct child invocation must be rejected");
+        assert!(error.to_string().contains("parent authorization"));
+        let parent_error = validate_mutation_child_authorization(
+            &request,
+            Some("parent-secret"),
+            Some("41"),
+            Some(40),
+            42,
+        )
+        .expect_err("wrong operating-system parent PID must be rejected");
+        assert!(parent_error.to_string().contains("parent authorization"));
+    }
+
+    #[test]
+    fn mutation_child_rejects_wrong_parent_token() {
+        let request = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "wrong-secret".into(),
+        };
+        let error = validate_mutation_child_authorization(
+            &request,
+            Some("parent-secret"),
+            Some("41"),
+            Some(41),
+            42,
+        )
+        .expect_err("wrong child token must be rejected");
+        assert!(error.to_string().contains("parent authorization"));
+        let valid = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "parent-secret".into(),
+        };
+        validate_mutation_child_authorization(
+            &valid,
+            Some("parent-secret"),
+            Some("41"),
+            Some(41),
+            42,
+        )
+        .expect("matching nonce and operating-system parent PID");
+    }
+
+    #[test]
+    fn mutation_parent_protocol_plans_one_warmup_and_five_measured_children() {
+        assert_eq!(
+            mutation_sample_plan(5, 1).expect("fixed protocol"),
+            vec![
+                "warmup",
+                "measured-1",
+                "measured-2",
+                "measured-3",
+                "measured-4",
+                "measured-5",
+            ]
+        );
+    }
+
+    #[test]
+    fn source_provenance_rejects_binary_runtime_commit_mismatch() {
+        let error = validate_source_provenance("compiled-commit", false, "runtime-commit", false)
+            .expect_err("stale binary must be rejected");
+        assert!(error.to_string().contains("does not match runtime HEAD"));
+    }
+
+    #[test]
+    fn source_provenance_rejects_compile_or_runtime_dirty_state() {
+        for (binary_dirty, runtime_dirty) in [(true, false), (false, true)] {
+            let error =
+                validate_source_provenance("same-commit", binary_dirty, "same-commit", runtime_dirty)
+                    .expect_err("dirty source must be rejected");
+            assert!(error.to_string().contains("clean source tree"));
+        }
+    }
+
+    #[test]
+    fn qualification_rejects_unavailable_binary_provenance() {
+        let error = validate_binary_qualification_available(false)
+            .expect_err("unavailable build metadata must not qualify");
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn observed_full_table_row_update_fails_structure() {
+        reset_full_table_row_updates();
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table("global-row-update", "Global row update", 10, 1)
+            .expect("seed");
+        execute_global_row_order_update_for_test(&db, "global-row-update")
+            .expect("production row-order update wrapper");
+        let failures = structural_qualification_failures(
+            0,
+            0,
+            full_table_row_updates(),
+            0,
+            true,
+            true,
+            None,
+            false,
+        );
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("full-table row updates")));
+    }
+
+    #[test]
+    fn table_mutation_report_contract_names_stages_and_thresholds() {
+        let source = include_str!("perf_harness.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production harness source");
+        let mutation_source = include_str!("perf_table_mutation.rs");
+        for field in [
+            "mutation_ms",
+            "history_ms",
+            "anchor_ms",
+            "metadata_ms",
+            "reload_ms",
+            "full_snapshot_tables",
+            "full_anchor_rebuilds",
+            "binary_source_commit",
+            "binary_source_clean",
+            "runtime_head",
+            "runtime_source_clean",
+            "report_kind",
+            "qualification_passed",
+            "qualification_failure",
+        ] {
+            assert!(
+                source.contains(field) || mutation_source.contains(field),
+                "missing report field {field}"
+            );
+        }
+        for (operation, threshold_ms) in [
+            ("AppendRow", "1_000"),
+            ("InsertMiddleRow", "2_000"),
+            ("AddColumn", "2_000"),
+            ("DeleteRows", "2_000"),
+            ("DeleteColumn", "5_000"),
+        ] {
+            assert!(
+                source.contains(&format!("Self::{operation} => {threshold_ms}")),
+                "missing approved threshold for {operation}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_mutation_harness_smoke_asserts_compact_structure_for_every_operation() {
+        for operation in [
+            Operation::AppendRow,
+            Operation::InsertMiddleRow,
+            Operation::AddColumn,
+            Operation::DeleteRows,
+            Operation::DeleteColumn,
+        ] {
+            let report =
+                execute_table_mutation_sample(operation, 64, 8).expect("production mutation");
+            assert_eq!(report.full_snapshot_tables, 0);
+            assert_eq!(report.full_anchor_rebuilds, 0);
+            assert_eq!(report.full_table_row_updates, 0);
+            assert!(report.rebalanced_rows <= 8_192);
+            assert!(report.sparse_anchor_integrity);
+            assert!(report.compact_snapshot_shape);
+            if operation == Operation::InsertMiddleRow {
+                assert_eq!(report.inserted_precedes_target, Some(true));
+            }
+        }
+    }
+
+    #[test]
+    fn table_mutation_harness_serializes_sample_statistics_and_provenance() {
+        let report =
+            execute_table_mutation_sample(Operation::AppendRow, 64, 8).expect("small sample");
+        let payload = serde_json::to_value(report).expect("serialize report");
+
+        assert_eq!(payload["reportKind"], "sample");
+        assert!(payload.get("qualificationPassed").is_none());
+        assert_eq!(payload["processId"], std::process::id());
+        assert!(payload["binarySourceCommit"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(payload["binarySourceClean"].as_bool().is_some());
+        assert!(payload["buildProfile"].as_str().is_some());
+        assert!(payload["machine"]["os"].as_str().is_some());
     }
 
     #[test]

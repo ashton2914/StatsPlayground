@@ -11,6 +11,7 @@ use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
     TypedCalculatedOutput,
 };
+use crate::services::table_history_archive::{capture_history_schema, record_history_timeline};
 
 pub(crate) struct TableMutationEffects<T> {
     pub value: T,
@@ -50,6 +51,7 @@ pub(crate) fn execute_table_mutation<T>(
             }
         }
 
+        let before_schema_json = capture_history_schema(engine, dataset_id)?;
         let before_columns = column_history_by_id(engine, dataset_id)?;
         let dataset_table =
             DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
@@ -75,8 +77,13 @@ pub(crate) fn execute_table_mutation<T>(
             &affected_outputs,
         )?;
         let after_columns = column_history_by_id(engine, dataset_id)?;
+        let after_schema_json = capture_history_schema(engine, dataset_id)?;
 
-        let mut tracked_column_ids = effects.changed_column_ids.clone();
+        let mut tracked_column_ids = before_columns
+            .keys()
+            .chain(after_columns.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
         tracked_column_ids.extend(
             before_columns
                 .values()
@@ -103,6 +110,17 @@ pub(crate) fn execute_table_mutation<T>(
             &after_columns,
             &tracked_column_ids,
             prefer_before_history_order,
+        )?;
+        record_history_timeline(
+            engine,
+            effects.change_set_id.as_deref().unwrap_or(&change_set_id),
+            dataset_id,
+            "full",
+            "legacy_full",
+            generation,
+            generation + 1,
+            &before_schema_json,
+            &after_schema_json,
         )?;
         engine
             .conn()

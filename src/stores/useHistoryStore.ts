@@ -9,6 +9,7 @@ import type {
 } from "@/types/history";
 import {
   discardedChangeSetIds,
+  prepareArchivedHistory,
   recordIncrementalEntry,
   redoIncrementalEntry,
   undoIncrementalEntry,
@@ -35,7 +36,9 @@ function nowISO(): string {
 
 function dropDiscardedChangeSets(previous: HistoryEntry[], next: HistoryEntry[]): void {
   for (const changeSetId of discardedChangeSetIds(previous, next)) {
-    void dataService.dropTableChangeSet(changeSetId).catch(() => undefined);
+    void dataService.dropTableChangeSet(changeSetId).catch((error) => {
+      useHistoryStore.setState({ historyError: String(error) });
+    });
   }
 }
 
@@ -90,7 +93,8 @@ interface HistoryStore {
   /** Load history/snapshots from saved project data */
   loadFromProject: (
     history: HistoryEntry[],
-    snapshots: NamedSnapshot[]
+    snapshots: NamedSnapshot[],
+    currentIdx?: number,
   ) => void;
 }
 
@@ -373,12 +377,14 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   loadFromProject: (
     history: HistoryEntry[],
-    snapshots: NamedSnapshot[]
+    snapshots: NamedSnapshot[],
+    currentIdx = 0,
   ) => {
-    const storedHistory = history.map((entry) => entry.action
-      ? { ...entry, action: undefined }
-      : entry);
+    const storedHistory = prepareArchivedHistory(history);
+    const restoredCurrentIdx = storedHistory.length === 0
+      ? -1
+      : Math.max(0, Math.min(storedHistory.length, currentIdx));
     dropDiscardedChangeSets(get().history, []);
-    set({ history: storedHistory, snapshots, currentIdx: storedHistory.length > 0 ? 0 : -1 });
+    set({ history: storedHistory, snapshots, currentIdx: restoredCurrentIdx });
   },
 }));

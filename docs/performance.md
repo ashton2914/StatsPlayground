@@ -1,5 +1,11 @@
 # Performance Baselines
 
+## Large-table mutation qualification
+
+The fixed 2,000,000-row compact-mutation qualification, metric definitions,
+commands, thresholds, warmup/sample policy, and current baseline are documented
+in [Large-table mutations](performance/large-table-mutations.md).
+
 ## Issue 235 Native Overlay Qualification (2026-09-19)
 
 Required 2M source SHA: `555aa3247cfd67a38d4c48465e68c2e6db9d3c90`  

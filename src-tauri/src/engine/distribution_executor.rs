@@ -894,7 +894,7 @@ mod tests {
         engine
             .conn()
             .execute(
-                "INSERT INTO dataset_distribution_fixture VALUES (1, 10.0, 2.5, 3, 'East', 1)",
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES (1, 10.0, 2.5, 3, 'East', 1)",
                 [],
             )
             .expect("seed row");
@@ -918,7 +918,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (1, 10.0, 1.0, 1, 'East', 1),
                     (2, NULL, 1.0, 1, 'East', 1);",
             )
@@ -939,7 +939,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (1, 10.0, 1.0, 1, 'A', 1),
                     (2, 20.0, 1.0, 1, NULL, 1);",
             )
@@ -977,7 +977,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (3, 30.0, 1.0, 1, NULL, 2),
                     (1, 10.0, 1.0, 1, 'East', 2),
                     (2, 20.0, 1.0, 1, 'East', 1);",
@@ -1024,7 +1024,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (1, 10.0, 1.0, 1, 'East', 1),
                     (2, 20.0, 1.0, 1, 'West', 1);",
             )
@@ -1057,7 +1057,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (1, 10.0, 0.0, 1, 'East', 1),
                     (2, 20.0, 1.0, 0, 'East', 1),
                     (3, 30.0, 1.0, 1, 'East', 1);",
@@ -1072,7 +1072,7 @@ mod tests {
         engine
             .conn()
             .execute(
-                "INSERT INTO dataset_distribution_fixture VALUES (4, 40.0, -1.0, 1, 'East', 1)",
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES (4, 40.0, -1.0, 1, 'East', 1)",
                 [],
             )
             .expect("invalid weight row");
@@ -1088,7 +1088,7 @@ mod tests {
         engine
             .conn()
             .execute_batch(
-                "INSERT INTO dataset_distribution_fixture VALUES
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES
                     (1, 10.0, 1.0, 1, 'East', 1),
                     (2, 20.0, 1.0, 1, 'West', 1);",
             )
@@ -1124,7 +1124,7 @@ mod tests {
         engine
             .conn()
             .execute(
-                "INSERT INTO dataset_distribution_fixture VALUES (1, 10.0, 'NaN'::DOUBLE, 1, 'East', 1)",
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES (1, 10.0, 'NaN'::DOUBLE, 1, 'East', 1)",
                 [],
             )
             .expect("seed non-finite weight");
@@ -1138,7 +1138,7 @@ mod tests {
         missing_y_engine
             .conn()
             .execute(
-                "INSERT INTO dataset_distribution_fixture VALUES (1, NULL, -1.0, 1, 'East', 1)",
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES (1, NULL, -1.0, 1, 'East', 1)",
                 [],
             )
             .expect("seed missing Y with invalid weight");
@@ -1195,7 +1195,7 @@ mod tests {
         engine
             .conn()
             .execute(
-                "INSERT INTO dataset_distribution_fixture VALUES (1, 10.0, 1.0, 1, 'East', 1)",
+                "INSERT INTO dataset_distribution_fixture (_row_id, y, weight, freq, region, batch) VALUES (1, 10.0, 1.0, 1, 'East', 1)",
                 [],
             )
             .expect("seed row");

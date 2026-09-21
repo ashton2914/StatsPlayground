@@ -110,7 +110,7 @@ import {
   type ProjectBasenameValidationError,
   type ProjectDocumentKind,
 } from "@/utils/projectFileNaming";
-import type { NamedSnapshot } from "@/types/history";
+import type { HistoryEntry, NamedSnapshot } from "@/types/history";
 import type { ImportSummary, SqliteImportSelection } from "@/types/dataLink";
 import {
   buildDistributionFieldInfo,
@@ -1780,14 +1780,12 @@ export function Workspace() {
           showToast(t("workspace.datasetFilterMigrationConflict", { names }), 5000);
         }
         tableCounter.current = 0;
-        // Restore snapshots from project file (history is session-only)
-        if (result.snapshots.length > 0) {
-          const { loadFromProject } = useHistoryStore.getState();
-          loadFromProject(
-            [],
-            result.snapshots as NamedSnapshot[],
-          );
-        }
+        const { loadFromProject } = useHistoryStore.getState();
+        loadFromProject(
+          result.history as HistoryEntry[],
+          result.snapshots as NamedSnapshot[],
+          result.historyCurrentIdx,
+        );
         // Restore graph builders
         loadGraphBuildersNewFromProject(result.graphBuildersNew ?? []);
         if (result.graphBuilders && result.graphBuilders.length > 0) {

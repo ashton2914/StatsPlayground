@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, Metadata};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 
 use super::graph_new_key::{GraphKey, RetentionPolicy};
 use super::graph_new_lod::TilePyramid;
@@ -90,17 +92,24 @@ pub struct GraphNewCacheCoordinator {
 
 impl Default for GraphNewCacheCoordinator {
     fn default() -> Self {
-        static POOL: OnceLock<Arc<MemoryPool>> = OnceLock::new();
-        let mut cache = Self::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
-        cache.pool = POOL
-            .get_or_init(|| {
-                Arc::new(MemoryPool {
-                    used: AtomicU64::new(0),
-                    limit: DEFAULT_PROCESS_BYTES - DEFAULT_GPU_BYTES,
+        #[cfg(test)]
+        {
+            Self::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES)
+        }
+        #[cfg(not(test))]
+        {
+            static POOL: OnceLock<Arc<MemoryPool>> = OnceLock::new();
+            let mut cache = Self::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            cache.pool = POOL
+                .get_or_init(|| {
+                    Arc::new(MemoryPool {
+                        used: AtomicU64::new(0),
+                        limit: DEFAULT_PROCESS_BYTES - DEFAULT_GPU_BYTES,
+                    })
                 })
-            })
-            .clone();
-        cache
+                .clone();
+            cache
+        }
     }
 }
 

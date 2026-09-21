@@ -55,6 +55,11 @@ export interface HistoryEntry {
   action?: TableHistoryAction;
   /** Opaque dataset state snapshot taken after this operation (for undo/redo) */
   afterState?: unknown;
+  /** False when an older archive references backend history it did not contain. */
+  replayable?: boolean;
+  /** Explicit archive migration reason for a non-replayable entry. */
+  migrationError?: string;
+  unavailableChangeSetId?: string;
 }
 
 /** A named snapshot (bookmark) — full state capture */

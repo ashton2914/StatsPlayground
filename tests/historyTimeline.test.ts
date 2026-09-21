@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   discardedChangeSetIds,
+  prepareArchivedHistory,
   recordIncrementalEntry,
   redoIncrementalEntry,
   undoIncrementalEntry,
@@ -66,5 +67,28 @@ const previous: HistoryEntry[] = [
   },
 ];
 assert.deepEqual(discardedChangeSetIds(previous, [previous[2]]), ["change-a"]);
+
+const migrated = prepareArchivedHistory([
+  previous[0],
+  {
+    ...previous[2],
+    replayable: false,
+    migrationError: "legacy snapshot is unavailable",
+  },
+]);
+assert.equal(migrated[0].action?.kind, "changeSet");
+assert.equal(migrated[1].action, undefined);
+assert.equal(migrated[1].migrationError, "legacy snapshot is unavailable");
+
+const withMigrationGap: IncrementalHistoryState = {
+  history: [
+    { ...previous[0], replayable: false, action: undefined },
+    previous[2],
+  ],
+  currentIdx: 0,
+};
+const skippedMigration = undoIncrementalEntry(withMigrationGap);
+assert.equal(skippedMigration?.request.entryId, "paste-b");
+assert.equal(skippedMigration?.state.currentIdx, 2);
 
 console.log("history-timeline regression passed");

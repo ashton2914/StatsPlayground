@@ -7,6 +7,7 @@ use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
 use duckdb::{
     appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
 };
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
@@ -32,13 +33,18 @@ use crate::models::graph_data::{
 };
 use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
-    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
-    TableFilterValue, TableNavigationRequest, TableNavigationResult, TableNavigationTimings,
-    TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
-    TableWindowResult,
+    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, NaturalNavigationAnchor,
+    SqlQueryResult, TableFilterValue, TableNavigationRequest, TableNavigationResult,
+    TableNavigationTimings, TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule,
+    TableWindowRequest, TableWindowResult,
 };
-use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
-use crate::models::tabulate::{TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult};
+use crate::models::tabulate::{
+    StatisticKind, TabulateSessionRequest, TabulateSparseCell, TabulateStatistic,
+    TabulateWindowRequest, TabulateWindowResult,
+};
+use crate::models::tabulate::{
+    TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult,
+};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
@@ -55,6 +61,44 @@ pub struct DuckDbEngine {
 }
 
 pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
+pub(crate) const NATURAL_ORDER_STRIDE: i128 = 1_i128 << 64;
+pub(crate) const NATURAL_ORDER_SQL: &str =
+    "COALESCE(\"_row_order\", CAST(\"_row_id\" AS HUGEINT) * 18446744073709551616::HUGEINT)";
+
+#[cfg(test)]
+thread_local! {
+    static FULL_ANCHOR_REBUILD_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+static FULL_ANCHOR_REBUILD_COUNTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn full_anchor_rebuild_counter() -> usize {
+    FULL_ANCHOR_REBUILD_COUNTER.with(std::cell::Cell::get)
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+pub(crate) fn full_anchor_rebuild_counter() -> usize {
+    FULL_ANCHOR_REBUILD_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_full_anchor_rebuild_counter() {
+    FULL_ANCHOR_REBUILD_COUNTER.with(|counter| counter.set(0));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+pub(crate) fn reset_full_anchor_rebuild_counter() {
+    FULL_ANCHOR_REBUILD_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn record_full_anchor_rebuild() {
+    FULL_ANCHOR_REBUILD_COUNTER.with(|counter| counter.set(counter.get().saturating_add(1)));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+fn record_full_anchor_rebuild() {
+    FULL_ANCHOR_REBUILD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub(crate) struct DatasetReplacement {
     pub stable_id: String,
@@ -338,7 +382,7 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    fn copy_natural_anchors_between_generations(
+    pub(crate) fn copy_natural_anchors_between_generations(
         &self,
         dataset_id: &str,
         source_generation: u64,
@@ -348,17 +392,29 @@ impl DuckDbEngine {
             .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
         let target_generation_i64 = i64::try_from(target_generation)
             .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let row_count: i64 = self.conn.query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.validate_natural_anchor_manifest(dataset_id, source_generation_i64, row_count)?;
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
             params![dataset_id, target_generation_i64],
         )?;
         self.conn.execute(
-            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
-             SELECT dataset_id, ?, ordinal, row_id
+            "DELETE FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, target_generation_i64],
+        )?;
+        self.conn.execute(
+            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, order_key, row_id)
+             SELECT dataset_id, ?, ordinal, order_key, row_id
              FROM _table_navigation_anchors
              WHERE dataset_id = ? AND generation = ?",
             params![target_generation_i64, dataset_id, source_generation_i64],
         )?;
+        self.publish_natural_anchor_manifest(dataset_id, target_generation_i64, row_count)?;
         Ok(())
     }
 
@@ -402,9 +458,13 @@ impl DuckDbEngine {
             .join(", ");
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let query = if select_columns.is_empty() {
-            format!("SELECT \"_row_id\" FROM {table_name} ORDER BY \"_row_id\" ASC")
+            format!(
+                "SELECT \"_row_id\" FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            )
         } else {
-            format!("SELECT {select_columns} FROM {table_name} ORDER BY \"_row_id\" ASC")
+            format!(
+                "SELECT {select_columns} FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            )
         };
         let mut statement = self.conn.prepare(&query)?;
         let mut query_rows = statement.query([])?;
@@ -505,7 +565,12 @@ impl DuckDbEngine {
             .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?;
         self.conn.execute(
             &format!(
-                "INSERT INTO {table_name} SELECT i, {generated_columns} FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+                "INSERT INTO {table_name} (\"_row_id\", {}) SELECT i, {generated_columns} FROM range(1, CAST(? AS BIGINT)) AS generated(i)",
+                column_names
+                    .iter()
+                    .map(|name| Self::quote_identifier(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             params![upper_bound],
         )?;
@@ -535,6 +600,7 @@ impl DuckDbEngine {
                 row_count   BIGINT DEFAULT 0,
                 col_count   INTEGER DEFAULT 0,
                 generation  BIGINT DEFAULT 0,
+                next_row_id BIGINT,
                 created_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR)),
                 updated_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR))
             );
@@ -570,7 +636,46 @@ impl DuckDbEngine {
                 dataset_id  TEXT NOT NULL,
                 applied     BOOLEAN NOT NULL DEFAULT TRUE,
                 generation  BIGINT NOT NULL,
+                storage_kind TEXT NOT NULL DEFAULT 'full',
                 created_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR))
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_delta_change_sets (
+                id                TEXT PRIMARY KEY,
+                dataset_id        TEXT NOT NULL,
+                operation         TEXT NOT NULL,
+                before_generation BIGINT NOT NULL,
+                after_generation  BIGINT NOT NULL,
+                snapshot_table    TEXT,
+                applied           BOOLEAN NOT NULL DEFAULT TRUE
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_row_deltas (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                row_id        BIGINT NOT NULL,
+                row_order     HUGEINT,
+                PRIMARY KEY (change_set_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_natural_rebalances (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                row_id        BIGINT NOT NULL,
+                before_key    HUGEINT,
+                after_key     HUGEINT,
+                PRIMARY KEY (change_set_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_column_deltas (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                column_id     TEXT NOT NULL,
+                col_index     INTEGER NOT NULL,
+                col_name      TEXT NOT NULL,
+                col_type      TEXT NOT NULL,
+                calculated_definition_json TEXT,
+                PRIMARY KEY (change_set_id, ordinal)
             );
 
             CREATE TABLE IF NOT EXISTS _history_change_set_columns (
@@ -589,12 +694,42 @@ impl DuckDbEngine {
                 PRIMARY KEY (change_set_id, ordinal)
             );
 
+            CREATE TABLE IF NOT EXISTS _history_timeline (
+                change_set_id TEXT PRIMARY KEY,
+                dataset_id TEXT NOT NULL,
+                history_ordinal BIGINT NOT NULL,
+                storage_kind TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                created_before_generation BIGINT NOT NULL,
+                created_after_generation BIGINT NOT NULL,
+                current_generation BIGINT NOT NULL,
+                applied BOOLEAN NOT NULL,
+                before_schema_json TEXT NOT NULL,
+                after_schema_json TEXT NOT NULL,
+                UNIQUE (dataset_id, history_ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_dataset_state (
+                dataset_id TEXT PRIMARY KEY,
+                next_history_ordinal BIGINT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS _table_navigation_anchors (
                 dataset_id TEXT NOT NULL,
                 generation BIGINT NOT NULL,
                 ordinal    BIGINT NOT NULL,
+                order_key  HUGEINT,
                 row_id     BIGINT NOT NULL,
                 PRIMARY KEY (dataset_id, generation, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS _table_navigation_anchor_manifests (
+                dataset_id TEXT NOT NULL,
+                generation BIGINT NOT NULL,
+                row_count BIGINT NOT NULL,
+                anchor_count BIGINT NOT NULL,
+                checksum TEXT NOT NULL,
+                PRIMARY KEY (dataset_id, generation)
             );
             ",
         )?;
@@ -623,6 +758,22 @@ impl DuckDbEngine {
             [],
         )?;
         conn.execute(
+            "ALTER TABLE _meta_datasets ADD COLUMN IF NOT EXISTS next_row_id BIGINT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_sets ADD COLUMN IF NOT EXISTS storage_kind TEXT DEFAULT 'full'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE _history_change_sets SET storage_kind = 'full' WHERE storage_kind IS NULL",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_sets ALTER COLUMN storage_kind SET NOT NULL",
+            [],
+        )?;
+        conn.execute(
             "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS before_column_id TEXT",
             [],
         )?;
@@ -646,6 +797,11 @@ impl DuckDbEngine {
             "UPDATE _history_change_set_columns SET after_present = TRUE WHERE after_present IS NULL",
             [],
         )?;
+        conn.execute(
+            "ALTER TABLE _table_navigation_anchors
+             ADD COLUMN IF NOT EXISTS order_key HUGEINT",
+            [],
+        )?;
 
         Ok(Self {
             conn,
@@ -665,6 +821,10 @@ impl DuckDbEngine {
         dataset_id: &str,
         generation: u64,
     ) -> Result<(), AppError> {
+        #[cfg(any(test, feature = "perf-harness"))]
+        record_full_anchor_rebuild();
+
+        self.ensure_internal_row_order_column(dataset_id)?;
         let current_generation = self.get_dataset_generation(dataset_id)?;
         if current_generation != generation {
             return Err(AppError::InvalidParam(format!(
@@ -676,6 +836,23 @@ impl DuckDbEngine {
         let stride_i64 = i64::try_from(NATURAL_ANCHOR_STRIDE)
             .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let next_row_id: i64 = self.conn.query_row(
+            &format!(
+                "SELECT COALESCE(max(\"_row_id\"), 0) + 1
+                 FROM {table_name}"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets
+             SET next_row_id = CASE
+                 WHEN next_row_id IS NULL OR next_row_id < ? THEN ?
+                 ELSE next_row_id
+             END
+             WHERE id = ?",
+            params![next_row_id, next_row_id, dataset_id],
+        )?;
 
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
@@ -687,17 +864,160 @@ impl DuckDbEngine {
         )?;
         self.conn.execute(
             &format!(
-                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
-                 SELECT ?, ?, ordinal, \"_row_id\"
+                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, order_key, row_id)
+                 SELECT ?, ?, ordinal, order_key, \"_row_id\"
                  FROM (
-                     SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS ordinal
+                     SELECT \"_row_id\",
+                            {NATURAL_ORDER_SQL} AS order_key,
+                            row_number() OVER (ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") - 1 AS ordinal
                      FROM {table_name}
                  ) AS ordered_rows
                  WHERE ordinal % ? = 0"
             ),
             params![dataset_id, generation_i64, stride_i64],
         )?;
+        let row_count: i64 = self.conn.query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.publish_natural_anchor_manifest(dataset_id, generation_i64, row_count)?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation <> ?",
+            params![dataset_id, generation_i64],
+        )?;
 
+        Ok(())
+    }
+
+    pub(crate) fn reserve_row_ids(
+        &self,
+        dataset_id: &str,
+        count: usize,
+    ) -> Result<Vec<i64>, AppError> {
+        let count = i64::try_from(count)
+            .map_err(|_| AppError::InvalidParam("row count is too large".into()))?;
+        if count <= 0 {
+            return Err(AppError::InvalidParam(
+                "row count must be at least one".into(),
+            ));
+        }
+        let first_id: Option<i64> = self.conn.query_row(
+            "SELECT next_row_id FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        let first_id = first_id.ok_or_else(|| {
+            AppError::InvalidParam(format!(
+                "next row ID is not initialized for dataset {dataset_id}; controlled rebuild required"
+            ))
+        })?;
+        let next_id = first_id
+            .checked_add(count)
+            .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        let changed = self.conn.execute(
+            "UPDATE _meta_datasets SET next_row_id = ?
+             WHERE id = ? AND next_row_id = ?",
+            params![next_id, dataset_id, first_id],
+        )?;
+        if changed != 1 {
+            return Err(AppError::InvalidParam(
+                "row ID reservation raced with another mutation".into(),
+            ));
+        }
+        Ok((first_id..next_id).collect())
+    }
+
+    pub(crate) fn publish_natural_anchor_manifest(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        row_count: i64,
+    ) -> Result<(), AppError> {
+        let (anchor_count, checksum) =
+            self.natural_anchor_manifest_values(dataset_id, generation, row_count)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO _table_navigation_anchor_manifests
+             (dataset_id, generation, row_count, anchor_count, checksum)
+             VALUES (?, ?, ?, ?, ?)",
+            params![dataset_id, generation, row_count, anchor_count, checksum],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_natural_anchor_manifest(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        expected_row_count: i64,
+    ) -> Result<(), AppError> {
+        let manifest = self.conn.query_row(
+            "SELECT row_count, anchor_count, checksum
+             FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, generation],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        ).optional()?.ok_or_else(|| AppError::InvalidParam(format!(
+            "source anchor manifest is missing for dataset {dataset_id} generation {generation}; controlled rebuild required"
+        )))?;
+        let (anchor_count, checksum) =
+            self.natural_anchor_manifest_values(dataset_id, generation, expected_row_count)?;
+        if manifest.0 != expected_row_count || manifest.1 != anchor_count || manifest.2 != checksum
+        {
+            return Err(AppError::InvalidParam(format!(
+                "source anchor manifest is invalid for dataset {dataset_id} generation {generation}; controlled rebuild required"
+            )));
+        }
+        Ok(())
+    }
+
+    fn natural_anchor_manifest_values(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        row_count: i64,
+    ) -> Result<(i64, String), AppError> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"natural-anchor-manifest-v1\0");
+        hasher.update((dataset_id.len() as u64).to_le_bytes());
+        hasher.update(dataset_id.as_bytes());
+        hasher.update(generation.to_le_bytes());
+        hasher.update(row_count.to_le_bytes());
+        let mut statement = self.conn.prepare(
+            "SELECT ordinal, order_key, row_id
+             FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ?
+             ORDER BY ordinal",
+        )?;
+        let mut rows = statement.query(params![dataset_id, generation])?;
+        let mut anchor_count = 0_i64;
+        while let Some(row) = rows.next()? {
+            let ordinal: i64 = row.get(0)?;
+            let order_key: i128 = row.get(1)?;
+            let row_id: i64 = row.get(2)?;
+            hasher.update(ordinal.to_le_bytes());
+            hasher.update(order_key.to_le_bytes());
+            hasher.update(row_id.to_le_bytes());
+            anchor_count = anchor_count.checked_add(1).ok_or_else(|| {
+                AppError::InvalidParam("navigation anchor count overflowed".into())
+            })?;
+        }
+        Ok((anchor_count, format!("{:x}", hasher.finalize())))
+    }
+
+    pub fn ensure_internal_row_order_column(&self, dataset_id: &str) -> Result<(), AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        self.conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS \"_row_order\" HUGEINT"),
+            [],
+        )?;
         Ok(())
     }
 
@@ -725,7 +1045,7 @@ impl DuckDbEngine {
 
         let table_name = Self::internal_table_name(dataset_id);
         let mut columns_stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         let columns: Vec<(String, String)> = columns_stmt
             .query_map(params![&table_name], |row| {
@@ -1411,18 +1731,29 @@ impl DuckDbEngine {
         if request.session_id != session_id.to_string()
             || request.source_generation != definition.source_generation
             || request.statistic_labels.len() != definition.statistics.len()
-            || request.statistic_labels.iter().any(|label| label.trim().is_empty())
+            || request
+                .statistic_labels
+                .iter()
+                .any(|label| label.trim().is_empty())
         {
-            return Err(AppError::InvalidParam("tabulate_invalid_materialization".into()));
+            return Err(AppError::InvalidParam(
+                "tabulate_invalid_materialization".into(),
+            ));
         }
-        crate::services::spprj_archive::validate_portable_basename(&request.destination_name, "Dataset name")
-            .map_err(AppError::InvalidParam)?;
+        crate::services::spprj_archive::validate_portable_basename(
+            &request.destination_name,
+            "Dataset name",
+        )
+        .map_err(AppError::InvalidParam)?;
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let outcome = (|| {
             self.validate_tabulate_session(definition)?;
             self.validate_dataset_name(&request.destination_name, None)?;
             let (source_table, column_types) = self.validate_tabulate_fields(
-                &definition.dataset_id, &definition.row_fields, &definition.column_fields, &definition.statistics,
+                &definition.dataset_id,
+                &definition.row_fields,
+                &definition.column_fields,
+                &definition.statistics,
             )?;
             let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
             let mut names = Vec::new();
@@ -1440,35 +1771,54 @@ impl DuckDbEngine {
             let mut projection = vec!["(members.ordinal + 1)::BIGINT AS \"_row_id\"".to_string()];
             for (index, field) in definition.row_fields.iter().enumerate() {
                 let name = unique_name(field.clone());
-                let types = HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
-                let expression = dimension_select_expression(&format!("dimension_{index}"), &types)?;
+                let types =
+                    HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
+                let expression =
+                    dimension_select_expression(&format!("dimension_{index}"), &types)?;
                 let label = tabulate_dimension_sql_label(&expression, &column_types[field]);
-                projection.push(format!("COALESCE({label}, ?) AS {}", Self::quote_identifier(&name)));
+                projection.push(format!(
+                    "COALESCE({label}, ?) AS {}",
+                    Self::quote_identifier(&name)
+                ));
                 parameters.push(Value::Text(request.missing_label.clone()));
                 names.push((name, "VARCHAR"));
             }
-            let member_types = definition.column_fields.iter().enumerate()
+            let member_types = definition
+                .column_fields
+                .iter()
+                .enumerate()
                 .map(|(index, field)| (format!("dimension_{index}"), column_types[field].clone()))
                 .collect::<HashMap<_, _>>();
             let member_projection = (0..definition.column_fields.len())
-                .map(|index| dimension_select_expression(&format!("dimension_{index}"), &member_types).map(|value| format!(", {value}")))
-                .collect::<Result<Vec<_>, _>>()?.join("");
-            let mut statement = self.conn.prepare(&format!("SELECT ordinal{member_projection} FROM {} ORDER BY ordinal", Self::quote_identifier(&column_table)))?;
+                .map(|index| {
+                    dimension_select_expression(&format!("dimension_{index}"), &member_types)
+                        .map(|value| format!(", {value}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("");
+            let mut statement = self.conn.prepare(&format!(
+                "SELECT ordinal{member_projection} FROM {} ORDER BY ordinal",
+                Self::quote_identifier(&column_table)
+            ))?;
             let mut members = statement.query([])?;
             while let Some(member) = members.next()? {
                 let ordinal: u64 = member.get(0)?;
-                let labels = (0..definition.column_fields.len()).map(|index| {
-                    member
-                        .get::<_, Value>(index + 1)
-                        .map(json_dimension_value)
-                        .map(|value| tabulate_dimension_label(value, &request.missing_label))
-                }).collect::<Result<Vec<_>, _>>()?;
+                let labels = (0..definition.column_fields.len())
+                    .map(|index| {
+                        member
+                            .get::<_, Value>(index + 1)
+                            .map(json_dimension_value)
+                            .map(|value| tabulate_dimension_label(value, &request.missing_label))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 for (index, statistic) in definition.statistics.iter().enumerate() {
                     let mut parts = labels.clone();
                     parts.push(request.statistic_labels[index].clone());
                     parts.push(statistic.field.clone());
                     let name = unique_name(parts.join(" - "));
-                    let raw = format!("MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})");
+                    let raw = format!(
+                        "MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})"
+                    );
                     let value = if is_tabulate_percentage(&statistic.kind) {
                         let denominator = match statistic.kind {
                             StatisticKind::RowPercentage => format!("MAX(cells.row_total_{index})"),
@@ -1479,7 +1829,9 @@ impl DuckDbEngine {
                     } else if default_missing_value(&statistic.kind).is_some() {
                         format!("COALESCE({raw}, 0)::DOUBLE")
                     } else {
-                        format!("CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END")
+                        format!(
+                            "CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END"
+                        )
                     };
                     projection.push(format!("{value} AS {}", Self::quote_identifier(&name)));
                     names.push((name, "DOUBLE"));
@@ -1487,24 +1839,43 @@ impl DuckDbEngine {
             }
             drop(members);
             drop(statement);
-            let aggregates = definition.statistics.iter().enumerate().map(|(index, statistic)| {
-                aggregate_sql_for_field(statistic, &format!("source.{}", Self::quote_identifier(&statistic.field)))
+            let aggregates = definition
+                .statistics
+                .iter()
+                .enumerate()
+                .map(|(index, statistic)| {
+                    aggregate_sql_for_field(
+                        statistic,
+                        &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                    )
                     .map(|value| format!("{value} AS stat_{index}"))
-            }).collect::<Result<Vec<_>, _>>()?.join(", ");
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ");
             let mut totals = Vec::new();
             for (index, statistic) in definition.statistics.iter().enumerate() {
                 if is_tabulate_percentage(&statistic.kind) {
-                    totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"));
+                    totals.push(format!(
+                        "SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"
+                    ));
                     totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY column_ordinal) AS column_total_{index}"));
                     totals.push(format!("SUM(stat_{index}) OVER () AS grand_total_{index}"));
                 }
             }
-            let totals = if totals.is_empty() { String::new() } else { format!(", {}", totals.join(", ")) };
+            let totals = if totals.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", totals.join(", "))
+            };
             let id = uuid::Uuid::new_v4().to_string();
             let output = Self::quote_identifier(&Self::internal_table_name(&id));
             let group_by = std::iter::once("members.ordinal".to_string())
-                .chain((0..definition.row_fields.len()).map(|index| format!("members.dimension_{index}")))
-                .collect::<Vec<_>>().join(", ");
+                .chain(
+                    (0..definition.row_fields.len())
+                        .map(|index| format!("members.dimension_{index}")),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
             let sql = format!(
                 "CREATE TABLE {output} AS WITH grouped AS (
                  SELECT row_members.ordinal AS row_ordinal, column_members.ordinal AS column_ordinal, {aggregates}
@@ -1555,12 +1926,32 @@ impl DuckDbEngine {
 
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = (|| -> Result<DatasetMeta, AppError> {
+            let mut csv_schema = self
+                .conn
+                .prepare("DESCRIBE SELECT * FROM read_csv($1, auto_detect=true)")?;
+            let csv_column_names = csv_schema
+                .query_map(params![file_path], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let storage_column_names = Self::remap_internal_user_column_names(&csv_column_names)?;
+            let csv_projection = csv_column_names
+                .iter()
+                .zip(storage_column_names.iter())
+                .map(|(source, target)| {
+                    format!(
+                        "__csv__.{} AS {}",
+                        Self::quote_identifier(source),
+                        Self::quote_identifier(target)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
             // Create table from CSV with the stable row identity required by
             // bounded windows, edits, history, and project serialization.
             let create_sql = format!(
-            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.* FROM read_csv($1, auto_detect=true) AS __csv__",
-            table_name
-        );
+                "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", {}, NULL::HUGEINT AS \"_row_order\" FROM read_csv($1, auto_detect=true) AS __csv__",
+                table_name, csv_projection
+            );
             self.conn.execute(&create_sql, params![file_path])?;
 
             // Get row count
@@ -1572,7 +1963,7 @@ impl DuckDbEngine {
 
             // Get column info
             let mut col_stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
 
             let col_count: i32 = {
@@ -1683,6 +2074,10 @@ impl DuckDbEngine {
         )?;
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
             params![id],
         )?;
         self.conn
@@ -2593,20 +2988,30 @@ impl DuckDbEngine {
         let clamped_start = request.start.min(total_rows.max(0) as usize);
         let start_i64 = i64::try_from(clamped_start)
             .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
-        let anchor: Option<(i64, i64)> = connection
+        let anchor: Option<NaturalNavigationAnchor> = connection
             .query_row(
-                "SELECT ordinal, row_id
+                "SELECT ordinal, order_key, row_id
                  FROM _table_navigation_anchors
                  WHERE dataset_id = ? AND generation = ? AND ordinal <= ?
                  ORDER BY ordinal DESC
                  LIMIT 1",
                 params![&request.dataset_id, generation_i64, start_i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok(NaturalNavigationAnchor {
+                        ordinal: row.get(0)?,
+                        order_key: row.get(1)?,
+                        row_id: row.get(2)?,
+                    })
+                },
             )
             .optional()?;
-        let (anchor_ordinal, anchor_row_id) = match anchor {
+        let anchor = match anchor {
             Some(anchor) => anchor,
-            None if total_rows <= 0 => (0, i64::MAX),
+            None if total_rows <= 0 => NaturalNavigationAnchor {
+                ordinal: 0,
+                order_key: 0,
+                row_id: i64::MAX,
+            },
             None => {
                 return Err(AppError::Database(format!(
                     "natural navigation anchors are not ready for dataset {} generation {}",
@@ -2614,7 +3019,7 @@ impl DuckDbEngine {
                 )));
             }
         };
-        let local_offset = usize::try_from(start_i64 - anchor_ordinal).map_err(|_| {
+        let local_offset = usize::try_from(start_i64 - anchor.ordinal).map_err(|_| {
             AppError::Database("natural navigation local offset is negative".into())
         })?;
         if local_offset >= NATURAL_ANCHOR_STRIDE {
@@ -2647,7 +3052,13 @@ impl DuckDbEngine {
             .join(", ");
         let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
         let mut stmt = connection.prepare(&query_sql)?;
-        let mut result_rows = stmt.query(params![anchor_row_id, limit, offset])?;
+        let mut result_rows = stmt.query(params![
+            anchor.order_key,
+            anchor.order_key,
+            anchor.row_id,
+            limit,
+            offset
+        ])?;
         let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
         while let Some(row) = result_rows.next()? {
             let mut values = Vec::with_capacity(columns.len());
@@ -2683,7 +3094,11 @@ impl DuckDbEngine {
 
     fn natural_navigation_viewport_sql(table_name: &str, select_columns: &str) -> String {
         format!(
-            "SELECT {select_columns} FROM {table_name} WHERE \"_row_id\" >= ? ORDER BY \"_row_id\" ASC LIMIT ? OFFSET ?"
+            "SELECT {select_columns} FROM {table_name}
+             WHERE {NATURAL_ORDER_SQL} > ?
+                OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" >= ?)
+             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+             LIMIT ? OFFSET ?"
         )
     }
 
@@ -2712,7 +3127,8 @@ impl DuckDbEngine {
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let sql = format!(
             "WITH filtered AS (
-                SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS logical_index
+                SELECT \"_row_id\",
+                       row_number() OVER (ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") - 1 AS logical_index
                 FROM {table_name} {where_clause}
              )
              SELECT logical_index FROM filtered WHERE \"_row_id\" = ?"
@@ -3657,7 +4073,7 @@ impl DuckDbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let query_sql = format!(
-            "SELECT {select_columns} FROM {table_name} {where_clause} ORDER BY \"_row_id\" ASC"
+            "SELECT {select_columns} FROM {table_name} {where_clause} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
         );
 
         let mut per_column = vec![Vec::<Option<f64>>::new(); correlation_plan.columns.len()];
@@ -4494,7 +4910,7 @@ impl DuckDbEngine {
                 ))
             }
         } else {
-            Ok("ORDER BY \"_row_id\" ASC".to_string())
+            Ok(format!("ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""))
         }
     }
 
@@ -4554,7 +4970,7 @@ impl DuckDbEngine {
                 };
                 format!("ORDER BY \"{}\" {}", col, dir)
             }
-            None => String::new(),
+            None => format!("ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""),
         };
 
         let query = format!(
@@ -4648,7 +5064,7 @@ impl DuckDbEngine {
                 .join(", ");
             let internal_table = Self::quote_identifier(&Self::internal_table_name(&dataset.id));
             let select_sql = format!(
-                "SELECT {} FROM {} ORDER BY \"_row_id\"",
+                "SELECT {} FROM {} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
                 select_columns, internal_table
             );
             let mut stmt = self.conn.prepare(&select_sql)?;
@@ -4845,7 +5261,8 @@ impl DuckDbEngine {
 
     fn validate_result_column_names(columns: &[String]) -> Result<(), AppError> {
         let mut seen: HashSet<String> = HashSet::new();
-        let reserved = normalize_identifier("_row_id");
+        let reserved_row_id = normalize_identifier("_row_id");
+        let reserved_row_order = normalize_identifier("_row_order");
 
         for column_name in columns {
             let trimmed = column_name.trim();
@@ -4856,9 +5273,14 @@ impl DuckDbEngine {
             }
 
             let normalized = normalize_identifier(trimmed);
-            if normalized == reserved {
+            if normalized == reserved_row_id {
                 return Err(AppError::InvalidParam(
                     "query result column names cannot use reserved name _row_id".into(),
+                ));
+            }
+            if normalized == reserved_row_order {
+                return Err(AppError::InvalidParam(
+                    "query result column names cannot use reserved name _row_order".into(),
                 ));
             }
 
@@ -4871,6 +5293,49 @@ impl DuckDbEngine {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn remap_internal_user_column_names(
+        columns: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        let mut used = columns
+            .iter()
+            .filter(|name| {
+                !name.eq_ignore_ascii_case("_row_id") && !name.eq_ignore_ascii_case("_row_order")
+            })
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let mut remapped = Vec::with_capacity(columns.len());
+        for name in columns {
+            let base = if name.eq_ignore_ascii_case("_row_id") {
+                Some("_row_id_user")
+            } else if name.eq_ignore_ascii_case("_row_order") {
+                Some("_row_order_user")
+            } else {
+                None
+            };
+            let Some(base) = base else {
+                remapped.push(name.clone());
+                continue;
+            };
+
+            if used.insert(base.to_string()) {
+                remapped.push(base.to_string());
+                continue;
+            }
+            let mut suffix = 2usize;
+            loop {
+                let candidate = format!("{base}-{suffix}");
+                if used.insert(candidate.to_ascii_lowercase()) {
+                    remapped.push(candidate);
+                    break;
+                }
+                suffix = suffix.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam("column name suffix space is exhausted".into())
+                })?;
+            }
+        }
+        Ok(remapped)
     }
 
     pub(crate) fn resolve_navigation_projection_on_connection(
@@ -4936,7 +5401,7 @@ impl DuckDbEngine {
     ) -> Result<Vec<(String, String)>, AppError> {
         let table_name = Self::internal_table_name(dataset_id);
         let mut stmt = connection.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         Ok(stmt
             .query_map(params![table_name], |row| {
@@ -5028,13 +5493,29 @@ impl DuckDbEngine {
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
         let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
         let mut statement = connection.prepare(&format!("EXPLAIN {sql}"))?;
-        let mut rows = statement.query(params![0_i64, 1_i64, 0_i64])?;
+        let mut rows = statement.query(params![0_i128, 0_i128, 0_i64, 1_i64, 0_i64])?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             let value: String = row.get(1)?;
             lines.push(value);
         }
         Ok(lines.join("\n"))
+    }
+
+    #[cfg(test)]
+    fn natural_row_ids_for_test(&self, dataset_id: &str) -> Vec<i64> {
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let mut statement = self
+            .conn
+            .prepare(&format!(
+                "SELECT \"_row_id\" FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            ))
+            .expect("prepare natural row ids");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query natural row ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect natural row ids")
     }
 
     fn duckdb_value_to_json(value: Value) -> serde_json::Value {
@@ -5158,9 +5639,22 @@ impl DuckDbEngine {
 
     /// Export a dataset to CSV
     pub fn export_csv(&self, dataset_id: &str, output_path: &str) -> Result<(), AppError> {
-        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let columns = self.get_user_columns(dataset_id)?;
+        if columns.is_empty() {
+            return Err(AppError::InvalidParam(
+                "Dataset has no columns and cannot be exported".into(),
+            ));
+        }
+        let select_columns = columns
+            .iter()
+            .map(|(name, _)| Self::quote_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
         self.conn.execute(
-            &format!("COPY \"{}\" TO $1 (HEADER, DELIMITER ',')", table_name),
+            &format!(
+                "COPY (SELECT {select_columns} FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") TO $1 (HEADER, DELIMITER ',')"
+            ),
             params![output_path],
         )?;
         Ok(())
@@ -5247,7 +5741,9 @@ impl DuckDbEngine {
                 .join(", ");
 
             // Query all data
-            let sql = format!("SELECT {} FROM \"{}\"", select_cols, table_name);
+            let sql = format!(
+                "SELECT {select_cols} FROM \"{table_name}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            );
             let mut stmt = self.conn.prepare(&sql)?;
             let col_count = col_names.len();
             let mut rows = stmt.query([])?;
@@ -5438,12 +5934,14 @@ impl DuckDbEngine {
                 if append_target_id.is_none() {
                     self.conn.execute(
                         &format!(
-                            "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {})",
+                            "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {}, \"_row_order\" HUGEINT)",
                             table_name,
                             col_defs.join(", ")
                         ),
                         [],
                     )?;
+                } else {
+                    self.ensure_internal_row_order_column(&id)?;
                 }
 
                 // Determine target types for value conversion
@@ -5492,6 +5990,7 @@ impl DuckDbEngine {
                                 )?;
                                 values.push(value);
                             }
+                            values.push(Value::Null);
                             appender.append_row(appender_params_from_iter(values))?;
                             rows_done += 1;
                         }
@@ -5510,11 +6009,11 @@ impl DuckDbEngine {
                 )?;
 
                 if append_target_id.is_some() {
+                    self.bump_dataset_generation(&id)?;
                     self.conn.execute(
                     "UPDATE _meta_datasets SET row_count = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                     params![row_count, id],
                 )?;
-                    self.bump_dataset_generation(&id)?;
                     let generation = self.get_dataset_generation(&id)?;
                     self.rebuild_natural_anchors(&id, generation)?;
                 } else {
@@ -5609,7 +6108,7 @@ impl DuckDbEngine {
         let import_result = (|| -> Result<(DatasetMeta, usize), AppError> {
             self.conn.execute(
                 &format!(
-                    "CREATE TABLE {} (\"_row_id\" BIGINT, {})",
+                    "CREATE TABLE {} (\"_row_id\" BIGINT, {}, \"_row_order\" HUGEINT)",
                     Self::quote_identifier(&table_name),
                     column_definitions.join(", ")
                 ),
@@ -5642,6 +6141,7 @@ impl DuckDbEngine {
                                 row.source_index,
                             )?);
                         }
+                        values.push(Value::Null);
                         appender.append_row(appender_params_from_iter(values))?;
                         rows_done += 1;
                     }
@@ -6000,7 +6500,7 @@ impl DuckDbEngine {
                 // Create the table in the destination SQLite database
                 self.conn.execute(
                     &format!(
-                        "CREATE TABLE _sqlite_dst.\"{}\" AS SELECT {} FROM \"{}\"",
+                        "CREATE TABLE _sqlite_dst.\"{}\" AS SELECT {} FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
                         dst_name.replace('"', "\"\""),
                         select_cols,
                         table_name
@@ -6125,12 +6625,12 @@ impl DuckDbEngine {
         // Add a hidden row_id column for row identification
         let create_sql = if col_defs.is_empty() {
             format!(
-                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0)",
+                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, \"_row_order\" HUGEINT)",
                 table_name
             )
         } else {
             format!(
-                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, {})",
+                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, {}, \"_row_order\" HUGEINT)",
                 table_name,
                 col_defs.join(", ")
             )
@@ -7811,6 +8311,30 @@ impl DuckDbEngine {
     pub fn apply_change_set(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
+        let storage_kind = self
+            .conn
+            .query_row(
+                "SELECT storage_kind FROM _history_change_sets WHERE id = ?",
+                params![change_set_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if storage_kind.as_deref() == Some("row_delta") {
+            crate::services::table_delta_mutation::apply_row_delta_change_set(
+                self,
+                change_set_id,
+                undo,
+            )?;
+            return Ok(());
+        }
+        if storage_kind.as_deref() == Some("column_delta") {
+            crate::services::table_delta_mutation::apply_column_delta_change_set(
+                self,
+                change_set_id,
+                undo,
+            )?;
+            return Ok(());
+        }
         let suffix = parsed_id.to_string().replace('-', "_");
         let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
         let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
@@ -8229,6 +8753,27 @@ impl DuckDbEngine {
                 params![!undo, generation + 1, change_set_id],
             )?;
             self.rebuild_natural_anchors(&dataset_id, generation + 1)?;
+            self.conn.execute(
+                "UPDATE _history_delta_change_sets
+                 SET after_generation = ? WHERE dataset_id = ? AND applied = TRUE",
+                params![generation + 1, &dataset_id],
+            )?;
+            self.conn.execute(
+                "UPDATE _history_delta_change_sets
+                 SET before_generation = ? WHERE dataset_id = ? AND applied = FALSE",
+                params![generation + 1, &dataset_id],
+            )?;
+            self.conn.execute(
+                "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?",
+                params![generation + 1, &dataset_id],
+            )?;
+            crate::services::table_history_archive::advance_history_timeline(
+                self,
+                &dataset_id,
+                change_set_id,
+                !undo,
+                generation + 1,
+            )?;
             Ok(())
         })();
         match result {
@@ -8333,6 +8878,12 @@ impl DuckDbEngine {
         )],
         undo: bool,
     ) -> Result<(), AppError> {
+        if columns
+            .iter()
+            .any(|column| column.3.is_none() || !column.10)
+        {
+            return Ok(());
+        }
         let target_columns = columns
             .iter()
             .filter_map(
@@ -8397,6 +8948,1480 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    pub(crate) fn refresh_delta_history_generations_for_dataset(
+        &self,
+        dataset_id: &str,
+    ) -> Result<(), AppError> {
+        let generation = self.get_dataset_generation(&dataset_id)?;
+        self.conn.execute(
+            "UPDATE _history_delta_change_sets
+             SET after_generation = ? WHERE dataset_id = ? AND applied = TRUE",
+            params![generation, dataset_id],
+        )?;
+        self.conn.execute(
+            "UPDATE _history_delta_change_sets
+             SET before_generation = ? WHERE dataset_id = ? AND applied = FALSE",
+            params![generation, dataset_id],
+        )?;
+        self.conn.execute(
+            "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?",
+            params![generation, dataset_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn archive_delta_history(
+        &self,
+    ) -> Result<
+        (
+            crate::services::spprj_archive::DeltaHistoryArchive,
+            Vec<crate::services::spprj_archive::DeltaHistorySnapshotRef>,
+        ),
+        AppError,
+    > {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistoryChangeSet, DeltaHistoryColumn, DeltaHistoryRow,
+            DeltaHistoryRowOrderRebalance, DeltaHistorySnapshotRef,
+        };
+
+        let invalid_rebalance_ownership: i64 = self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM _history_natural_rebalances AS rebalance
+             LEFT JOIN _history_delta_change_sets AS delta
+               ON delta.id = rebalance.change_set_id
+             LEFT JOIN _history_change_sets AS change_set
+               ON change_set.id = rebalance.change_set_id
+             WHERE delta.id IS NULL
+                OR change_set.id IS NULL
+                OR change_set.storage_kind <> 'row_delta'
+                OR delta.operation <> 'add_rows'",
+            [],
+            |row| row.get(0),
+        )?;
+        if invalid_rebalance_ownership != 0 {
+            return Err(AppError::FileIO(
+                "Row-order rebalance metadata has invalid change-set ownership".into(),
+            ));
+        }
+        let mut statement = self.conn.prepare(
+            "SELECT change_set.id, change_set.dataset_id, change_set.storage_kind,
+                    change_set.generation,
+                    delta.operation, delta.before_generation, delta.after_generation,
+                    delta.snapshot_table, delta.applied
+             FROM _history_change_sets AS change_set
+             JOIN _history_delta_change_sets AS delta ON delta.id = change_set.id
+             WHERE change_set.storage_kind IN ('row_delta', 'column_delta')
+             ORDER BY change_set.created_at, change_set.id",
+        )?;
+        let headers = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, bool>(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut change_sets = Vec::with_capacity(headers.len());
+        let mut snapshots = Vec::new();
+        for (
+            id,
+            dataset_id,
+            storage_kind,
+            generation,
+            operation,
+            before_generation,
+            after_generation,
+            snapshot_table,
+            applied,
+        ) in headers
+        {
+            let parsed = uuid::Uuid::parse_str(&id)
+                .map_err(|_| AppError::FileIO("Delta history contains an invalid UUID".into()))?;
+            let rows = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, row_id, row_order FROM _history_row_deltas
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryRow {
+                        ordinal: row.get(0)?,
+                        row_id: row.get(1)?,
+                        row_order: row.get(2)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let columns = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, column_id, col_index, col_name, col_type,
+                            calculated_definition_json
+                     FROM _history_column_deltas WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryColumn {
+                        ordinal: row.get(0)?,
+                        column_id: row.get(1)?,
+                        col_index: row.get(2)?,
+                        col_name: row.get(3)?,
+                        col_type: row.get(4)?,
+                        calculated_definition_json: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let row_order_rebalances = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, row_id, before_key, after_key
+                     FROM _history_natural_rebalances
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryRowOrderRebalance {
+                        ordinal: row.get(0)?,
+                        row_id: row.get(1)?,
+                        before_row_order: row.get(2)?,
+                        after_row_order: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(table_name) = &snapshot_table {
+                Self::validate_delta_snapshot_name(&parsed, &storage_kind, &operation, table_name)?;
+                let schema = self.delta_snapshot_schema(table_name)?;
+                if schema.is_empty() {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot is missing for {id}"
+                    )));
+                }
+                snapshots.push(DeltaHistorySnapshotRef {
+                    change_set_id: id.clone(),
+                    file: format!("history/snapshots/{}.parquet", parsed.hyphenated()),
+                    table_name: table_name.clone(),
+                    columns: schema,
+                });
+            }
+            change_sets.push(DeltaHistoryChangeSet {
+                id,
+                dataset_id,
+                storage_kind,
+                generation,
+                operation,
+                before_generation,
+                after_generation,
+                snapshot_table,
+                applied,
+                rows,
+                row_order_rebalances,
+                columns,
+            });
+        }
+        Ok((
+            DeltaHistoryArchive {
+                version: 1,
+                change_sets,
+            },
+            snapshots,
+        ))
+    }
+
+    pub fn archive_unified_history(
+        &self,
+    ) -> Result<crate::services::table_history_archive::HistoryTimelineArchive, AppError> {
+        use crate::services::table_history_archive::{
+            HistoryDatasetCursor, HistorySnapshotRef, HistoryTimelineArchive,
+            HistoryTimelineEntry, LegacyHistoryColumn,
+        };
+
+        let (delta_archive, delta_snapshots) = self.archive_delta_history()?;
+        let delta_by_id = delta_archive
+            .change_sets
+            .into_iter()
+            .map(|change_set| (change_set.id.clone(), change_set))
+            .collect::<HashMap<_, _>>();
+        let delta_snapshot_by_id = delta_snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.change_set_id.clone(), snapshot))
+            .collect::<HashMap<_, _>>();
+        let mut statement = self.conn.prepare(
+            "SELECT change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                    created_before_generation, created_after_generation, current_generation,
+                    applied, before_schema_json, after_schema_json
+             FROM _history_timeline ORDER BY dataset_id, history_ordinal",
+        )?;
+        let headers = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, u64>(7)?,
+                    row.get::<_, bool>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut entries = Vec::with_capacity(headers.len());
+        for (
+            change_set_id,
+            dataset_id,
+            history_ordinal,
+            storage_kind,
+            operation,
+            created_before_generation,
+            created_after_generation,
+            current_generation,
+            applied,
+            before_schema_json,
+            after_schema_json,
+        ) in headers
+        {
+            let before_schema = serde_json::from_str(&before_schema_json)
+                .map_err(|error| AppError::FileIO(format!("Invalid history schema: {error}")))?;
+            let after_schema = serde_json::from_str(&after_schema_json)
+                .map_err(|error| AppError::FileIO(format!("Invalid history schema: {error}")))?;
+            let mut snapshots = Vec::new();
+            let mut legacy_columns = Vec::new();
+            let delta = delta_by_id.get(&change_set_id).cloned();
+            if storage_kind == "full" {
+                let suffix = change_set_id.replace('-', "_");
+                for kind in ["before", "after"] {
+                    let table_name = format!("_history_{kind}_{suffix}");
+                    snapshots.push(HistorySnapshotRef {
+                        kind: kind.into(),
+                        file: format!(
+                            "history/snapshots/{change_set_id}/{kind}.parquet"
+                        ),
+                        columns: self.delta_snapshot_schema(&table_name)?,
+                        table_name,
+                    });
+                }
+                legacy_columns = self
+                    .conn
+                    .prepare(
+                        "SELECT ordinal, column_index, before_column_id, before_name, before_type,
+                                before_calculated_definition_json, after_column_id, after_name,
+                                after_type, after_calculated_definition_json, after_present
+                         FROM _history_change_set_columns
+                         WHERE change_set_id = ? ORDER BY ordinal",
+                    )?
+                    .query_map(params![&change_set_id], |row| {
+                        Ok(LegacyHistoryColumn {
+                            ordinal: row.get(0)?,
+                            column_index: row.get(1)?,
+                            before_column_id: row.get(2)?,
+                            before_name: row.get(3)?,
+                            before_type: row.get(4)?,
+                            before_calculated_definition_json: row.get(5)?,
+                            after_column_id: row.get(6)?,
+                            after_name: row.get(7)?,
+                            after_type: row.get(8)?,
+                            after_calculated_definition_json: row.get(9)?,
+                            after_present: row.get(10)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+            } else if let Some(snapshot) = delta_snapshot_by_id.get(&change_set_id) {
+                snapshots.push(HistorySnapshotRef {
+                    kind: "delta".into(),
+                    file: format!("history/snapshots/{change_set_id}/delta.parquet"),
+                    table_name: snapshot.table_name.clone(),
+                    columns: snapshot.columns.clone(),
+                });
+            }
+            entries.push(HistoryTimelineEntry {
+                change_set_id,
+                dataset_id,
+                history_ordinal,
+                storage_kind,
+                operation,
+                created_before_generation,
+                created_after_generation,
+                current_generation,
+                applied,
+                before_schema,
+                after_schema,
+                delta,
+                legacy_columns,
+                snapshots,
+            });
+        }
+        let mut datasets = Vec::new();
+        let history_states = self
+            .conn
+            .prepare(
+                "SELECT dataset_id, next_history_ordinal
+                 FROM _history_dataset_state ORDER BY dataset_id",
+            )?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (group, next_history_ordinal) in history_states {
+            let dataset_entries = entries
+                .iter()
+                .filter(|entry| entry.dataset_id == group)
+                .collect::<Vec<_>>();
+            let current_generation = if let Some(entry) = dataset_entries.first() {
+                entry.current_generation
+            } else {
+                self.get_dataset_generation(&group)?
+            };
+            datasets.push(HistoryDatasetCursor {
+                dataset_id: group,
+                applied_count: dataset_entries.iter().filter(|entry| entry.applied).count() as u64,
+                current_generation,
+                next_history_ordinal,
+            });
+        }
+        let archive = HistoryTimelineArchive {
+            version: 2,
+            datasets,
+            entries,
+        };
+        crate::services::table_history_archive::validate_history_timeline(&archive)?;
+        Ok(archive)
+    }
+
+    pub fn export_unified_history_snapshot(
+        &self,
+        descriptor: &crate::services::table_history_archive::HistorySnapshotRef,
+        output_path: &str,
+    ) -> Result<(), AppError> {
+        if self.delta_snapshot_schema(&descriptor.table_name)? != descriptor.columns {
+            return Err(AppError::FileIO(
+                "History snapshot schema changed during save".into(),
+            ));
+        }
+        let table = Self::quote_identifier(&descriptor.table_name);
+        let columns = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                let transport_type = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                format!("CAST({name} AS {transport_type}) AS {name}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("COPY (SELECT {columns} FROM {table}) TO $1 (FORMAT PARQUET)"),
+            params![output_path],
+        )?;
+        Ok(())
+    }
+
+    fn validate_delta_snapshot_name(
+        id: &uuid::Uuid,
+        storage_kind: &str,
+        operation: &str,
+        table_name: &str,
+    ) -> Result<(), AppError> {
+        let prefix = match (storage_kind, operation) {
+            ("row_delta", "delete_rows") => "_history_rows_",
+            ("column_delta", "delete_columns") => "_history_columns_",
+            _ => {
+                return Err(AppError::FileIO(
+                    "Delta history operation must not reference a snapshot".into(),
+                ))
+            }
+        };
+        if table_name != format!("{prefix}{}", id.simple()) {
+            return Err(AppError::FileIO(
+                "Delta history snapshot identity does not match its change set".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn delta_snapshot_schema(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<crate::services::spprj_archive::DeltaHistorySnapshotColumn>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns
+             WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        )?;
+        statement
+            .query_map(params![table_name], |row| {
+                let duckdb_type: String = row.get(1)?;
+                Ok(crate::services::spprj_archive::DeltaHistorySnapshotColumn {
+                    name: row.get(0)?,
+                    duckdb_type: if duckdb_type == "HUGEINT" {
+                        "HUGEINT".into()
+                    } else {
+                        duckdb_type.clone()
+                    },
+                    transport_type: Some(if duckdb_type == "HUGEINT" {
+                        "VARCHAR".into()
+                    } else {
+                        duckdb_type
+                    }),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn export_delta_history_snapshot(
+        &self,
+        descriptor: &crate::services::spprj_archive::DeltaHistorySnapshotRef,
+        output_path: &str,
+    ) -> Result<(), AppError> {
+        let parsed = uuid::Uuid::parse_str(&descriptor.change_set_id)
+            .map_err(|_| AppError::FileIO("Invalid delta history change-set UUID".into()))?;
+        let (storage_kind, operation, snapshot_table): (String, String, Option<String>) = self
+            .conn
+            .query_row(
+                "SELECT change_set.storage_kind, delta.operation, delta.snapshot_table
+                     FROM _history_change_sets AS change_set
+                     JOIN _history_delta_change_sets AS delta ON delta.id = change_set.id
+                     WHERE change_set.id = ?",
+                params![&descriptor.change_set_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| AppError::FileIO("Unknown delta history change set".into()))?;
+        Self::validate_delta_snapshot_name(
+            &parsed,
+            &storage_kind,
+            &operation,
+            &descriptor.table_name,
+        )?;
+        if snapshot_table.as_deref() != Some(descriptor.table_name.as_str())
+            || self.delta_snapshot_schema(&descriptor.table_name)? != descriptor.columns
+        {
+            return Err(AppError::FileIO(
+                "Delta history snapshot schema changed during save".into(),
+            ));
+        }
+        let table = Self::quote_identifier(&descriptor.table_name);
+        let columns = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                let transport_type = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                format!("CAST({name} AS {transport_type}) AS {name}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("COPY (SELECT {columns} FROM {table}) TO $1 (FORMAT PARQUET)"),
+            params![output_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn restore_delta_history(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        snapshots: &[(
+            crate::services::spprj_archive::DeltaHistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+    ) -> Result<(), AppError> {
+        self.restore_delta_history_with_schemas(archive, snapshots, None)
+    }
+
+    fn restore_delta_history_with_schemas(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        snapshots: &[(
+            crate::services::spprj_archive::DeltaHistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+        historical_schemas: Option<
+            &HashMap<
+                String,
+                Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+            >,
+        >,
+    ) -> Result<(), AppError> {
+        if archive.version != 1 {
+            return Err(AppError::FileIO("Unsupported delta history version".into()));
+        }
+        let descriptors = snapshots
+            .iter()
+            .map(|(descriptor, _)| (descriptor.change_set_id.as_str(), descriptor))
+            .collect::<HashMap<_, _>>();
+        crate::services::spprj_archive::validate_delta_history_contract(
+            archive,
+            &snapshots
+                .iter()
+                .map(|(descriptor, _)| descriptor.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let mut required_generations = HashMap::new();
+        for change_set in &archive.change_sets {
+            let required = change_set
+                .generation
+                .max(change_set.before_generation)
+                .max(change_set.after_generation);
+            required_generations
+                .entry(change_set.dataset_id.as_str())
+                .and_modify(|generation: &mut u64| *generation = (*generation).max(required))
+                .or_insert(required);
+            self.validate_delta_column_metadata(change_set)?;
+        }
+        let mut authoritative_generations = HashMap::new();
+        for (dataset_id, required_generation) in required_generations {
+            let generation = self
+                .get_dataset_generation(dataset_id)
+                .map_err(|_| {
+                    AppError::FileIO(format!(
+                        "Delta history references unknown dataset {}",
+                        dataset_id
+                    ))
+                })?;
+            if generation < required_generation {
+                return Err(AppError::FileIO(format!(
+                    "Project generation {generation} for dataset {dataset_id} is below compact history generation {required_generation}"
+                )));
+            }
+            authoritative_generations.insert(dataset_id.to_string(), generation);
+        }
+        for change_set in &archive.change_sets {
+            if let Some(descriptor) = descriptors.get(change_set.id.as_str()) {
+                self.validate_delta_snapshot_descriptor(
+                    archive,
+                    change_set,
+                    descriptor,
+                    historical_schemas.and_then(|schemas| schemas.get(&change_set.id)),
+                )?;
+            }
+        }
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            for (descriptor, path) in snapshots {
+                let parsed = uuid::Uuid::parse_str(&descriptor.change_set_id)
+                    .map_err(|_| AppError::FileIO("Invalid delta history UUID".into()))?;
+                let transport_name = format!("_history_transport_{}", parsed.simple());
+                let transport_table = Self::quote_identifier(&transport_name);
+                let final_table = Self::quote_identifier(&descriptor.table_name);
+                let path = path.to_str().ok_or_else(|| {
+                    AppError::FileIO("Delta history snapshot path is not valid UTF-8".into())
+                })?;
+                self.conn.execute(
+                    &format!("CREATE TABLE {transport_table} AS SELECT * FROM read_parquet($1)"),
+                    params![path],
+                )?;
+                let actual_transport = self.raw_table_schema(&transport_name)?;
+                let expected_transport = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        (
+                            column.name.clone(),
+                            column
+                                .transport_type
+                                .clone()
+                                .unwrap_or_else(|| column.duckdb_type.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if actual_transport != expected_transport {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot transport schema mismatch for {}",
+                        descriptor.change_set_id
+                    )));
+                }
+                for column in &descriptor.columns {
+                    let canonical = self
+                        .canonicalize_column_type(&column.duckdb_type)
+                        .map_err(|error| {
+                            AppError::FileIO(format!(
+                                "Invalid history snapshot logical type {}: {error}",
+                                column.duckdb_type
+                            ))
+                        })?;
+                    if canonical != column.duckdb_type {
+                        return Err(AppError::FileIO(
+                            "History snapshot uses a non-canonical logical type".into(),
+                        ));
+                    }
+                    if column.duckdb_type == "HUGEINT" {
+                        let identifier = Self::quote_identifier(&column.name);
+                        let invalid: i64 = self.conn.query_row(
+                            &format!(
+                                "SELECT COUNT(*) FROM {transport_table}
+                                 WHERE {identifier} IS NOT NULL
+                                   AND (TRY_CAST({identifier} AS HUGEINT) IS NULL
+                                     OR CAST(TRY_CAST({identifier} AS HUGEINT) AS VARCHAR)
+                                        <> {identifier})"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        if invalid != 0 {
+                            return Err(AppError::FileIO(format!(
+                                "Delta history snapshot contains non-canonical HUGEINT values for {}",
+                                column.name
+                            )));
+                        }
+                    }
+                }
+                let projections = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        let name = Self::quote_identifier(&column.name);
+                        format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.conn.execute(
+                    &format!(
+                        "CREATE TABLE {final_table} AS
+                         SELECT {projections} FROM {transport_table}"
+                    ),
+                    [],
+                )?;
+                self.conn
+                    .execute(&format!("DROP TABLE {transport_table}"), [])?;
+                let actual_logical = self.raw_table_schema(&descriptor.table_name)?;
+                let expected_logical = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                    .collect::<Vec<_>>();
+                if actual_logical != expected_logical {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot logical schema mismatch for {}",
+                        descriptor.change_set_id
+                    )));
+                }
+                let change_set = archive
+                    .change_sets
+                    .iter()
+                    .find(|change_set| change_set.id == descriptor.change_set_id)
+                    .ok_or_else(|| {
+                        AppError::FileIO("Snapshot has no delta history change set".into())
+                    })?;
+                self.validate_delta_snapshot_rows(change_set, &descriptor.table_name)?;
+            }
+
+            for change_set in &archive.change_sets {
+                let generation = *authoritative_generations
+                    .get(&change_set.dataset_id)
+                    .ok_or_else(|| AppError::FileIO("Missing dataset generation".into()))?;
+                self.conn.execute(
+                    "INSERT INTO _history_change_sets
+                     (id, dataset_id, applied, generation, storage_kind)
+                     VALUES (?, ?, ?, ?, ?)",
+                    params![
+                        &change_set.id,
+                        &change_set.dataset_id,
+                        change_set.applied,
+                        generation,
+                        &change_set.storage_kind
+                    ],
+                )?;
+                let (before_generation, after_generation) = if change_set.applied {
+                    (change_set.before_generation, generation)
+                } else {
+                    (generation, change_set.after_generation)
+                };
+                self.conn.execute(
+                    "INSERT INTO _history_delta_change_sets
+                     (id, dataset_id, operation, before_generation, after_generation,
+                      snapshot_table, applied) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &change_set.id,
+                        &change_set.dataset_id,
+                        &change_set.operation,
+                        before_generation,
+                        after_generation,
+                        &change_set.snapshot_table,
+                        change_set.applied
+                    ],
+                )?;
+                for row in &change_set.rows {
+                    self.conn.execute(
+                        "INSERT INTO _history_row_deltas
+                         (change_set_id, ordinal, row_id, row_order) VALUES (?, ?, ?, ?)",
+                        params![&change_set.id, row.ordinal, row.row_id, row.row_order],
+                    )?;
+                }
+                for rebalance in &change_set.row_order_rebalances {
+                    self.conn.execute(
+                        "INSERT INTO _history_natural_rebalances
+                         (change_set_id, ordinal, row_id, before_key, after_key)
+                         VALUES (?, ?, ?, ?, ?)",
+                        params![
+                            &change_set.id,
+                            rebalance.ordinal,
+                            rebalance.row_id,
+                            rebalance.before_row_order,
+                            rebalance.after_row_order
+                        ],
+                    )?;
+                }
+                for column in &change_set.columns {
+                    self.conn.execute(
+                        "INSERT INTO _history_column_deltas
+                         (change_set_id, ordinal, column_id, col_index, col_name, col_type,
+                          calculated_definition_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        params![
+                            &change_set.id,
+                            column.ordinal,
+                            &column.column_id,
+                            column.col_index,
+                            &column.col_name,
+                            &column.col_type,
+                            &column.calculated_definition_json
+                        ],
+                    )?;
+                }
+            }
+            if historical_schemas.is_none() {
+                self.restore_v1_compact_timeline(archive, &authoritative_generations)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(match error {
+                    AppError::FileIO(_) => error,
+                    other => AppError::FileIO(format!("Failed to restore delta history: {other}")),
+                })
+            }
+        }
+    }
+
+    fn restore_v1_compact_timeline(
+                &self,
+                archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+                generations: &HashMap<String, u64>,
+            ) -> Result<(), AppError> {
+                use crate::services::table_history_archive::HistorySchemaColumn;
+
+                let dataset_ids = archive
+                    .change_sets
+                    .iter()
+                    .map(|change_set| change_set.dataset_id.as_str())
+                    .collect::<BTreeSet<_>>();
+                for dataset_id in dataset_ids {
+                    let entries = archive
+                        .change_sets
+                        .iter()
+                        .filter(|change_set| change_set.dataset_id == dataset_id)
+                        .collect::<Vec<_>>();
+                    let mut saw_unapplied = false;
+                    for entry in &entries {
+                        if entry.applied && saw_unapplied {
+                            return Err(AppError::FileIO(
+                                "Compact v1 applied state is not a provable prefix".into(),
+                            ));
+                        }
+                        saw_unapplied |= !entry.applied;
+                        if entry.after_generation != entry.before_generation.saturating_add(1) {
+                            return Err(AppError::FileIO(
+                                "Compact v1 created generations are not provable".into(),
+                            ));
+                        }
+                    }
+                    let mut schema = serde_json::from_str::<Vec<HistorySchemaColumn>>(
+                        &crate::services::table_history_archive::capture_history_schema(
+                            self,
+                            dataset_id,
+                        )?,
+                    )
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                    for entry in entries.iter().rev().filter(|entry| entry.applied) {
+                        Self::apply_v1_schema_transition(&mut schema, entry, true)?;
+                    }
+                    let generation = *generations
+                        .get(dataset_id)
+                        .ok_or_else(|| AppError::FileIO("Missing compact v1 generation".into()))?;
+                    for (ordinal, entry) in entries.iter().enumerate() {
+                        let before_schema = schema.clone();
+                        Self::apply_v1_schema_transition(&mut schema, entry, false)?;
+                        let after_schema = schema.clone();
+                        self.conn.execute(
+                            "INSERT INTO _history_timeline
+                             (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                              created_before_generation, created_after_generation, current_generation,
+                              applied, before_schema_json, after_schema_json)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            params![
+                                &entry.id,
+                                dataset_id,
+                                ordinal as u64,
+                                &entry.storage_kind,
+                                &entry.operation,
+                                entry.before_generation,
+                                entry.after_generation,
+                                generation,
+                                entry.applied,
+                                serde_json::to_string(&before_schema)
+                                    .map_err(|error| AppError::FileIO(error.to_string()))?,
+                                serde_json::to_string(&after_schema)
+                                    .map_err(|error| AppError::FileIO(error.to_string()))?
+                            ],
+                        )?;
+                        if !entry.applied {
+                            schema = before_schema;
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            fn apply_v1_schema_transition(
+                schema: &mut Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+                entry: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+                reverse: bool,
+            ) -> Result<(), AppError> {
+                use crate::services::table_history_archive::HistorySchemaColumn;
+
+                let inserting = (entry.operation == "add_columns" && !reverse)
+                    || (entry.operation == "delete_columns" && reverse);
+                let removing = (entry.operation == "delete_columns" && !reverse)
+                    || (entry.operation == "add_columns" && reverse);
+                if inserting {
+                    for column in &entry.columns {
+                        if schema
+                            .iter()
+                            .any(|current| current.column_id == column.column_id)
+                        {
+                            return Err(AppError::FileIO(
+                                "Compact v1 column transition is not provable".into(),
+                            ));
+                        }
+                        let index = usize::try_from(column.col_index).map_err(|_| {
+                            AppError::FileIO("Compact v1 column index is invalid".into())
+                        })?;
+                        if index > schema.len() {
+                            return Err(AppError::FileIO(
+                                "Compact v1 column transition is not contiguous".into(),
+                            ));
+                        }
+                        schema.insert(
+                            index,
+                            HistorySchemaColumn {
+                                column_id: column.column_id.clone(),
+                                col_index: column.col_index,
+                                name: column.col_name.clone(),
+                                duckdb_type: column.col_type.clone(),
+                                calculated_definition_json: column
+                                    .calculated_definition_json
+                                    .clone(),
+                            },
+                        );
+                    }
+                } else if removing {
+                    for column in entry.columns.iter().rev() {
+                        let index = schema
+                            .iter()
+                            .position(|current| current.column_id == column.column_id)
+                            .ok_or_else(|| {
+                                AppError::FileIO(
+                                    "Compact v1 column transition is not provable".into(),
+                                )
+                            })?;
+                        schema.remove(index);
+                    }
+                } else if !matches!(entry.operation.as_str(), "add_rows" | "delete_rows") {
+                    return Err(AppError::FileIO(
+                        "Unsupported compact v1 history operation".into(),
+                    ));
+                }
+                for (index, column) in schema.iter_mut().enumerate() {
+                    column.col_index = i32::try_from(index)
+                        .map_err(|_| AppError::FileIO("Compact v1 schema is too large".into()))?;
+                }
+                Ok(())
+            }
+
+    fn validate_delta_column_metadata(
+        &self,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+    ) -> Result<(), AppError> {
+        for column in &change_set.columns {
+            let canonical = self
+                .canonicalize_column_type(&column.col_type)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid delta history column type {}: {error}",
+                        column.col_type
+                    ))
+                })?;
+            if canonical != column.col_type {
+                return Err(AppError::FileIO(format!(
+                    "Delta history column type {} is not canonical",
+                    column.col_type
+                )));
+            }
+            if let Some(definition_json) = &column.calculated_definition_json {
+                let definition = serde_json::from_str::<
+                    crate::models::calculated_column::ArchivedCalculatedColumn,
+                >(definition_json)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid calculated-column delta metadata: {error}"
+                    ))
+                })?;
+                if definition.output_column_id() != column.column_id {
+                    return Err(AppError::FileIO(
+                        "Calculated-column delta definition does not own its archived column"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn raw_table_schema(&self, table_name: &str) -> Result<Vec<(String, String)>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns
+                 WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        )?;
+        statement
+            .query_map(params![table_name], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn validate_delta_snapshot_descriptor(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+        descriptor: &crate::services::spprj_archive::DeltaHistorySnapshotRef,
+        historical_schema: Option<
+            &Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+        >,
+    ) -> Result<(), AppError> {
+        let dataset_table = Self::internal_table_name(&change_set.dataset_id);
+        let dataset_schema = self.raw_table_schema(&dataset_table)?;
+        let expected: Vec<(String, String)> = if change_set.storage_kind == "row_delta" {
+            if let Some(_historical_schema) = historical_schema {
+                descriptor
+                    .columns
+                    .iter()
+                    .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                    .collect()
+            } else {
+                let mut required = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
+                for column in archive
+                    .change_sets
+                    .iter()
+                    .filter(|other| other.dataset_id == change_set.dataset_id)
+                    .flat_map(|other| &other.columns)
+                {
+                    required.insert(column.col_name.clone(), column.col_type.clone());
+                }
+                required.into_iter().collect()
+            }
+        } else {
+            let row_id = dataset_schema
+                .iter()
+                .find(|(name, _)| name == "_row_id")
+                .cloned()
+                .ok_or_else(|| AppError::FileIO("Dataset is missing _row_id".into()))?;
+            std::iter::once(row_id)
+                .chain(
+                    change_set
+                        .columns
+                        .iter()
+                        .map(|column| (column.col_name.clone(), column.col_type.clone())),
+                )
+                .collect()
+        };
+        let logical = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let canonical = self
+                    .canonicalize_column_type(&column.duckdb_type)
+                    .map_err(|error| {
+                        AppError::FileIO(format!(
+                            "Invalid delta history snapshot column type {}: {error}",
+                            column.duckdb_type
+                        ))
+                    })?;
+                if canonical != column.duckdb_type {
+                    return Err(AppError::FileIO(
+                        "Delta history snapshot uses a non-canonical logical type".into(),
+                    ));
+                }
+                let transport = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                let expected_transport = if column.duckdb_type == "HUGEINT" {
+                    "VARCHAR"
+                } else {
+                    column.duckdb_type.as_str()
+                };
+                if transport != expected_transport {
+                    return Err(AppError::FileIO(
+                        "Delta history snapshot uses an invalid transport type".into(),
+                    ));
+                }
+                Ok((column.name.clone(), column.duckdb_type.clone()))
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        let historical_row_mismatch =
+            change_set.storage_kind == "row_delta" && historical_schema.is_some_and(|schema| {
+            let mut actual = logical.iter().cloned().collect::<HashMap<_, _>>();
+            let row_id = actual.remove("_row_id");
+            let row_order = actual.remove("_row_order");
+            let expected_users = schema
+                .iter()
+                .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                .collect::<HashMap<_, _>>();
+            !matches!(row_id.as_deref(), Some("TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT"))
+                || row_order.as_deref() != Some("HUGEINT")
+                || actual != expected_users
+            });
+        let schema_mismatch = historical_row_mismatch
+            || if change_set.storage_kind == "row_delta" && historical_schema.is_none() {
+                logical.iter().cloned().collect::<HashMap<_, _>>()
+                    != expected.iter().cloned().collect::<HashMap<_, _>>()
+            } else {
+                logical != expected
+            };
+        if schema_mismatch {
+            return Err(AppError::FileIO(if change_set.storage_kind == "row_delta"
+                && historical_schema.is_none()
+            {
+                "Delta history row snapshot schema does not contain every required physical column"
+                    .into()
+            } else {
+                format!(
+                    "Delta history snapshot schema does not match the dataset for {}: expected {:?}, received {:?}",
+                    change_set.id, expected, logical
+                )
+            }));
+        }
+        Ok(())
+    }
+
+    fn validate_delta_snapshot_rows(
+        &self,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+        snapshot_name: &str,
+    ) -> Result<(), AppError> {
+        let snapshot = Self::quote_identifier(snapshot_name);
+        if change_set.storage_kind == "row_delta" {
+            let count: i64 =
+                self.conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {snapshot}"), [], |row| {
+                        row.get(0)
+                    })?;
+            if usize::try_from(count).ok() != Some(change_set.rows.len()) {
+                return Err(AppError::FileIO(
+                    "Row snapshot does not match row delta metadata".into(),
+                ));
+            }
+            for row in &change_set.rows {
+                let found: i64 = self.conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {snapshot} WHERE \"_row_id\" = ?"),
+                    params![row.row_id],
+                    |result| result.get(0),
+                )?;
+                if found != 1 {
+                    return Err(AppError::FileIO(
+                        "Row snapshot does not match row delta metadata".into(),
+                    ));
+                }
+            }
+        } else {
+            let dataset =
+                Self::quote_identifier(&Self::internal_table_name(&change_set.dataset_id));
+            let mismatch: i64 = self.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM (
+                           (SELECT \"_row_id\" FROM {snapshot}
+                            EXCEPT SELECT \"_row_id\" FROM {dataset})
+                           UNION ALL
+                           (SELECT \"_row_id\" FROM {dataset}
+                            EXCEPT SELECT \"_row_id\" FROM {snapshot})
+                         )"
+                ),
+                [],
+                |row| row.get(0),
+            )?;
+            if mismatch != 0 {
+                return Err(AppError::FileIO(
+                    "Column snapshot row IDs do not match the dataset".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn restore_unified_history(
+        &self,
+        archive: &crate::services::table_history_archive::HistoryTimelineArchive,
+        snapshots: &[(
+            String,
+            crate::services::table_history_archive::HistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+    ) -> Result<(), AppError> {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistorySnapshotRef,
+        };
+
+        crate::services::table_history_archive::validate_history_timeline(archive)?;
+        self.validate_unified_history_against_live(archive)?;
+        for cursor in &archive.datasets {
+            let generation = self.get_dataset_generation(&cursor.dataset_id).map_err(|_| {
+                AppError::FileIO(format!(
+                    "History references unknown dataset {}",
+                    cursor.dataset_id
+                ))
+            })?;
+            if generation != cursor.current_generation {
+                return Err(AppError::FileIO(format!(
+                    "Project generation {generation} disagrees with history generation {}",
+                    cursor.current_generation
+                )));
+            }
+        }
+
+        let compact_entries = archive
+            .entries
+            .iter()
+            .filter(|entry| entry.storage_kind != "full")
+            .collect::<Vec<_>>();
+        if !compact_entries.is_empty() {
+            let compact_archive = DeltaHistoryArchive {
+                version: 1,
+                change_sets: compact_entries
+                    .iter()
+                    .filter_map(|entry| entry.delta.clone())
+                    .collect(),
+            };
+            let compact_snapshots = snapshots
+                .iter()
+                .filter(|(_, descriptor, _)| descriptor.kind == "delta")
+                .map(|(change_set_id, descriptor, path)| {
+                    (
+                        DeltaHistorySnapshotRef {
+                            change_set_id: change_set_id.clone(),
+                            file: descriptor.file.clone(),
+                            table_name: descriptor.table_name.clone(),
+                            columns: descriptor.columns.clone(),
+                        },
+                        path.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let historical_schemas = compact_entries
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.change_set_id.clone(),
+                        entry.before_schema.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            self.restore_delta_history_with_schemas(
+                &compact_archive,
+                &compact_snapshots,
+                Some(&historical_schemas),
+            )?;
+        }
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            for (change_set_id, descriptor, path) in snapshots {
+                if descriptor.kind == "delta" {
+                    continue;
+                }
+                let entry = archive
+                    .entries
+                    .iter()
+                    .find(|entry| entry.change_set_id == *change_set_id)
+                    .ok_or_else(|| {
+                        AppError::FileIO("Snapshot has no history timeline entry".into())
+                    })?;
+                if entry.storage_kind != "full" {
+                    return Err(AppError::FileIO(
+                        "Non-legacy history owns a full snapshot".into(),
+                    ));
+                }
+                self.import_unified_history_snapshot(change_set_id, descriptor, path)?;
+            }
+            for entry in &archive.entries {
+                if entry.storage_kind == "full" {
+                    self.conn.execute(
+                        "INSERT INTO _history_change_sets
+                         (id, dataset_id, applied, generation, storage_kind)
+                         VALUES (?, ?, ?, ?, 'full')",
+                        params![
+                            &entry.change_set_id,
+                            &entry.dataset_id,
+                            entry.applied,
+                            entry.current_generation
+                        ],
+                    )?;
+                    for column in &entry.legacy_columns {
+                        self.conn.execute(
+                            "INSERT INTO _history_change_set_columns
+                             (change_set_id, ordinal, column_index, before_column_id,
+                              before_name, before_type, before_calculated_definition_json,
+                              after_column_id, after_name, after_type,
+                              after_calculated_definition_json, after_present)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            params![
+                                &entry.change_set_id,
+                                column.ordinal,
+                                column.column_index,
+                                &column.before_column_id,
+                                &column.before_name,
+                                &column.before_type,
+                                &column.before_calculated_definition_json,
+                                &column.after_column_id,
+                                &column.after_name,
+                                &column.after_type,
+                                &column.after_calculated_definition_json,
+                                column.after_present
+                            ],
+                        )?;
+                    }
+                }
+                let before_schema_json = serde_json::to_string(&entry.before_schema)
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                let after_schema_json = serde_json::to_string(&entry.after_schema)
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                self.conn.execute(
+                    "INSERT INTO _history_timeline
+                     (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                      created_before_generation, created_after_generation, current_generation,
+                      applied, before_schema_json, after_schema_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &entry.change_set_id,
+                        &entry.dataset_id,
+                        entry.history_ordinal,
+                        &entry.storage_kind,
+                        &entry.operation,
+                        entry.created_before_generation,
+                        entry.created_after_generation,
+                        entry.current_generation,
+                        entry.applied,
+                        before_schema_json,
+                        after_schema_json
+                    ],
+                )?;
+            }
+            for cursor in &archive.datasets {
+                self.conn.execute(
+                    "INSERT INTO _history_dataset_state
+                     (dataset_id, next_history_ordinal) VALUES (?, ?)",
+                    params![&cursor.dataset_id, cursor.next_history_ordinal],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    fn validate_unified_history_against_live(
+        &self,
+        archive: &crate::services::table_history_archive::HistoryTimelineArchive,
+    ) -> Result<(), AppError> {
+        use crate::services::table_history_archive::HistorySchemaColumn;
+
+        let validate_type = |column_type: &str| -> Result<(), AppError> {
+            let canonical = self.canonicalize_column_type(column_type).map_err(|error| {
+                AppError::FileIO(format!(
+                    "Invalid history timeline column type {column_type}: {error}"
+                ))
+            })?;
+            if canonical != column_type {
+                return Err(AppError::FileIO(format!(
+                    "History timeline column type {column_type} is not canonical"
+                )));
+            }
+            Ok(())
+        };
+        for entry in &archive.entries {
+            for column in entry.before_schema.iter().chain(&entry.after_schema) {
+                validate_type(&column.duckdb_type)?;
+            }
+            for column in &entry.legacy_columns {
+                if let Some(column_type) = column.before_type.as_deref() {
+                    validate_type(column_type)?;
+                }
+                validate_type(&column.after_type)?;
+            }
+        }
+
+        for cursor in &archive.datasets {
+            let mut entries = archive
+                .entries
+                .iter()
+                .filter(|entry| entry.dataset_id == cursor.dataset_id)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.history_ordinal);
+            if entries.is_empty() {
+                continue;
+            }
+            let cursor_schema = if let Some(first_unapplied) =
+                entries.iter().find(|entry| !entry.applied)
+            {
+                Some(&first_unapplied.before_schema)
+            } else {
+                entries.last().map(|entry| &entry.after_schema)
+            }
+            .ok_or_else(|| AppError::FileIO("History cursor schema is unavailable".into()))?;
+            let live_json =
+                crate::services::table_history_archive::capture_history_schema(
+                    self,
+                    &cursor.dataset_id,
+                )
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Unable to inspect staged history dataset schema: {error}"
+                    ))
+                })?;
+            let live_schema =
+                serde_json::from_str::<Vec<HistorySchemaColumn>>(&live_json).map_err(|error| {
+                    AppError::FileIO(format!("Invalid staged dataset schema: {error}"))
+                })?;
+            if &live_schema != cursor_schema {
+                return Err(AppError::FileIO(
+                    "Staged dataset schema disagrees with the persisted history cursor".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn import_unified_history_snapshot(
+        &self,
+        change_set_id: &str,
+        descriptor: &crate::services::table_history_archive::HistorySnapshotRef,
+        path: &std::path::Path,
+    ) -> Result<(), AppError> {
+        let parsed = uuid::Uuid::parse_str(change_set_id)
+            .map_err(|_| AppError::FileIO("Invalid history UUID".into()))?;
+        let transport_name = format!(
+            "_history_transport_{}_{}",
+            parsed.simple(),
+            descriptor.kind
+        );
+        let transport_table = Self::quote_identifier(&transport_name);
+        let final_table = Self::quote_identifier(&descriptor.table_name);
+        let path = path
+            .to_str()
+            .ok_or_else(|| AppError::FileIO("History snapshot path is not UTF-8".into()))?;
+        self.conn.execute(
+            &format!("CREATE TABLE {transport_table} AS SELECT * FROM read_parquet($1)"),
+            params![path],
+        )?;
+        let actual_transport = self.raw_table_schema(&transport_name)?;
+        let expected_transport = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                (
+                    column.name.clone(),
+                    column
+                        .transport_type
+                        .clone()
+                        .unwrap_or_else(|| column.duckdb_type.clone()),
+                )
+            })
+            .collect::<Vec<_>>();
+        if actual_transport != expected_transport {
+            return Err(AppError::FileIO(
+                "History snapshot transport schema mismatch".into(),
+            ));
+        }
+        for column in &descriptor.columns {
+            let canonical = self
+                .canonicalize_column_type(&column.duckdb_type)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid history snapshot logical type {}: {error}",
+                        column.duckdb_type
+                    ))
+                })?;
+            if canonical != column.duckdb_type {
+                return Err(AppError::FileIO(
+                    "History snapshot uses a non-canonical logical type".into(),
+                ));
+            }
+            if column.duckdb_type == "HUGEINT" {
+                let identifier = Self::quote_identifier(&column.name);
+                let invalid: i64 = self.conn.query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {transport_table}
+                         WHERE {identifier} IS NOT NULL
+                           AND (TRY_CAST({identifier} AS HUGEINT) IS NULL
+                             OR CAST(TRY_CAST({identifier} AS HUGEINT) AS VARCHAR) <> {identifier})"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )?;
+                if invalid != 0 {
+                    return Err(AppError::FileIO(
+                        "History snapshot contains non-canonical HUGEINT values".into(),
+                    ));
+                }
+            }
+        }
+        let projections = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("CREATE TABLE {final_table} AS SELECT {projections} FROM {transport_table}"),
+            [],
+        )?;
+        self.conn
+            .execute(&format!("DROP TABLE {transport_table}"), [])?;
+        let expected_logical = descriptor
+            .columns
+            .iter()
+            .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+            .collect::<Vec<_>>();
+        if self.raw_table_schema(&descriptor.table_name)? != expected_logical {
+            return Err(AppError::FileIO(
+                "History snapshot logical schema mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
@@ -8406,6 +10431,39 @@ impl DuckDbEngine {
 
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
         let result = (|| -> Result<(), AppError> {
+            let compact_snapshot: Option<Option<String>> = self
+                .conn
+                .query_row(
+                    "SELECT snapshot_table FROM _history_delta_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(Some(snapshot_table)) = compact_snapshot {
+                let storage_kind: String = self.conn.query_row(
+                    "SELECT storage_kind FROM _history_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )?;
+                let operation: String = self.conn.query_row(
+                    "SELECT operation FROM _history_delta_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )?;
+                Self::validate_delta_snapshot_name(
+                    &parsed_id,
+                    &storage_kind,
+                    &operation,
+                    &snapshot_table,
+                )?;
+                self.conn.execute(
+                    &format!(
+                        "DROP TABLE IF EXISTS {}",
+                        Self::quote_identifier(&snapshot_table)
+                    ),
+                    [],
+                )?;
+            }
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {before_table}"), [])?;
             self.conn
@@ -8415,7 +10473,27 @@ impl DuckDbEngine {
                 params![change_set_id],
             )?;
             self.conn.execute(
+                "DELETE FROM _history_row_deltas WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_natural_rebalances WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_column_deltas WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_delta_change_sets WHERE id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
                 "DELETE FROM _history_change_sets WHERE id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_timeline WHERE change_set_id = ?",
                 params![change_set_id],
             )?;
             Ok(())
@@ -8554,7 +10632,7 @@ impl DuckDbEngine {
         let num_paste_rows_i64 = i64::try_from(num_paste_rows)
             .map_err(|_| AppError::InvalidParam("Paste row count is too large".into()))?;
         let mut row_stmt = self.conn.prepare(&format!(
-            "SELECT \"_row_id\" FROM \"{}\" ORDER BY \"_row_id\" LIMIT $1 OFFSET $2",
+            "SELECT \"_row_id\" FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\" LIMIT $1 OFFSET $2",
             table_name
         ))?;
         let mut affected_row_ids: Vec<i64> = row_stmt
@@ -8898,7 +10976,7 @@ impl DuckDbEngine {
 
         // Create table via CTAS wrapped with _row_id
         let ctas = format!(
-            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __inner__.* FROM ({}) AS __inner__",
+            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __inner__.*, NULL::HUGEINT AS \"_row_order\" FROM ({}) AS __inner__",
             table_name, select_sql
         );
         self.conn.execute(&ctas, [])?;
@@ -8906,7 +10984,7 @@ impl DuckDbEngine {
         // Collect column info (skip _row_id)
         let col_sql = format!(
             "SELECT column_name, data_type FROM information_schema.columns \
-             WHERE table_name = '{}' AND column_name != '_row_id' \
+             WHERE table_name = '{}' AND column_name NOT IN ('_row_id', '_row_order') \
              ORDER BY ordinal_position",
             table_name
         );
@@ -9040,7 +11118,7 @@ impl DuckDbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let query = format!(
-            "SELECT {} FROM \"{}\" ORDER BY \"_row_id\"",
+            "SELECT {} FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
             select_cols, src_table
         );
         let mut stmt = self.conn.prepare(&query)?;
@@ -9232,7 +11310,7 @@ impl DuckDbEngine {
             format!("{}, \"{}\"", id_select, split_col)
         };
         let cte = format!(
-            "SELECT *, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY \"_row_id\") AS _split_rn FROM \"{}\"",
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") AS _split_rn FROM \"{}\"",
             partition_cols, src_table
         );
 
@@ -9648,6 +11726,10 @@ impl DuckDbEngine {
                 "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
                 params![temporary_id],
             )?;
+            self.conn.execute(
+                "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
+                params![temporary_id],
+            )?;
             Ok(())
         })();
 
@@ -9804,6 +11886,10 @@ impl DuckDbEngine {
                 self.rebuild_natural_anchors(&replacement.stable_id, generation)?;
                 self.conn.execute(
                     "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                    params![replacement.temporary_id],
+                )?;
+                self.conn.execute(
+                    "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
                     params![replacement.temporary_id],
                 )?;
                 Ok(())
@@ -10653,7 +12739,7 @@ impl DuckDbEngine {
         self.get_dataset_meta(dataset_id)?;
         let internal_table_name = Self::internal_table_name(dataset_id);
         let mut stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         stmt.query_map(params![internal_table_name], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -10781,7 +12867,7 @@ impl DuckDbEngine {
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
-                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY _row_id"
+                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY {NATURAL_ORDER_SQL}, _row_id"
                 );
                 let mut statement = self.conn.prepare(&query_sql)?;
                 let mut query_rows = statement.query([])?;
@@ -10846,7 +12932,7 @@ impl DuckDbEngine {
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
-                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY _row_id"
+                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY {NATURAL_ORDER_SQL}, _row_id"
                 );
                 let mut statement = self.conn.prepare(&query_sql)?;
                 let mut query_rows = statement.query([])?;
@@ -10937,7 +13023,20 @@ impl DuckDbEngine {
         };
 
         let select_sql = format!(
-            "SELECT \"_row_id\"{select_projection} FROM {table_name} WHERE \"_row_id\" > ? ORDER BY \"_row_id\" ASC LIMIT ?"
+            "SELECT \"_row_id\"{select_projection}
+             FROM {table_name}
+             WHERE ? = 0
+                OR {NATURAL_ORDER_SQL} > (
+                    SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
+                )
+                OR (
+                    {NATURAL_ORDER_SQL} = (
+                        SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
+                    )
+                    AND \"_row_id\" > ?
+                )
+             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+             LIMIT ?"
         );
 
         Ok(ArchiveKeysetReadPlan {
@@ -10959,7 +13058,13 @@ impl DuckDbEngine {
         }
 
         let mut stmt = self.conn.prepare_cached(&plan.select_sql)?;
-        let mut query_rows = stmt.query(params![after_row_id, row_limit as i64])?;
+        let mut query_rows = stmt.query(params![
+            after_row_id,
+            after_row_id,
+            after_row_id,
+            after_row_id,
+            row_limit as i64
+        ])?;
 
         let mut rows = Vec::new();
         let mut releasable_bytes_estimate = 0usize;
@@ -11475,18 +13580,76 @@ mod tests {
     use duckdb::types::Decimal;
 
     #[test]
+    fn compact_row_mutation_schema_is_initialized() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        let tables = db
+            .conn()
+            .prepare(
+                "SELECT table_name FROM information_schema.tables
+                 WHERE table_name IN (
+                     '_history_delta_change_sets',
+                     '_history_row_deltas',
+                     '_history_natural_rebalances'
+                 )
+                 ORDER BY table_name",
+            )
+            .expect("prepare schema query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect schema");
+        assert_eq!(
+            tables,
+            vec![
+                "_history_delta_change_sets".to_string(),
+                "_history_natural_rebalances".to_string(),
+                "_history_row_deltas".to_string()
+            ]
+        );
+
+        let storage_kind: String = db
+            .conn()
+            .query_row(
+                "SELECT column_default FROM information_schema.columns
+                 WHERE table_name = '_history_change_sets'
+                   AND column_name = 'storage_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("storage_kind column");
+        assert!(storage_kind.contains("full"));
+    }
+
+    #[test]
     fn tabulate_dimension_labels_match_javascript_scalar_strings() {
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1.0), "Missing"), "1");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1.25), "Missing"), "1.25");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(-0.0), "Missing"), "0");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1e-7), "Missing"), "1e-7");
-        assert_eq!(tabulate_dimension_label(serde_json::Value::Null, "Missing"), "Missing");
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1.0), "Missing"),
+            "1"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1.25), "Missing"),
+            "1.25"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(-0.0), "Missing"),
+            "0"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1e-7), "Missing"),
+            "1e-7"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::Value::Null, "Missing"),
+            "Missing"
+        );
 
         let engine = DuckDbEngine::new_in_memory().expect("engine");
         let expression = tabulate_dimension_sql_label("value", "DOUBLE");
         let mut statement = engine
             .conn()
-            .prepare(&format!("SELECT {expression} FROM (VALUES (1.0), (-0.0), (1e-7)) AS source(value)"))
+            .prepare(&format!(
+                "SELECT {expression} FROM (VALUES (1.0), (-0.0), (1e-7)) AS source(value)"
+            ))
             .expect("prepare labels");
         let labels = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -11502,8 +13665,11 @@ mod tests {
         engine.conn().execute_batch("CREATE TABLE secondary_probe(value BIGINT); INSERT INTO secondary_probe VALUES (42);")
             .expect("seed primary connection");
 
-        let secondary = engine.open_secondary_connection().expect("secondary connection");
-        let value: i64 = secondary.query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
+        let secondary = engine
+            .open_secondary_connection()
+            .expect("secondary connection");
+        let value: i64 = secondary
+            .query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
             .expect("read through secondary connection");
 
         assert_eq!(value, 42);
@@ -11959,6 +14125,221 @@ mod tests {
             session_id: None,
             include_transport_diagnostics: false,
         }
+    }
+
+    #[test]
+    fn row_order_legacy_rows_keep_row_id_order_without_materializing_override() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        db.seed_benchmark_table("order-legacy", "Legacy", 5, 1)
+            .expect("seed");
+        db.ensure_internal_row_order_column("order-legacy")
+            .expect("migration");
+
+        let populated: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM dataset_order_legacy WHERE \"_row_order\" IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(populated, 0);
+        assert_eq!(
+            db.natural_row_ids_for_test("order-legacy"),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn row_order_explicit_override_sorts_before_target_with_row_id_tiebreaker() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        db.seed_benchmark_table("order-override", "Override", 5, 1)
+            .expect("seed");
+        db.ensure_internal_row_order_column("order-override")
+            .expect("migration");
+        let between_two_and_three = 2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 2;
+        db.conn()
+            .execute(
+                "UPDATE dataset_order_override SET \"_row_order\" = ? WHERE \"_row_id\" = 5",
+                params![between_two_and_three],
+            )
+            .expect("set override");
+
+        assert_eq!(
+            db.natural_row_ids_for_test("order-override"),
+            vec![1, 2, 5, 3, 4],
+        );
+    }
+
+    #[test]
+    fn natural_order_consumers_use_the_effective_order_contract() {
+        let production_source = include_str!("duckdb_engine.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let direct_natural_order_lines = production_source
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.contains("ORDER BY \\\"_row_id\\\"") || line.contains("ORDER BY _row_id")
+            })
+            .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            direct_natural_order_lines.is_empty(),
+            "direct natural row-id ordering bypasses NATURAL_ORDER_SQL:\n{}",
+            direct_natural_order_lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_rejects_missing_source_manifest_atomically() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_missing_manifest";
+        db.seed_benchmark_table(dataset_id, "Missing manifest", 32, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "DELETE FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+            )
+            .expect("remove source manifest");
+
+        let error = db
+            .copy_natural_anchors_between_generations(
+                dataset_id,
+                source_generation,
+                source_generation + 1,
+            )
+            .expect_err("missing manifest must fail");
+
+        assert!(error.to_string().contains("controlled rebuild"));
+        let source_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+                |row| row.get(0),
+            )
+            .expect("source anchors");
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        assert!(source_anchors > 0);
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 0);
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_rejects_corrupt_source_manifest_atomically() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_corrupt_manifest";
+        db.seed_benchmark_table(dataset_id, "Corrupt manifest", 32, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "UPDATE _table_navigation_anchor_manifests SET checksum = ?
+                 WHERE dataset_id = ? AND generation = ?",
+                params!["corrupt", dataset_id, source_generation as i64],
+            )
+            .expect("corrupt source manifest");
+
+        let error = db
+            .copy_natural_anchors_between_generations(
+                dataset_id,
+                source_generation,
+                source_generation + 1,
+            )
+            .expect_err("corrupt manifest must fail");
+
+        assert!(error.to_string().contains("controlled rebuild"));
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        let source_checksum: String = db
+            .conn()
+            .query_row(
+                "SELECT checksum FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+                |row| row.get(0),
+            )
+            .expect("source checksum");
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 0);
+        assert_eq!(source_checksum, "corrupt");
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_accepts_valid_empty_manifest() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_empty_manifest";
+        db.seed_benchmark_table(dataset_id, "Empty manifest", 0, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+
+        db.copy_natural_anchors_between_generations(
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+        )
+        .expect("copy empty generation");
+
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 1);
     }
 
     #[test]
@@ -16337,6 +18718,92 @@ mod tests {
     }
 
     #[test]
+    fn imported_csv_remaps_internal_name_collisions_and_keeps_natural_navigation() {
+        let cases = [
+            (
+                "_row_order,_row_order_user\n11,12\n21,22\n",
+                vec!["_row_order_user-2", "_row_order_user"],
+                vec![serde_json::json!(11), serde_json::json!(12)],
+            ),
+            (
+                "_RoW_OrDeR,value\n31,32\n41,42\n",
+                vec!["_row_order_user", "value"],
+                vec![serde_json::json!(31), serde_json::json!(32)],
+            ),
+            (
+                "_ROW_ID,value\n51,52\n61,62\n",
+                vec!["_row_id_user", "value"],
+                vec![serde_json::json!(51), serde_json::json!(52)],
+            ),
+        ];
+
+        for (case_index, (csv, expected_names, first_values)) in cases.into_iter().enumerate() {
+            let db = DuckDbEngine::new_in_memory().expect("db");
+            let dataset_id = format!("csv-reserved-{case_index}");
+            let file_path = std::env::current_dir()
+                .expect("current directory")
+                .join(format!(".statsplayground-{dataset_id}.csv"));
+            std::fs::write(&file_path, csv).expect("write csv fixture");
+
+            let imported = db.import_csv(
+                &dataset_id,
+                &format!("CSV Reserved {case_index}"),
+                file_path.to_str().expect("utf-8 fixture path"),
+            );
+            std::fs::remove_file(&file_path).expect("remove csv fixture");
+            let meta = imported.expect("import reserved-name csv");
+
+            assert_eq!(meta.col_count, 2);
+            assert_eq!(
+                db.get_user_columns(&dataset_id)
+                    .expect("visible csv columns")
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                expected_names,
+            );
+
+            let table_name = DuckDbEngine::internal_table_name(&dataset_id);
+            let internal: (i64, String) = db
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*), min(data_type)
+                     FROM information_schema.columns
+                     WHERE table_name = ? AND lower(column_name) = '_row_order'",
+                    params![table_name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("internal order schema");
+            assert_eq!(internal, (1, "HUGEINT".to_string()));
+
+            let column_ids = navigation_column_descriptors(&db, &dataset_id)
+                .into_iter()
+                .map(|(column_id, _, _)| column_id)
+                .collect();
+            let request = TableNavigationRequest {
+                version: 1,
+                request_id: format!("csv-reserved-{case_index}"),
+                dataset_id: dataset_id.clone(),
+                generation: 0,
+                start: 0,
+                count: 10,
+                column_ids,
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            };
+            let result = DuckDbEngine::query_natural_navigation_window(db.conn(), &request)
+                .expect("natural csv navigation");
+            assert_eq!(&result.columns[1..], expected_names.as_slice(),);
+            assert_eq!(result.rows.len(), 2);
+            assert_eq!(result.rows[0][0], serde_json::json!(1));
+            assert_eq!(&result.rows[0][1..], first_values.as_slice());
+            assert_eq!(result.rows[1][0], serde_json::json!(2));
+        }
+    }
+
+    #[test]
     fn correlation_matrix_cancellation_during_row_scan_returns_no_partial_packet() {
         let db = DuckDbEngine::new_in_memory().unwrap();
         db.create_empty_table(
@@ -16508,7 +18975,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_temporal_id VALUES
+                "INSERT INTO dataset_temporal_id (_row_id, event_date, event_time) VALUES
                     (1, DATE '2026-08-19', TIMESTAMP '2026-08-19 14:15:16.123456');
                  UPDATE _meta_datasets SET row_count = 1 WHERE id = 'temporal-id';",
             )
@@ -16616,7 +19083,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, category, amount) VALUES
                     (3, 'B', 10), (1, 'A', 10), (2, 'A', 10), (4, NULL, 20);
                  UPDATE _meta_datasets SET row_count = 4 WHERE id = 'benchmark-id';",
             )
@@ -16797,7 +19264,10 @@ mod tests {
         )
         .unwrap();
         db.conn()
-            .execute("INSERT INTO dataset_benchmark_id VALUES (1, 1.5)", [])
+            .execute(
+                "INSERT INTO dataset_benchmark_id (_row_id, amount) VALUES (1, 1.5)",
+                [],
+            )
             .unwrap();
 
         assert!(db
@@ -17001,7 +19471,6 @@ mod tests {
             db.get_dataset_generation("history-add-column-id").unwrap(),
             1
         );
-
         db.apply_change_set(&change_set_id, true).unwrap();
         assert_eq!(
             db.get_user_columns("history-add-column-id").unwrap(),
@@ -17109,7 +19578,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_history_valued_columns_id VALUES
+                "INSERT INTO dataset_history_valued_columns_id (_row_id, existing) VALUES
                     (1, 'one'), (2, 'two'), (3, 'three');
                  UPDATE _meta_datasets SET row_count = 3 WHERE id = 'history-valued-columns-id';",
             )
@@ -17266,7 +19735,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_valued_rollback_id VALUES (1, 'kept')",
+                "INSERT INTO dataset_history_valued_rollback_id (_row_id, existing) VALUES (1, 'kept')",
                 [],
             )
             .unwrap();
@@ -17323,7 +19792,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_valued_identity_id VALUES (1, 'kept')",
+                "INSERT INTO dataset_history_valued_identity_id (_row_id, existing) VALUES (1, 'kept')",
                 [],
             )
             .unwrap();
@@ -17388,6 +19857,11 @@ mod tests {
         assert_eq!(
             history_rows,
             vec![
+                (
+                    Some(existing_id.clone()),
+                    Some(existing_id.clone()),
+                    "existing".into(),
+                ),
                 (None, Some(predicted_id.clone()), "Predicted".into()),
                 (None, Some(residual_id.clone()), "Residual".into()),
             ]
@@ -17636,7 +20110,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_delete_columns_id VALUES (1, 'kept', 4.5, 'restored')",
+                "INSERT INTO dataset_history_delete_columns_id (_row_id, \"left\", amount, note) VALUES (1, 'kept', 4.5, 'restored')",
                 [],
             )
             .unwrap();
@@ -17701,7 +20175,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_alter_column_id VALUES (1, '01')",
+                "INSERT INTO dataset_history_alter_column_id (_row_id, code) VALUES (1, '01')",
                 [],
             )
             .unwrap();
@@ -17817,7 +20291,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_alter_columns_id VALUES (1, '01', '002')",
+                "INSERT INTO dataset_history_alter_columns_id (_row_id, first, second) VALUES (1, '01', '002')",
                 [],
             )
             .unwrap();
@@ -18055,12 +20529,820 @@ mod tests {
         let snapshot_count: i64 = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE '_history_%' AND table_name NOT LIKE '_history_change_%'",
-                [],
+                "SELECT COUNT(*) FROM information_schema.tables
+                 WHERE table_name IN (?, ?)",
+                params![
+                    format!("_history_before_{}", change_set_id.replace('-', "_")),
+                    format!("_history_after_{}", change_set_id.replace('-', "_"))
+                ],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(snapshot_count, 0);
+        let timeline_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _history_timeline WHERE change_set_id = ?",
+                params![change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(timeline_count, 0);
+    }
+
+    #[test]
+    fn drop_compact_change_set_removes_only_referenced_snapshot_and_metadata() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let removed_id = "00000000-0000-4000-8000-000000000001";
+        let retained_id = "00000000-0000-4000-8000-000000000002";
+        let removed_snapshot = "_history_rows_00000000000040008000000000000001";
+        let retained_snapshot = "_history_rows_00000000000040008000000000000002";
+
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TABLE {removed_snapshot} (_row_id BIGINT, _row_order HUGEINT, value BIGINT);
+                 CREATE TABLE {retained_snapshot} (_row_id BIGINT, _row_order HUGEINT, value BIGINT);"
+            ))
+            .unwrap();
+        for (ordinal, (id, snapshot)) in [
+            (removed_id, removed_snapshot),
+            (retained_id, retained_snapshot),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_change_sets
+                     (id, dataset_id, applied, generation, storage_kind)
+                     VALUES (?, 'dataset-id', true, 1, 'row_delta')",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_delta_change_sets
+                     (id, dataset_id, operation, before_generation, after_generation,
+                      snapshot_table, applied)
+                     VALUES (?, 'dataset-id', 'delete_rows', 0, 1, ?, true)",
+                    params![id, snapshot],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_row_deltas
+                     (change_set_id, ordinal, row_id, row_order) VALUES (?, 0, 1, 10)",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_natural_rebalances
+                     (change_set_id, ordinal, row_id, before_key, after_key)
+                     VALUES (?, 0, 2, NULL, 20)",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_column_deltas
+                     (change_set_id, ordinal, column_id, col_index, col_name, col_type)
+                     VALUES (?, 0, ?, 0, 'value', 'BIGINT')",
+                    params![id, uuid::Uuid::new_v4().to_string()],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_timeline
+                     (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                      created_before_generation, created_after_generation, current_generation,
+                      applied, before_schema_json, after_schema_json)
+                     VALUES (?, 'dataset-id', ?, 'row_delta', 'delete_rows',
+                             ?, ?, 2, true, '[]', '[]')",
+                    params![id, ordinal as i64, ordinal as i64, ordinal as i64 + 1],
+                )
+                .unwrap();
+        }
+
+        db.drop_change_set(removed_id).unwrap();
+
+        for table in [
+            "_history_change_sets",
+            "_history_delta_change_sets",
+            "_history_row_deltas",
+            "_history_natural_rebalances",
+            "_history_column_deltas",
+            "_history_timeline",
+        ] {
+            let removed: i64 = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE {}",
+                        if table == "_history_change_sets" || table == "_history_delta_change_sets"
+                        {
+                            "id = ?"
+                        } else if table == "_history_timeline" {
+                            "change_set_id = ?"
+                        } else {
+                            "change_set_id = ?"
+                        }
+                    ),
+                    params![removed_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let retained: i64 = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE {}",
+                        if table == "_history_change_sets" || table == "_history_delta_change_sets"
+                        {
+                            "id = ?"
+                        } else if table == "_history_timeline" {
+                            "change_set_id = ?"
+                        } else {
+                            "change_set_id = ?"
+                        }
+                    ),
+                    params![retained_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(removed, 0, "{table} retained discarded metadata");
+            assert_eq!(retained, 1, "{table} removed unrelated metadata");
+        }
+        let snapshots: Vec<String> = db
+            .conn()
+            .prepare(
+                "SELECT table_name FROM information_schema.tables
+                 WHERE table_name IN (?, ?) ORDER BY table_name",
+            )
+            .unwrap()
+            .query_map(params![removed_snapshot, retained_snapshot], |row| {
+                row.get(0)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(snapshots, vec![retained_snapshot.to_string()]);
+    }
+
+    #[test]
+    fn unified_history_timeline_orders_delta_and_legacy_and_preserves_created_state() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("timeline-id", "Timeline", 2, 1)
+            .unwrap();
+        let compact = crate::services::table_delta_mutation::add_rows_compact(
+            &db, "timeline-id", 1, None, 0,
+        )
+        .unwrap();
+        let legacy = db
+            .paste_at_position_with_change_set(
+                "timeline-id",
+                0,
+                0,
+                &[vec!["7".into()]],
+                None,
+                &["DOUBLE".into()],
+                Some(1),
+            )
+            .unwrap();
+
+        let timeline = |db: &DuckDbEngine| {
+            db.conn()
+                .prepare(
+                    "SELECT change_set_id, history_ordinal, storage_kind,
+                            created_before_generation, created_after_generation,
+                            current_generation, applied, before_schema_json, after_schema_json
+                     FROM _history_timeline WHERE dataset_id = ?
+                     ORDER BY history_ordinal",
+                )
+                .unwrap()
+                .query_map(params!["timeline-id"], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u64>(3)?,
+                        row.get::<_, u64>(4)?,
+                        row.get::<_, u64>(5)?,
+                        row.get::<_, bool>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let created = timeline(&db);
+        assert_eq!(created.len(), 2);
+        assert_eq!(
+            (&created[0].0, created[0].1, created[0].2.as_str(), created[0].3, created[0].4),
+            (&compact.change_set_id, 0, "row_delta", 0, 1)
+        );
+        assert_eq!(
+            (&created[1].0, created[1].1, created[1].2.as_str(), created[1].3, created[1].4),
+            (&legacy, 1, "full", 1, 2)
+        );
+        assert_eq!(created[0].7, created[0].8);
+        assert_eq!(created[1].7, created[1].8);
+
+        db.apply_change_set(&legacy, true).unwrap();
+        db.apply_change_set(&compact.change_set_id, true).unwrap();
+        let replayed = timeline(&db);
+        assert_eq!((replayed[0].1, replayed[0].3, replayed[0].4), (0, 0, 1));
+        assert_eq!((replayed[1].1, replayed[1].3, replayed[1].4), (1, 1, 2));
+        assert_eq!((replayed[0].5, replayed[1].5), (4, 4));
+        assert!(!replayed[0].6 && !replayed[1].6);
+        assert_eq!((&replayed[0].7, &replayed[0].8), (&created[0].7, &created[0].8));
+        assert_eq!((&replayed[1].7, &replayed[1].8), (&created[1].7, &created[1].8));
+    }
+
+    #[test]
+    fn unified_history_timeline_never_reuses_dropped_suffix_ordinal_after_restore() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("ordinal-high-water", "Ordinal high water", 2, 1)
+            .unwrap();
+        let first = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-high-water",
+            1,
+            None,
+            0,
+        )
+        .unwrap();
+        let second = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-high-water",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        db.apply_change_set(&second.change_set_id, true).unwrap();
+        db.drop_change_set(&second.change_set_id).unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .seed_benchmark_table("ordinal-high-water", "Ordinal high water", 2, 1)
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET column_id = ?
+                 WHERE dataset_id = ? AND col_index = 0",
+                params![
+                    &archive.entries[0].after_schema[0].column_id,
+                    "ordinal-high-water"
+                ],
+            )
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 3 WHERE id = ?",
+                params!["ordinal-high-water"],
+            )
+            .unwrap();
+        restored
+            .rebuild_natural_anchors("ordinal-high-water", 3)
+            .unwrap();
+        restored.restore_unified_history(&archive, &[]).unwrap();
+
+        let third = crate::services::table_delta_mutation::add_rows_compact(
+            &restored,
+            "ordinal-high-water",
+            1,
+            None,
+            3,
+        )
+        .unwrap();
+        let ordinals = restored
+            .conn()
+            .prepare(
+                "SELECT history_ordinal FROM _history_timeline
+                 WHERE dataset_id = ? ORDER BY history_ordinal",
+            )
+            .unwrap()
+            .query_map(params!["ordinal-high-water"], |row| row.get::<_, u64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ordinals, vec![0, 2]);
+        assert_ne!(third.change_set_id, first.change_set_id);
+        restored
+            .archive_unified_history()
+            .expect("gapped retained ordinals must remain archivable");
+    }
+
+    #[test]
+    fn unified_history_timeline_accepts_max_history_prefix_pruning_before_next_mutation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("ordinal-prefix", "Ordinal prefix", 2, 1)
+            .unwrap();
+        let first = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            0,
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        db.drop_change_set(&first.change_set_id).unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            2,
+        )
+        .unwrap();
+
+        let archive = db.archive_unified_history().unwrap();
+        assert_eq!(
+            archive
+                .entries
+                .iter()
+                .map(|entry| entry.history_ordinal)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(archive.datasets[0].next_history_ordinal, 3);
+    }
+
+    #[test]
+    fn unified_history_timeline_orders_legacy_before_delta() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("legacy-first", "Legacy first", 2, 1)
+            .unwrap();
+        let legacy = db
+            .paste_at_position_with_change_set(
+                "legacy-first",
+                0,
+                0,
+                &[vec!["8".into()]],
+                None,
+                &["DOUBLE".into()],
+                Some(0),
+            )
+            .unwrap();
+        let compact = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "legacy-first",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        assert_eq!(
+            archive
+                .entries
+                .iter()
+                .map(|entry| (entry.change_set_id.as_str(), entry.storage_kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (legacy.as_str(), "full"),
+                (compact.change_set_id.as_str(), "row_delta"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unified_history_archive_uses_exact_historical_schema_for_row_snapshot() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("historical-row-schema", "Historical row schema", 3, 3)
+            .unwrap();
+        let removed = db.get_user_column_descriptors("historical-row-schema").unwrap()[1].clone();
+        crate::services::table_delta_mutation::delete_columns_compact(
+            &db,
+            "historical-row-schema",
+            &[removed],
+            0,
+        )
+        .unwrap();
+        let row = crate::services::table_delta_mutation::delete_rows_compact(
+            &db,
+            "historical-row-schema",
+            &[2],
+            1,
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_columns_compact(
+            &db,
+            "historical-row-schema",
+            &[UserColumnDescriptor {
+                column_id: uuid::Uuid::new_v4().to_string(),
+                col_index: 1,
+                name: "later_value".into(),
+                sql_type: "BIGINT".into(),
+            }],
+            1,
+            2,
+        )
+        .unwrap();
+
+        let archive = db.archive_unified_history().unwrap();
+        let row_entry = archive
+            .entries
+            .iter()
+            .find(|entry| entry.change_set_id == row.change_set_id)
+            .unwrap();
+        assert_eq!(row_entry.before_schema.len(), 2);
+        assert_eq!(row_entry.after_schema.len(), 2);
+        assert_eq!(row_entry.snapshots.len(), 1);
+        let user_snapshot_columns = row_entry.snapshots[0]
+            .columns
+            .iter()
+            .filter(|column| !column.name.starts_with("_row"))
+            .count();
+        assert_eq!(user_snapshot_columns, 2);
+        assert_eq!(archive.entries.last().unwrap().after_schema.len(), 3);
+    }
+
+    fn detached_add_rows_archive(
+        dataset_id: &str,
+    ) -> (
+        DuckDbEngine,
+        crate::services::table_history_archive::HistoryTimelineArchive,
+    ) {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            dataset_id,
+            "History schema validation",
+            &["value".into()],
+            &["BIGINT".into()],
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(&db, dataset_id, 1, None, 0)
+            .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM _history_timeline;
+                 DELETE FROM _history_row_deltas;
+                 DELETE FROM _history_change_sets;",
+            )
+            .unwrap();
+        (db, archive)
+    }
+
+    fn detached_legacy_archive(
+        dataset_id: &str,
+    ) -> (
+        DuckDbEngine,
+        crate::services::table_history_archive::HistoryTimelineArchive,
+    ) {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table(dataset_id, "Legacy schema validation", 2, 1)
+            .unwrap();
+        db.paste_at_position_with_change_set(
+            dataset_id,
+            0,
+            0,
+            &[vec!["7".into()]],
+            None,
+            &["DOUBLE".into()],
+            Some(0),
+        )
+        .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM _history_timeline;
+                 DELETE FROM _history_change_set_columns;
+                 DELETE FROM _history_change_sets;",
+            )
+            .unwrap();
+        (db, archive)
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_cursor_schema_unrelated_to_staged_dataset() {
+        let (db, archive) = detached_legacy_archive("cursor-schema-mismatch");
+        db.conn()
+            .execute(
+                "ALTER TABLE dataset_cursor_schema_mismatch
+                 ALTER COLUMN value_1 SET DATA TYPE VARCHAR",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_columns SET col_type = 'VARCHAR'
+                 WHERE dataset_id = ? AND col_index = 0",
+                params!["cursor-schema-mismatch"],
+            )
+            .unwrap();
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("cursor schema mismatch must be rejected");
+        assert!(matches!(error, AppError::FileIO(_)));
+        let inserted: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM _history_change_sets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(inserted, 0, "validation must precede metadata insertion");
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_legacy_descriptor_unbound_from_timeline() {
+        let (_db, mut archive) = detached_legacy_archive("legacy-descriptor-mismatch");
+        let column = archive.entries[0].snapshots[0]
+            .columns
+            .iter_mut()
+            .find(|column| !column.name.starts_with("_row"))
+            .expect("legacy value column");
+        column.duckdb_type = "VARCHAR".into();
+        column.transport_type = Some("VARCHAR".into());
+
+        let error = crate::services::table_history_archive::validate_history_timeline(&archive)
+            .expect_err("legacy descriptor must be bound to the timeline schema");
+        assert!(matches!(error, AppError::FileIO(_)));
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_self_consistent_noncanonical_legacy_type() {
+        let (db, mut archive) = detached_legacy_archive("noncanonical-legacy");
+        archive.entries[0].before_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].after_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].legacy_columns[0].before_type = Some("bigint".into());
+        archive.entries[0].legacy_columns[0].after_type = "bigint".into();
+        for snapshot in &mut archive.entries[0].snapshots {
+            let column = snapshot
+                .columns
+                .iter_mut()
+                .find(|column| !column.name.starts_with("_row"))
+                .unwrap();
+            column.duckdb_type = "bigint".into();
+            column.transport_type = Some("bigint".into());
+        }
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("legacy types must pass canonical DuckDB admission");
+        assert!(matches!(error, AppError::FileIO(_)));
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_noncanonical_timeline_type() {
+        let (db, mut archive) = detached_add_rows_archive("noncanonical-timeline");
+        archive.entries[0].before_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].after_schema[0].duckdb_type = "bigint".into();
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("timeline types must be canonical DuckDB types");
+        assert!(matches!(error, AppError::FileIO(_)));
+    }
+
+    #[test]
+    fn delta_history_archive_round_trips_lossless_hugeint_extrema_and_nulls() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "huge-history",
+            "Huge History",
+            &["value".into()],
+            &["HUGEINT".into()],
+        )
+        .unwrap();
+        for (row_id, value, row_order) in [
+            (1_i64, None, Some(i128::MIN)),
+            (2, Some(i128::MIN), Some(-1)),
+            (3, Some(i128::MAX), Some(1)),
+            (4, Some(42), Some(i128::MAX)),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO dataset_huge_history (_row_id, value, _row_order)
+                     VALUES (?, ?, ?)",
+                    params![row_id, value, row_order],
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 4, next_row_id = 5
+                 WHERE id = 'huge-history'",
+                [],
+            )
+            .unwrap();
+        db.rebuild_natural_anchors("huge-history", 0).unwrap();
+        let deleted = crate::services::table_delta_mutation::delete_rows_compact(
+            &db,
+            "huge-history",
+            &[1, 2, 3, 4],
+            0,
+        )
+        .unwrap();
+        let (archive, descriptors) = db.archive_delta_history().unwrap();
+        assert_eq!(descriptors.len(), 1);
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".task5-hugeint-{}.parquet", uuid::Uuid::new_v4()));
+        db.export_delta_history_snapshot(&descriptors[0], path.to_str().unwrap())
+            .unwrap();
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table(
+                "huge-history",
+                "Huge History",
+                &["value".into()],
+                &["HUGEINT".into()],
+            )
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 1 WHERE id = 'huge-history'",
+                [],
+            )
+            .unwrap();
+        restored.rebuild_natural_anchors("huge-history", 1).unwrap();
+        restored
+            .restore_delta_history(&archive, &[(descriptors[0].clone(), path.clone())])
+            .unwrap();
+        restored
+            .apply_change_set(&deleted.change_set_id, true)
+            .unwrap();
+        let values = restored
+            .conn()
+            .prepare("SELECT value, _row_order FROM dataset_huge_history ORDER BY _row_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i128>>(0)?,
+                    row.get::<_, Option<i128>>(1)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                (None, Some(i128::MIN)),
+                (Some(i128::MIN), Some(-1)),
+                (Some(i128::MAX), Some(1)),
+                (Some(42), Some(i128::MAX)),
+            ]
+        );
+        let snapshot_types = restored
+            .delta_snapshot_schema(&descriptors[0].table_name)
+            .unwrap();
+        assert!(snapshot_types
+            .iter()
+            .filter(|column| column.name == "value" || column.name == "_row_order")
+            .all(|column| column.duckdb_type == "HUGEINT"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_incomplete_row_snapshot_schema() {
+        let source = DuckDbEngine::new_in_memory().unwrap();
+        source
+            .create_empty_table(
+                "incomplete-row-history",
+                "Incomplete Row History",
+                &["value".into()],
+                &["BIGINT".into()],
+            )
+            .unwrap();
+        source
+            .conn()
+            .execute(
+                "INSERT INTO dataset_incomplete_row_history (_row_id, value) VALUES (1, 42)",
+                [],
+            )
+            .unwrap();
+        source
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 1, next_row_id = 2
+                 WHERE id = 'incomplete-row-history'",
+                [],
+            )
+            .unwrap();
+        source
+            .rebuild_natural_anchors("incomplete-row-history", 0)
+            .unwrap();
+        crate::services::table_delta_mutation::delete_rows_compact(
+            &source,
+            "incomplete-row-history",
+            &[1],
+            0,
+        )
+        .unwrap();
+        let (archive, mut descriptors) = source.archive_delta_history().unwrap();
+        let descriptor = &mut descriptors[0];
+        descriptor
+            .columns
+            .retain(|column| column.name == "_row_id" || column.name == "_row_order");
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-incomplete-row-{}.parquet",
+            uuid::Uuid::new_v4()
+        ));
+        source
+            .conn()
+            .execute(
+                &format!(
+                    "COPY (
+                       SELECT \"_row_id\", CAST(\"_row_order\" AS VARCHAR) AS \"_row_order\"
+                       FROM {}
+                     ) TO $1 (FORMAT PARQUET)",
+                    DuckDbEngine::quote_identifier(&descriptor.table_name)
+                ),
+                params![path.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table(
+                "incomplete-row-history",
+                "Incomplete Row History",
+                &["value".into()],
+                &["BIGINT".into()],
+            )
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 1
+                 WHERE id = 'incomplete-row-history'",
+                [],
+            )
+            .unwrap();
+        restored
+            .rebuild_natural_anchors("incomplete-row-history", 1)
+            .unwrap();
+        let error = restored
+            .restore_delta_history(&archive, &[(descriptor.clone(), path.clone())])
+            .expect_err("incomplete row snapshot must fail");
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("row snapshot schema")),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_snapshot_free_invalid_column_type() {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistoryChangeSet, DeltaHistoryColumn,
+        };
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table("invalid-column-history", "Invalid Column History", &[], &[])
+            .unwrap();
+        let archive = DeltaHistoryArchive {
+            version: 1,
+            change_sets: vec![DeltaHistoryChangeSet {
+                id: "00000000-0000-4000-8000-000000000021".into(),
+                dataset_id: "invalid-column-history".into(),
+                storage_kind: "column_delta".into(),
+                generation: 0,
+                operation: "add_columns".into(),
+                before_generation: 0,
+                after_generation: 0,
+                snapshot_table: None,
+                applied: true,
+                rows: vec![],
+                row_order_rebalances: vec![],
+                columns: vec![DeltaHistoryColumn {
+                    ordinal: 0,
+                    column_id: "00000000-0000-4000-8000-000000000022".into(),
+                    col_index: 0,
+                    col_name: "value".into(),
+                    col_type: "NOT_A_DUCKDB_TYPE".into(),
+                    calculated_definition_json: None,
+                }],
+            }],
+        };
+
+        let error = restored
+            .restore_delta_history(&archive, &[])
+            .expect_err("invalid snapshot-free column type must fail");
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("column type")),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -18424,8 +21706,8 @@ mod tests {
         }
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_left_id VALUES (1, 'A', 1);
-                 INSERT INTO dataset_right_id VALUES (1, 'A', 9);",
+                "INSERT INTO dataset_left_id (_row_id, key, value) VALUES (1, 'A', 1);
+                 INSERT INTO dataset_right_id (_row_id, key, value) VALUES (1, 'A', 9);",
             )
             .unwrap();
 
@@ -18452,7 +21734,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, event_date, amount) VALUES
                     (1, NULL, 5),
                     (2, DATE '2026-01-15', 5),
                     (3, DATE '2026-06-15', 15),
@@ -18569,7 +21851,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, category) VALUES
                     (1, 'Alpha'), (2, 'Beta'), (3, 'Alphabet'), (4, NULL),
                     (5, 'Alpha'), (6, '');",
             )
@@ -18624,7 +21906,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_stacked_id VALUES
+                "INSERT INTO dataset_stacked_id (_row_id, Build, Value) VALUES
                     (1, 'EV1', 10.0), (2, 'DV', 20.0), (3, 'EV1', 20.0);",
             )
             .unwrap();
@@ -18808,6 +22090,10 @@ mod tests {
         let reserved_error =
             DuckDbEngine::validate_result_column_names(&["_row_id".to_string()]).unwrap_err();
         assert!(matches!(reserved_error, AppError::InvalidParam(_)));
+
+        let row_order_error =
+            DuckDbEngine::validate_result_column_names(&["_row_order".to_string()]).unwrap_err();
+        assert!(matches!(row_order_error, AppError::InvalidParam(_)));
     }
 
     #[test]
@@ -19502,59 +22788,97 @@ mod tests {
         let mut definition = definition.clone();
         definition.source_generation = engine.get_dataset_generation(&definition.dataset_id)?;
         let session = uuid::Uuid::new_v4();
-        let info = engine.prepare_tabulate_member_indexes(&definition, &session, 256 * 1024 * 1024)?;
+        let info =
+            engine.prepare_tabulate_member_indexes(&definition, &session, 256 * 1024 * 1024)?;
         assert!(info.row_member_count <= 128);
         assert!(info.column_member_count <= 64);
         assert!(info.logical_cell_count <= 16_384);
         let outcome = (|| {
             let cancelled = std::sync::atomic::AtomicBool::new(false);
             let window = engine.query_tabulate_window(
-                &definition, &session,
+                &definition,
+                &session,
                 &TabulateWindowRequest {
-                    request_id: "oracle-window".into(), session_id: session.to_string(),
+                    request_id: "oracle-window".into(),
+                    session_id: session.to_string(),
                     source_generation: definition.source_generation,
-                    row_start: 0, row_count: info.row_member_count.max(1) as u32,
-                    column_start: 0, column_count: info.column_member_count.max(1) as u32,
+                    row_start: 0,
+                    row_count: info.row_member_count.max(1) as u32,
+                    column_start: 0,
+                    column_count: info.column_member_count.max(1) as u32,
                 },
-                &info, "oracle", &cancelled,
+                &info,
+                "oracle",
+                &cancelled,
             )?;
             let statistic_count = definition.statistics.len();
             let mut cells = (0..info.logical_cell_count as usize)
-                .map(|index| default_missing_value(&definition.statistics[index % statistic_count].kind))
+                .map(|index| {
+                    default_missing_value(&definition.statistics[index % statistic_count].kind)
+                })
                 .collect::<Vec<_>>();
             for cell in &window.cells {
                 let index = ((cell.row_index as usize * window.column_members.len())
-                    + cell.column_index as usize) * statistic_count + cell.statistic_index as usize;
+                    + cell.column_index as usize)
+                    * statistic_count
+                    + cell.statistic_index as usize;
                 cells[index] = cell.value;
             }
-            let totals = |kind| engine.query_tabulate_totals(
-                &definition, &session,
-                &TabulateTotalsRequest {
-                    request_id: "oracle-totals".into(), session_id: session.to_string(),
-                    source_generation: definition.source_generation, totals: kind,
-                },
-                &info, "oracle", &cancelled,
-            );
+            let totals = |kind| {
+                engine.query_tabulate_totals(
+                    &definition,
+                    &session,
+                    &TabulateTotalsRequest {
+                        request_id: "oracle-totals".into(),
+                        session_id: session.to_string(),
+                        source_generation: definition.source_generation,
+                        totals: kind,
+                    },
+                    &info,
+                    "oracle",
+                    &cancelled,
+                )
+            };
             let mut row_totals = Vec::new();
             if definition.include_row_totals && info.row_member_count > 0 {
                 row_totals.resize(window.row_members.len() * statistic_count, None);
-                for total in totals(TabulateTotalsKind::Rows { start: 0, count: info.row_member_count as u32 })?.row_totals {
-                    row_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                for total in totals(TabulateTotalsKind::Rows {
+                    start: 0,
+                    count: info.row_member_count as u32,
+                })?
+                .row_totals
+                {
+                    row_totals[total.member_index as usize * statistic_count
+                        + total.statistic_index as usize] = total.value;
                 }
             }
             let mut column_totals = Vec::new();
             if definition.include_column_totals && info.column_member_count > 0 {
                 column_totals.resize(window.column_members.len() * statistic_count, None);
-                for total in totals(TabulateTotalsKind::Columns { start: 0, count: info.column_member_count as u32 })?.column_totals {
-                    column_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                for total in totals(TabulateTotalsKind::Columns {
+                    start: 0,
+                    count: info.column_member_count as u32,
+                })?
+                .column_totals
+                {
+                    column_totals[total.member_index as usize * statistic_count
+                        + total.statistic_index as usize] = total.value;
                 }
             }
-            let grand_totals = if definition.include_row_totals || definition.include_column_totals {
+            let grand_totals = if definition.include_row_totals || definition.include_column_totals
+            {
                 totals(TabulateTotalsKind::Grand)?.grand_totals
-            } else { Vec::new() };
+            } else {
+                Vec::new()
+            };
             Ok(BoundedTabulateOracle {
-                row_members: window.row_members, column_members: window.column_members,
-                statistics: window.statistics, cells, row_totals, column_totals, grand_totals,
+                row_members: window.row_members,
+                column_members: window.column_members,
+                statistics: window.statistics,
+                cells,
+                row_totals,
+                column_totals,
+                grand_totals,
                 cell_count: info.logical_cell_count,
             })
         })();
@@ -19590,7 +22914,11 @@ mod tests {
             [((row * result.column_members.len()) + column) * statistic_count + statistic_index]
     }
 
-    fn row_total_value(result: &BoundedTabulateOracle, row: usize, statistic_id: &str) -> Option<f64> {
+    fn row_total_value(
+        result: &BoundedTabulateOracle,
+        row: usize,
+        statistic_id: &str,
+    ) -> Option<f64> {
         let statistic_index = statistic_index(result, statistic_id);
         let statistic_count = result.statistics.len();
         result.row_totals[row * statistic_count + statistic_index]
@@ -20184,8 +23512,8 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let error = bounded_tabulate_oracle(&engine, &request)
-            .expect_err("unknown field must fail");
+        let error =
+            bounded_tabulate_oracle(&engine, &request).expect_err("unknown field must fail");
 
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("unknown_field"))
@@ -20201,8 +23529,8 @@ mod tests {
             vec![make_statistic("mean-region", "region", StatisticKind::Mean)],
         );
 
-        let error = bounded_tabulate_oracle(&engine, &request)
-            .expect_err("non-numeric field must fail");
+        let error =
+            bounded_tabulate_oracle(&engine, &request).expect_err("non-numeric field must fail");
 
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("region") && message.contains("numeric"))
