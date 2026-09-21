@@ -31,8 +31,9 @@ columns, and persisted analysis definition remain compatible.
 ### Fitted Basis and Reporting Basis
 
 Rust keeps the current full-rank OLS design matrix and fitted coefficient basis
-as the computational basis for prediction, diagnostics, leverage plots, saved
-columns, and model-wide fit statistics.
+as the computational basis for prediction, saved diagnostic columns, and
+model-wide fit statistics. Effect leverage coordinates are derived from the
+same reporting-basis linear hypothesis used by the corresponding Effect Test.
 
 For reporting, Rust constructs a linear transformation from the fitted basis to
 a JMP-style basis in which every continuous predictor participating in an
@@ -103,12 +104,48 @@ which explains and corrects the current mismatch with JMP.
 For a non-hierarchical higher-order model, Effect Tests retains the existing
 reduced-model calculation in the uncentered fitted basis.
 
-Leverage plots always retain fitted-basis reduced-model p-values, consistent
-with their fitted-basis partial slopes and confidence bands. A main-effect
-leverage p-value may therefore differ from its centered report Effect Test.
-
 Rank-deficient or otherwise non-estimable hypotheses return nullable statistics
 with the existing explicit inference reason. They are never reported as zero.
+
+### JMP General-Hypothesis Leverage Plots
+
+Effect leverage plots use the same hypothesis as the visible Effect Test. Rust
+derives a reporting-basis design matrix from the coefficient transformation so
+that fitted values remain unchanged while effect constraints are expressed in
+the JMP reporting basis.
+
+For each effect, Rust computes the unconstrained residual and the residual from
+the model constrained by that effect hypothesis. Their difference is the
+horizontal leverage contribution. The vertical coordinate is that contribution
+plus the unconstrained residual, translated by the response mean. This ensures:
+
+- distance to the sloped line equals the full-model residual;
+- distance to the horizontal null line equals the constrained-model residual;
+- the difference between those residual sums of squares equals the Effect Test
+  hypothesis sum of squares; and
+- the p-value, points, fitted line, and confidence curves describe one
+  consistent hypothesis.
+
+A continuous one-degree-of-freedom main effect uses the original predictor
+units on the horizontal axis. Its translated leverage values are centered on
+the predictor sample mean, and the fitted-line slope equals the centered
+reporting coefficient. This matches JMP when a main effect participates in an
+interaction and avoids plotting the unrelated coefficient evaluated at zero.
+
+Nominal, ordinal, interaction, multi-column, and other complex effects use
+response-unit horizontal scaling. Their fitted line has slope one, matching
+JMP's general linear-hypothesis leverage construction.
+
+Confidence curves use the model error mean square, error degrees of freedom,
+effect hypothesis degrees of freedom, and configured confidence level. Their
+construction preserves JMP's visual significance property: the curves cross
+the horizontal null line exactly when the corresponding hypothesis exceeds the
+critical F threshold.
+
+For a non-hierarchical higher-order model, the report already falls back to its
+raw fitted basis. Its leverage plot uses the same raw-basis Effect Test and
+general-hypothesis construction. Rank-deficient or non-estimable hypotheses
+return the existing explicit inference reason and no misleading plot.
 
 ## Report and Chart Design
 
@@ -153,9 +190,19 @@ axes, using its adjusted points, fitted line, confidence band, and null line.
 Explicit bounds prevent the ECharts value-axis default from forcing zero into
 the window and compressing a narrow effect range.
 
-Actual by Predicted renders the Rust-computed row mean-confidence intervals as
-a translucent red band around the solid red `y=x` fitted line. The frontend
-only maps the returned interval coordinates and does not recompute inference.
+Actual by Predicted is the Whole Model leverage plot. Rust constructs its
+95-percent confidence curves from the hypothesis that all non-intercept model
+effects are zero, using the full model error mean square, error degrees of
+freedom, model hypothesis degrees of freedom, and configured confidence level.
+The result is a smooth translucent red confidence region around the solid red
+`y=x` line. It is not produced by connecting row-specific multivariate
+prediction intervals, because those intervals can differ for rows with the
+same fitted value and do not define a single confidence curve over the
+predicted axis.
+
+The fitted-result contract contains dedicated ordered Whole Model confidence
+band points. The frontend only maps these Rust coordinates and never
+recomputes statistical inference.
 
 Chart grids reserve explicit left, right, and bottom space, use `containLabel`,
 and set axis-name gaps so titles and tick labels remain visible at desktop and
@@ -258,11 +305,25 @@ No frontend statistical fallback is introduced.
   interaction.
 - Verify fitted values, SSE, residuals, and predictions are invariant.
 - Cover rank-deficient and non-estimable hypotheses.
+- Verify general-hypothesis leverage geometry by asserting that distances to
+  the sloped and horizontal lines reproduce unconstrained and constrained
+  residuals and that their sum-of-squares difference equals the Effect Test.
+- Cover a centered interaction fixture where the reporting-basis main-effect
+  slope changes sign from the raw fitted-basis coefficient.
+- Verify continuous main effects retain original predictor units while
+  interaction and complex effects use response-unit scaling with slope one.
+- Verify leverage confidence curves cross the null line if and only if the
+  effect F statistic exceeds its configured critical threshold.
+- Verify Whole Model Actual by Predicted confidence points are ordered, smooth,
+  use the whole-model hypothesis, and do not depend on row-specific diagnostic
+  interval widths.
 
 ### Frontend
 
 - Test padded nice domains, constant ranges, residual symmetry, and formatted
   endpoint labels.
+- Test that Actual by Predicted renders only the dedicated Whole Model
+  confidence band returned by Rust.
 - Test the red `LogWorth = 1.3` reference.
 - Test Leverage Plot ordering and size parity with Actual by Predicted.
 - Test Parameter Estimates column removal.
