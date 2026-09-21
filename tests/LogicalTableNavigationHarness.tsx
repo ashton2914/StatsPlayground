@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 
 import { DataTableView } from "../src/components/DataTableView";
 import i18n from "../src/i18n";
@@ -8,6 +8,7 @@ import { useDatasetFilterStore } from "../src/stores/useDatasetFilterStore";
 import { useHistoryStore } from "../src/stores/useHistoryStore";
 import { useProjectStore } from "../src/stores/useProjectStore";
 import { useTableNavigationSortStore } from "../src/stores/useTableNavigationSortStore";
+import { useTableViewportStore } from "../src/stores/useTableViewportStore";
 import { useTableZoomStore } from "../src/stores/useTableZoomStore";
 import type {
   ColumnDescriptor,
@@ -213,6 +214,7 @@ interface LogicalTableNavigationHarnessProps {
   delayDatasetRefresh?: boolean;
   delayMutationDescriptors?: boolean;
   reportZeroColumnsOnDelete?: boolean;
+  strictMode?: boolean;
 }
 
 interface NavigationRequestObservation {
@@ -242,6 +244,7 @@ export function LogicalTableNavigationHarness({
   delayDatasetRefresh = false,
   delayMutationDescriptors = false,
   reportZeroColumnsOnDelete = false,
+  strictMode = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
@@ -280,6 +283,7 @@ export function LogicalTableNavigationHarness({
   const [mutationRefreshEvents, setMutationRefreshEvents] = useState<string[]>([]);
   const [filterMode, setFilterMode] = useState<HarnessFilterMode>(initialFilterMode);
   const [sortMode, setSortMode] = useState<HarnessSortMode>("natural");
+  const [showTable, setShowTable] = useState(true);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const datasetRef = useRef(dataset);
   const editsRef = useRef<Map<string, unknown>>(new Map());
@@ -397,6 +401,7 @@ export function LogicalTableNavigationHarness({
     const previousProjectState = useProjectStore.getState();
     const previousHistoryState = useHistoryStore.getState();
     const previousSortState = useTableNavigationSortStore.getState();
+    const previousViewportState = useTableViewportStore.getState();
     const previousZoom = useTableZoomStore.getState().zoom;
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
@@ -439,6 +444,7 @@ export function LogicalTableNavigationHarness({
         ? {}
         : { [currentDataset.id]: { column: "Column 2", descending: true } },
     });
+    useTableViewportStore.setState({ ...previousViewportState, byDataset: {} });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
     useHistoryStore.setState({ ...previousHistoryState, historyRevision: 0, historyError: null, pendingRestore: null });
     useTableZoomStore.setState({ zoom });
@@ -785,6 +791,7 @@ export function LogicalTableNavigationHarness({
       useDataStore.setState(previousDataState, true);
       useDatasetFilterStore.setState(previousFilterState, true);
       useTableNavigationSortStore.setState(previousSortState, true);
+      useTableViewportStore.setState(previousViewportState, true);
       useProjectStore.setState(previousProjectState, true);
       useHistoryStore.setState(previousHistoryState, true);
       useTableZoomStore.setState({ zoom: previousZoom });
@@ -868,6 +875,9 @@ export function LogicalTableNavigationHarness({
       <button type="button" data-testid="clear-filter" onClick={() => setFilterMode("none")}>Clear</button>
       <button type="button" data-testid="apply-sort-desc" onClick={() => setSortMode("value-desc")}>Sort desc</button>
       <button type="button" data-testid="clear-sort" onClick={() => setSortMode("natural")}>Sort clear</button>
+      <button type="button" data-testid="toggle-table" onClick={() => setShowTable((visible) => !visible)}>
+        Toggle table
+      </button>
       <button
         type="button"
         data-testid="advance-dataset-generation"
@@ -885,7 +895,11 @@ export function LogicalTableNavigationHarness({
           }));
         }}
       >Advance generation</button>
-      <DataTableView datasetId={dataset.id} />
+      {showTable && (
+        strictMode
+          ? <StrictMode><DataTableView datasetId={dataset.id} /></StrictMode>
+          : <DataTableView datasetId={dataset.id} />
+      )}
     </div>
   );
 }
