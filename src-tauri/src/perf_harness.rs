@@ -157,6 +157,8 @@ struct PerformanceReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_stage_ms: Option<OpenStageReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    open_table_restore: Option<OpenTableRestoreReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     process_memory: Option<ProcessMemoryReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     graph_new: Option<GraphNewPerformanceReport>,
@@ -189,6 +191,19 @@ struct PerformanceReport {
         skip_serializing_if = "Option::is_none"
     )]
     table_mutation: Option<TableMutationPerformanceReport>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenTableRestoreReport {
+    json_parse_ns: u128,
+    validation_conversion_ns: u128,
+    appender_create_ns: u128,
+    appender_append_ns: u128,
+    appender_flush_ns: u128,
+    finalize_ns: u128,
+    appender_create_count: usize,
+    rows: usize,
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
@@ -1083,6 +1098,7 @@ fn execute_table_navigation(
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -1867,6 +1883,7 @@ fn execute_graph_new_runs_with_config(
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: Some(GraphNewPerformanceReport {
             machine_memory_metric: "process RSS is OS working-set bytes when available, otherwise null (including macOS); accountedMemoryBytes is graph-owned in-memory tile accounting only",
@@ -2257,6 +2274,7 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2361,6 +2379,7 @@ fn execute_time_series_graph(
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2515,6 +2534,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2715,6 +2735,7 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
         projection_passes: None, invalid_x_count: None, archive_bytes: 0,
         max_retained_batch_bytes: None, max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None, save_stage_ms: None, open_stage_ms: None,
+        open_table_restore: None,
         process_memory: None,
         graph_new: None, chain_depth: None, runs_ms: None, median_ms: None,
         process_memory_method: process_memory_method(), physical_input_bytes: None,
@@ -2822,6 +2843,7 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: Some(options.chain_depth),
@@ -3211,6 +3233,7 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3454,6 +3477,18 @@ fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
             table_restore: observed_perf.table_restore_ms,
             finalize: observed_perf.finalize_ms,
         }),
+        open_table_restore: Some(OpenTableRestoreReport {
+            json_parse_ns: observed_perf.table_restore_detail.json_parse_ns,
+            validation_conversion_ns: observed_perf
+                .table_restore_detail
+                .validation_conversion_ns,
+            appender_create_ns: observed_perf.table_restore_detail.appender_create_ns,
+            appender_append_ns: observed_perf.table_restore_detail.appender_append_ns,
+            appender_flush_ns: observed_perf.table_restore_detail.appender_flush_ns,
+            finalize_ns: observed_perf.table_restore_detail.finalize_ns,
+            appender_create_count: observed_perf.table_restore_detail.appender_create_count,
+            rows: observed_perf.table_restore_detail.rows,
+        }),
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3618,6 +3653,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
             replacement: save_perf_metrics.replacement_ms,
         }),
         open_stage_ms: None,
+        open_table_restore: None,
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -5505,6 +5541,14 @@ mod tests {
             stages.archive_read_parse + stages.table_restore + stages.finalize
                 <= report.operation_ms
         );
+        let detail = report
+            .open_table_restore
+            .expect("streamed table restore component timings");
+        assert!(detail.json_parse_ns > 0);
+        assert!(detail.validation_conversion_ns > 0);
+        assert!(detail.appender_append_ns > 0);
+        assert!(detail.appender_create_count > 0);
+        assert_eq!(detail.rows, 1_000);
     }
 
     #[test]

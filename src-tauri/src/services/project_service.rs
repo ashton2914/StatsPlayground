@@ -13,13 +13,17 @@ use crate::services::archive_cell::{archive_cell_to_json, archive_export_express
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaSqlColumn, TypedCalculatedExpression, TypedCalculatedOutput,
 };
-use crate::services::project_table_restore::ProjectTableRestoreSession;
+use crate::services::project_table_restore::{
+    ProjectTableRestorePerfMetrics, ProjectTableRestoreSession,
+};
 use crate::services::spprj_archive::{
     self, project_archive_table_columns, DatasetFilters, GraphDoc, ProjectArchiveTableSink,
     ProjectBundle, TableColumn, TableDoc, TableEntryRef,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
-use crate::services::streaming_table_reader::{stream_table_rows, StreamedTableHeader};
+use crate::services::streaming_table_reader::{
+    stream_table_rows_profiled, StreamedTableHeader, TableStreamPerfMetrics,
+};
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
@@ -76,6 +80,7 @@ struct StagedProjectTableSink<'a> {
     progress: Option<&'a dyn Fn(usize, usize, &str, usize, usize)>,
     table_index: usize,
     table_total: usize,
+    perf_metrics: &'a mut OpenTableRestorePerfMetrics,
 }
 
 impl ProjectArchiveTableSink for StagedProjectTableSink<'_> {
@@ -106,10 +111,25 @@ impl ProjectArchiveTableSink for StagedProjectTableSink<'_> {
             None,
             Some(&row_progress),
         )?;
-        if let Err(error) = stream_table_rows(reader, archive_header, &mut session) {
+        let mut stream_metrics = TableStreamPerfMetrics::default();
+        if let Err(error) =
+            stream_table_rows_profiled(reader, archive_header, &mut session, &mut stream_metrics)
+        {
             return Err(session.abort(error));
         }
+        let restore_metrics = session.perf_metrics();
+        let finish_started = std::time::Instant::now();
         let restored_id = session.finish()?;
+        self.perf_metrics.json_parse_ns = self
+            .perf_metrics
+            .json_parse_ns
+            .saturating_add(stream_metrics.json_parse_ns);
+        self.perf_metrics.rows = self.perf_metrics.rows.saturating_add(stream_metrics.rows);
+        self.perf_metrics.add_restore(restore_metrics);
+        self.perf_metrics.finalize_ns = self
+            .perf_metrics
+            .finalize_ns
+            .saturating_add(finish_started.elapsed().as_nanos());
         if restored_id != entry.id {
             return Err(AppError::FileIO(format!(
                 "Restored table id mismatch: expected {}, got {restored_id}",
@@ -159,11 +179,44 @@ impl ProjectArchiveTableSink for StagedProjectTableSink<'_> {
 }
 
 #[derive(Clone, Copy, Default)]
+pub(crate) struct OpenTableRestorePerfMetrics {
+    pub json_parse_ns: u128,
+    pub validation_conversion_ns: u128,
+    pub appender_create_ns: u128,
+    pub appender_append_ns: u128,
+    pub appender_flush_ns: u128,
+    pub finalize_ns: u128,
+    pub appender_create_count: usize,
+    pub rows: usize,
+}
+
+impl OpenTableRestorePerfMetrics {
+    fn add_restore(&mut self, metrics: ProjectTableRestorePerfMetrics) {
+        self.validation_conversion_ns = self
+            .validation_conversion_ns
+            .saturating_add(metrics.validation_conversion_ns);
+        self.appender_create_ns = self
+            .appender_create_ns
+            .saturating_add(metrics.appender_create_ns);
+        self.appender_append_ns = self
+            .appender_append_ns
+            .saturating_add(metrics.appender_append_ns);
+        self.appender_flush_ns = self
+            .appender_flush_ns
+            .saturating_add(metrics.appender_flush_ns);
+        self.appender_create_count = self
+            .appender_create_count
+            .saturating_add(metrics.appender_create_count);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
 pub(crate) struct OpenPerfMetrics {
     pub total_ms: u128,
     pub archive_read_parse_ms: u128,
     pub table_restore_ms: u128,
     pub finalize_ms: u128,
+    pub table_restore_detail: OpenTableRestorePerfMetrics,
 }
 
 #[cfg(any(test, feature = "perf-harness"))]
@@ -649,6 +702,7 @@ impl<'a> ProjectService<'a> {
         let staged_state = AppState::new()?;
         let total = archive.bundle.tables.len();
         let table_restore_started = std::time::Instant::now();
+        let mut table_restore_detail = OpenTableRestorePerfMetrics::default();
         {
             let staged_service = ProjectService::new(&staged_state);
             let mut staged_table_sink = StagedProjectTableSink {
@@ -656,6 +710,7 @@ impl<'a> ProjectService<'a> {
                 progress: progress_cb,
                 table_index: 0,
                 table_total: total,
+                perf_metrics: &mut table_restore_detail,
             };
             archive.restore_tables(&mut staged_table_sink)?;
             for doc in &recovered_tables {
@@ -874,6 +929,7 @@ impl<'a> ProjectService<'a> {
             finalize_ms: total_ms
                 .saturating_sub(archive_read_parse_ms)
                 .saturating_sub(table_restore_ms),
+            table_restore_detail,
         });
 
         Ok(OpenProjectResult {

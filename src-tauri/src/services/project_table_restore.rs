@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::MutexGuard;
+use std::time::Instant;
 
 use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
@@ -19,6 +20,15 @@ use crate::services::streaming_table_reader::{StreamedTableHeader, TableBatchSin
 use crate::state::AppState;
 
 const RESTORE_BATCH_ROWS: usize = 5_000;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProjectTableRestorePerfMetrics {
+    pub validation_conversion_ns: u128,
+    pub appender_create_ns: u128,
+    pub appender_append_ns: u128,
+    pub appender_flush_ns: u128,
+    pub appender_create_count: usize,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -51,6 +61,7 @@ pub(crate) struct ProjectTableRestoreSession<'a> {
     rows_written: usize,
     rows_total: Option<usize>,
     progress: Option<&'a dyn Fn(usize, usize)>,
+    perf_metrics: ProjectTableRestorePerfMetrics,
 }
 
 impl<'a> ProjectTableRestoreSession<'a> {
@@ -141,10 +152,12 @@ impl<'a> ProjectTableRestoreSession<'a> {
             rows_written: 0,
             rows_total,
             progress,
+            perf_metrics: ProjectTableRestorePerfMetrics::default(),
         })
     }
 
     pub(crate) fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<(), AppError> {
+        let validation_started = Instant::now();
         let expected_row_width = self.header.columns.len() + 1;
         for row in rows {
             if row.len() != expected_row_width {
@@ -168,13 +181,29 @@ impl<'a> ProjectTableRestoreSession<'a> {
         }
 
         if rows.is_empty() {
+            self.perf_metrics.validation_conversion_ns = self
+                .perf_metrics
+                .validation_conversion_ns
+                .saturating_add(validation_started.elapsed().as_nanos());
             return Ok(());
         }
+        self.perf_metrics.validation_conversion_ns = self
+            .perf_metrics
+            .validation_conversion_ns
+            .saturating_add(validation_started.elapsed().as_nanos());
 
         {
             let table_name = format!("dataset_{}", self.header.id.replace('-', "_"));
+            let appender_create_started = Instant::now();
             let mut appender = self.db.conn().appender(&table_name)?;
+            self.perf_metrics.appender_create_ns = self
+                .perf_metrics
+                .appender_create_ns
+                .saturating_add(appender_create_started.elapsed().as_nanos());
+            self.perf_metrics.appender_create_count =
+                self.perf_metrics.appender_create_count.saturating_add(1);
             for row in rows {
+                let conversion_started = Instant::now();
                 let mut values = row
                     .iter()
                     .enumerate()
@@ -189,9 +218,23 @@ impl<'a> ProjectTableRestoreSession<'a> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 values.push(DuckValue::Null);
+                self.perf_metrics.validation_conversion_ns = self
+                    .perf_metrics
+                    .validation_conversion_ns
+                    .saturating_add(conversion_started.elapsed().as_nanos());
+                let append_started = Instant::now();
                 appender.append_row(appender_params_from_iter(values))?;
+                self.perf_metrics.appender_append_ns = self
+                    .perf_metrics
+                    .appender_append_ns
+                    .saturating_add(append_started.elapsed().as_nanos());
             }
+            let flush_started = Instant::now();
             appender.flush()?;
+            self.perf_metrics.appender_flush_ns = self
+                .perf_metrics
+                .appender_flush_ns
+                .saturating_add(flush_started.elapsed().as_nanos());
         }
         #[cfg(test)]
         record_completed_append();
@@ -215,6 +258,10 @@ impl<'a> ProjectTableRestoreSession<'a> {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn perf_metrics(&self) -> ProjectTableRestorePerfMetrics {
+        self.perf_metrics
     }
 
     pub(crate) fn finish(self) -> Result<String, AppError> {

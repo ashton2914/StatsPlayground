@@ -1,5 +1,6 @@
 use std::fmt;
-use std::io::Read;
+use std::io::{BufReader, Read};
+use std::time::Instant;
 
 use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
@@ -24,6 +25,12 @@ pub(crate) enum TableHeaderScan {
     RequiresBufferedCompatibility,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TableStreamPerfMetrics {
+    pub json_parse_ns: u128,
+    pub rows: usize,
+}
+
 pub(crate) trait TableBatchSink {
     fn begin_table(&mut self, header: &StreamedTableHeader) -> Result<(), AppError>;
     fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<(), AppError>;
@@ -32,7 +39,7 @@ pub(crate) trait TableBatchSink {
 
 pub(crate) fn scan_table_header<R: Read>(reader: R) -> Result<TableHeaderScan, AppError> {
     let mut scan = None;
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
     let result = deserializer.deserialize_map(HeaderScanVisitor { scan: &mut scan });
     if let Some(scan) = scan {
         return Ok(scan);
@@ -48,12 +55,27 @@ pub(crate) fn stream_table_rows<R: Read, S: TableBatchSink>(
     expected: &StreamedTableHeader,
     sink: &mut S,
 ) -> Result<usize, AppError> {
+    stream_table_rows_profiled(
+        reader,
+        expected,
+        sink,
+        &mut TableStreamPerfMetrics::default(),
+    )
+}
+
+pub(crate) fn stream_table_rows_profiled<R: Read, S: TableBatchSink>(
+    reader: R,
+    expected: &StreamedTableHeader,
+    sink: &mut S,
+    metrics: &mut TableStreamPerfMetrics,
+) -> Result<usize, AppError> {
     let mut sink_error = None;
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
     let result = deserializer.deserialize_map(TableStreamVisitor {
         expected,
         sink,
         sink_error: &mut sink_error,
+        metrics,
     });
 
     if let Some(error) = sink_error {
@@ -135,6 +157,7 @@ struct TableStreamVisitor<'a, S> {
     expected: &'a StreamedTableHeader,
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
+    metrics: &'a mut TableStreamPerfMetrics,
 }
 
 impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
@@ -189,6 +212,7 @@ impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
                     let count = map.next_value_seed(RowsSeed {
                         sink: self.sink,
                         sink_error: self.sink_error,
+                        metrics: self.metrics,
                     })?;
                     row_count = Some(count);
                 }
@@ -222,6 +246,7 @@ where
 struct RowsSeed<'a, S> {
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
+    metrics: &'a mut TableStreamPerfMetrics,
 }
 
 impl<'de, S: TableBatchSink> DeserializeSeed<'de> for RowsSeed<'_, S> {
@@ -234,6 +259,7 @@ impl<'de, S: TableBatchSink> DeserializeSeed<'de> for RowsSeed<'_, S> {
         deserializer.deserialize_seq(RowsVisitor {
             sink: self.sink,
             sink_error: self.sink_error,
+            metrics: self.metrics,
         })
     }
 }
@@ -241,6 +267,7 @@ impl<'de, S: TableBatchSink> DeserializeSeed<'de> for RowsSeed<'_, S> {
 struct RowsVisitor<'a, S> {
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
+    metrics: &'a mut TableStreamPerfMetrics,
 }
 
 impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
@@ -258,7 +285,16 @@ impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
         let mut batch_bytes = 0usize;
         let mut row_count = 0usize;
 
-        while let Some(row) = sequence.next_element::<Vec<Value>>()? {
+        loop {
+            let parse_started = Instant::now();
+            let next_row = sequence.next_element::<Vec<Value>>()?;
+            self.metrics.json_parse_ns = self
+                .metrics
+                .json_parse_ns
+                .saturating_add(parse_started.elapsed().as_nanos());
+            let Some(row) = next_row else {
+                break;
+            };
             let row_bytes = row
                 .iter()
                 .map(estimate_json_value_bytes)
@@ -274,6 +310,7 @@ impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
             batch_bytes = batch_bytes.saturating_add(row_bytes);
             batch.push(row);
             row_count = row_count.saturating_add(1);
+            self.metrics.rows = self.metrics.rows.saturating_add(1);
 
             if batch_bytes >= STREAM_ROW_TARGET_BYTES {
                 append_batch::<A::Error, S>(self.sink, self.sink_error, &batch)?;
@@ -339,6 +376,10 @@ fn json_file_error(error: serde_json::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::io::Read;
+    use std::rc::Rc;
+
     use serde_json::{json, Value};
 
     use super::*;
@@ -423,6 +464,37 @@ mod tests {
         assert_eq!(sink.finished, vec![12_000]);
         assert_eq!(sink.row_ids(), (1_i64..=12_000).collect::<Vec<_>>());
         assert!(sink.max_batch_estimate <= STREAM_ROW_TARGET_BYTES + sink.max_row_estimate);
+    }
+
+    #[test]
+    fn streamed_rows_buffer_source_reads() {
+        struct CountingReader<'a> {
+            bytes: &'a [u8],
+            read_calls: Rc<Cell<usize>>,
+        }
+
+        impl Read for CountingReader<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.read_calls.set(self.read_calls.get() + 1);
+                self.bytes.read(buffer)
+            }
+        }
+
+        let json = canonical_table_json(12_000);
+        let header = canonical_header(&json);
+        let read_calls = Rc::new(Cell::new(0));
+        let reader = CountingReader {
+            bytes: &json,
+            read_calls: Rc::clone(&read_calls),
+        };
+
+        stream_table_rows(reader, &header, &mut RecordingSink::default()).unwrap();
+
+        assert!(
+            read_calls.get() < 100,
+            "streamed parse made {} source reads",
+            read_calls.get()
+        );
     }
 
     #[test]
