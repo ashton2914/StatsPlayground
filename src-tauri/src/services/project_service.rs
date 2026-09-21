@@ -554,6 +554,29 @@ pub(crate) fn seed_save_project(
     Ok(archive_path_string)
 }
 
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn seed_project_persistence_stress_project(
+    state: &AppState,
+    rows: usize,
+    string_bytes: usize,
+) -> Result<String, AppError> {
+    let archive_path = std::env::temp_dir().join(format!(
+        "stats_playground_save_current_{}.spprj",
+        uuid::Uuid::new_v4()
+    ));
+    let archive_path_string = archive_path.to_string_lossy().to_string();
+
+    ProjectService::new(state)
+        .create_project("Project Persistence String Stress", &archive_path_string)?;
+    state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .seed_project_persistence_stress_table("save-current-baseline", rows, string_bytes)?;
+
+    Ok(archive_path_string)
+}
+
 impl<'a> ProjectService<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self { state }

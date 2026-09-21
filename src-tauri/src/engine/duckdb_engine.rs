@@ -591,6 +591,146 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub(crate) fn seed_project_persistence_stress_table(
+        &self,
+        id: &str,
+        row_count: usize,
+        string_bytes: usize,
+    ) -> Result<(), AppError> {
+        const UNIQUE_SUFFIX_BYTES: usize = 20;
+        if string_bytes < UNIQUE_SUFFIX_BYTES {
+            return Err(AppError::InvalidParam(format!(
+                "stress string width must be at least {UNIQUE_SUFFIX_BYTES} bytes"
+            )));
+        }
+
+        let column_names = [
+            "unique_text".to_string(),
+            "repeated_text".to_string(),
+            "nullable_text".to_string(),
+            "bigint_value".to_string(),
+            "double_value".to_string(),
+        ];
+        let column_types = [
+            "VARCHAR".to_string(),
+            "VARCHAR".to_string(),
+            "VARCHAR".to_string(),
+            "BIGINT".to_string(),
+            "DOUBLE".to_string(),
+        ];
+        self.create_empty_table(
+            id,
+            "Project Persistence String Stress",
+            &column_names,
+            &column_types,
+        )?;
+
+        let upper_bound = row_count
+            .checked_add(1)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| AppError::InvalidParam("stress row count is too large".into()))?;
+        let unique_prefix_bytes = i64::try_from(string_bytes - UNIQUE_SUFFIX_BYTES)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let string_bytes = i64::try_from(string_bytes)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(id));
+        self.conn.execute(
+            &format!(
+                "INSERT INTO {table_name}
+                    (\"_row_id\", \"unique_text\", \"repeated_text\", \"nullable_text\", \"bigint_value\", \"double_value\")
+                 SELECT
+                    i,
+                    repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                        || lpad(CAST(i AS VARCHAR), 20, CAST(? AS VARCHAR)),
+                    repeat(chr(CAST(65 + (i % 8) AS INTEGER)), CAST(? AS BIGINT)),
+                    CASE
+                        WHEN i % 7 = 0 THEN NULL
+                        ELSE repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                    END,
+                    CAST(9007199254740991 + i AS BIGINT),
+                    CAST(i AS DOUBLE) * 0.25 - 100000.5
+                 FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+            ),
+            params![
+                "u",
+                unique_prefix_bytes,
+                "0",
+                string_bytes,
+                "n",
+                string_bytes,
+                upper_bound
+            ],
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count as i64, id],
+        )?;
+        let generation = self.get_dataset_generation(id)?;
+        self.rebuild_natural_anchors(id, generation)?;
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub(crate) fn validate_project_persistence_stress_table(
+        &self,
+        id: &str,
+        expected_rows: usize,
+        string_bytes: usize,
+    ) -> Result<(), AppError> {
+        const UNIQUE_SUFFIX_BYTES: usize = 20;
+        if string_bytes < UNIQUE_SUFFIX_BYTES {
+            return Err(AppError::InvalidParam(format!(
+                "stress string width must be at least {UNIQUE_SUFFIX_BYTES} bytes"
+            )));
+        }
+        let expected_rows = i64::try_from(expected_rows)
+            .map_err(|_| AppError::InvalidParam("stress row count is too large".into()))?;
+        let unique_prefix_bytes = i64::try_from(string_bytes - UNIQUE_SUFFIX_BYTES)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let string_bytes = i64::try_from(string_bytes)
+            .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(id));
+        let (actual_rows, mismatched_rows): (i64, i64) = self.conn.query_row(
+            &format!(
+                "SELECT
+                    count(*),
+                    count(*) FILTER (
+                        WHERE \"unique_text\" IS DISTINCT FROM (
+                                repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                                || lpad(CAST(\"_row_id\" AS VARCHAR), 20, CAST(? AS VARCHAR))
+                            )
+                           OR \"repeated_text\" IS DISTINCT FROM
+                                repeat(chr(CAST(65 + (\"_row_id\" % 8) AS INTEGER)), CAST(? AS BIGINT))
+                           OR \"nullable_text\" IS DISTINCT FROM CASE
+                                WHEN \"_row_id\" % 7 = 0 THEN NULL
+                                ELSE repeat(CAST(? AS VARCHAR), CAST(? AS BIGINT))
+                              END
+                           OR \"bigint_value\" IS DISTINCT FROM
+                                CAST(9007199254740991 + \"_row_id\" AS BIGINT)
+                           OR \"double_value\" IS DISTINCT FROM
+                                CAST(\"_row_id\" AS DOUBLE) * 0.25 - 100000.5
+                    )
+                 FROM {table_name}"
+            ),
+            params![
+                "u",
+                unique_prefix_bytes,
+                "0",
+                string_bytes,
+                "n",
+                string_bytes
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if actual_rows != expected_rows || mismatched_rows != 0 {
+            return Err(AppError::Database(format!(
+                "stress table mismatch: expected {expected_rows} rows, got {actual_rows} with {mismatched_rows} mismatches"
+            )));
+        }
+        Ok(())
+    }
+
     /// Create a new in-memory DuckDB engine and initialize metadata tables
     pub fn new_in_memory() -> Result<Self, AppError> {
         let shared_db_dir = Arc::new(tempfile::tempdir()?);
@@ -17364,6 +17504,64 @@ mod tests {
         assert_eq!(page.total_rows, 10_000);
         assert_eq!(page.rows.len(), 500);
         assert_eq!(page.columns.len(), 21);
+    }
+
+    #[test]
+    fn project_persistence_stress_fixture_covers_long_string_and_numeric_edges() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        db.seed_project_persistence_stress_table("stress-id", 32, 256)
+            .unwrap();
+
+        let meta = db.get_dataset_meta("stress-id").unwrap();
+        assert_eq!(meta.row_count, 32);
+        assert_eq!(meta.col_count, 5);
+
+        let page = db.query_table("stress-id", 0, 32, None, None).unwrap();
+        assert_eq!(
+            page.columns,
+            [
+                "_row_id",
+                "unique_text",
+                "repeated_text",
+                "nullable_text",
+                "bigint_value",
+                "double_value",
+            ]
+        );
+        assert_eq!(
+            page.column_types,
+            ["INTEGER", "VARCHAR", "VARCHAR", "VARCHAR", "BIGINT", "DOUBLE"]
+        );
+        assert_eq!(page.rows.len(), 32);
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row[1].as_str().is_some_and(|value| value.len() == 256)));
+        assert_eq!(
+            page.rows
+                .iter()
+                .filter_map(|row| row[1].as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            32
+        );
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row[2].as_str().is_some_and(|value| value.len() == 256)));
+        assert!(
+            page.rows
+                .iter()
+                .filter_map(|row| row[2].as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                < 32
+        );
+        assert!(page.rows.iter().any(|row| row[3].is_null()));
+        assert!(page.rows.iter().any(|row| !row[3].is_null()));
+        assert!(page.rows.iter().all(|row| row[4].as_i64().is_some()));
+        assert!(page.rows.iter().all(|row| row[5].as_f64().is_some()));
     }
 
     #[test]

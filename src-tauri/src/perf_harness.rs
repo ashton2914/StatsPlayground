@@ -37,13 +37,14 @@ use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
+use crate::services::project_service::{
+    seed_project_persistence_stress_project, seed_save_project, with_open_perf_observer,
+    OpenPerfMetrics, ProjectService,
+};
 #[cfg(test)]
 use crate::services::row_order_update_boundary::execute_global_row_order_update_for_test;
 use crate::services::row_order_update_boundary::{
     full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
-};
-use crate::services::project_service::{
-    seed_save_project, with_open_perf_observer, OpenPerfMetrics, ProjectService,
 };
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
@@ -57,6 +58,10 @@ const DEFAULT_CALCULATED_CHAIN_DEPTH: usize = 5;
 const CALCULATED_MEDIAN_THRESHOLD_MS: u128 = 2_000;
 const CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER: u64 = 2;
 const PREPARE_OPEN_FIXTURE_FLAG: &str = "--prepare-open-fixture";
+const PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG: &str = "--prepare-open-string-stress-fixture";
+const PROJECT_STRING_STRESS_ROWS: usize = 300_000;
+const PROJECT_STRING_STRESS_BYTES: usize = 256;
+const PROJECT_STRING_STRESS_COLUMNS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +73,8 @@ enum Operation {
     TimeSeriesGraph,
     Save,
     Open,
+    SaveStringStress,
+    OpenStringStress,
     Datalink,
     Calculated,
     TableNavigation,
@@ -846,6 +853,7 @@ where
         payload_stdout: false,
     };
     let mut args = args.into_iter();
+    let mut rows_explicit = false;
     let mut runs_explicit = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -862,7 +870,10 @@ where
                 let artifacts = args.next().ok_or_else(|| AppError::InvalidParam("missing CSV artifact directory".into()))?;
                 options.graph_new_csv = Some((source, artifacts));
             }
-            "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
+            "--rows" => {
+                options.rows = parse_positive_usize(&flag, args.next())?;
+                rows_explicit = true;
+            }
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
             "--runs" => {
@@ -896,6 +907,8 @@ where
                     "time-series-graph" | "time_series_graph" => Operation::TimeSeriesGraph,
                     "save" => Operation::Save,
                     "open" => Operation::Open,
+                    "save-string-stress" => Operation::SaveStringStress,
+                    "open-string-stress" => Operation::OpenStringStress,
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
                     "table-navigation" => Operation::TableNavigation,
@@ -937,6 +950,13 @@ where
         }
     }
 
+    if matches!(
+        options.operation,
+        Operation::SaveStringStress | Operation::OpenStringStress
+    ) && !rows_explicit
+    {
+        options.rows = PROJECT_STRING_STRESS_ROWS;
+    }
     if options.operation == Operation::TableNavigation && options.position_percent.is_none() {
         return Err(AppError::InvalidParam(
             "table-navigation requires --position-percent".into(),
@@ -2410,6 +2430,22 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     if options.operation == Operation::Open {
         return execute_open(options);
     }
+    if options.operation == Operation::SaveStringStress {
+        return execute_save_with_fixture(
+            options,
+            ProjectPersistenceFixture::StringStress {
+                string_bytes: PROJECT_STRING_STRESS_BYTES,
+            },
+        );
+    }
+    if options.operation == Operation::OpenStringStress {
+        return execute_open_with_fixture(
+            options,
+            ProjectPersistenceFixture::StringStress {
+                string_bytes: PROJECT_STRING_STRESS_BYTES,
+            },
+        );
+    }
     if options.operation == Operation::Datalink {
         return execute_datalink(options);
     }
@@ -2487,6 +2523,12 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         }
         Operation::Save => unreachable!("save is handled before this branch"),
         Operation::Open => unreachable!("open is handled before this branch"),
+        Operation::SaveStringStress => {
+            unreachable!("string-stress save is handled before this branch")
+        }
+        Operation::OpenStringStress => {
+            unreachable!("string-stress open is handled before this branch")
+        }
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
         Operation::Calculated => unreachable!("calculated is handled before this branch"),
         Operation::TableNavigation => {
@@ -3323,10 +3365,40 @@ fn new_owned_benchmark_archive() -> Result<OwnedBenchmarkArchive, AppError> {
     )))
 }
 
+#[derive(Clone, Copy)]
+enum ProjectPersistenceFixture {
+    Baseline { columns: usize },
+    StringStress { string_bytes: usize },
+}
+
+impl ProjectPersistenceFixture {
+    fn columns(self) -> usize {
+        match self {
+            Self::Baseline { columns } => columns,
+            Self::StringStress { .. } => PROJECT_STRING_STRESS_COLUMNS,
+        }
+    }
+
+    fn prepare_flag(self) -> &'static str {
+        match self {
+            Self::Baseline { .. } => PREPARE_OPEN_FIXTURE_FLAG,
+            Self::StringStress { .. } => PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG,
+        }
+    }
+
+    #[cfg(not(test))]
+    fn fixture_parameter(self) -> usize {
+        match self {
+            Self::Baseline { columns } => columns,
+            Self::StringStress { string_bytes } => string_bytes,
+        }
+    }
+}
+
 fn prepare_open_fixture_at_path(
     archive_path: &str,
     rows: usize,
-    columns: usize,
+    fixture: ProjectPersistenceFixture,
 ) -> Result<(), AppError> {
     if std::path::Path::new(archive_path).exists() {
         return Err(AppError::FileIO(
@@ -3335,51 +3407,69 @@ fn prepare_open_fixture_at_path(
     }
     let state = AppState::new()?;
     ProjectService::new(&state).create_project("Open Baseline", archive_path)?;
-    state
+    let db = state
         .db
         .lock()
-        .map_err(|error| AppError::Database(error.to_string()))?
-        .seed_benchmark_table(
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    match fixture {
+        ProjectPersistenceFixture::Baseline { columns } => db.seed_benchmark_table(
             "save-current-baseline",
             "Save Current Baseline",
             rows,
             columns,
-        )?;
+        )?,
+        ProjectPersistenceFixture::StringStress { string_bytes } => {
+            db.seed_project_persistence_stress_table("save-current-baseline", rows, string_bytes)?
+        }
+    }
+    drop(db);
     ProjectService::new(&state).save_project(empty_project_save_request(), None)?;
     Ok(())
 }
 
-fn run_open_fixture_child(args: &[String]) -> Result<(), AppError> {
+fn run_open_fixture_child(
+    args: &[String],
+    fixture_kind: ProjectPersistenceFixture,
+) -> Result<(), AppError> {
     if args.len() != 4 {
         return Err(AppError::InvalidParam(format!(
-            "{PREPARE_OPEN_FIXTURE_FLAG} requires path, rows, and columns"
+            "{} requires path, rows, and fixture parameter",
+            fixture_kind.prepare_flag()
         )));
     }
     let rows = parse_positive_usize("--rows", Some(args[2].clone()))?;
-    let columns = parse_positive_usize("--columns", Some(args[3].clone()))?;
-    prepare_open_fixture_at_path(&args[1], rows, columns)
+    let fixture_parameter = parse_positive_usize("--fixture-parameter", Some(args[3].clone()))?;
+    let fixture = match fixture_kind {
+        ProjectPersistenceFixture::Baseline { .. } => ProjectPersistenceFixture::Baseline {
+            columns: fixture_parameter,
+        },
+        ProjectPersistenceFixture::StringStress { .. } => ProjectPersistenceFixture::StringStress {
+            string_bytes: fixture_parameter,
+        },
+    };
+    prepare_open_fixture_at_path(&args[1], rows, fixture)
 }
 
 #[cfg(test)]
 fn prepare_open_fixture_isolated(
     archive_path: &str,
     rows: usize,
-    columns: usize,
+    fixture: ProjectPersistenceFixture,
 ) -> Result<(), AppError> {
-    prepare_open_fixture_at_path(archive_path, rows, columns)
+    prepare_open_fixture_at_path(archive_path, rows, fixture)
 }
 
 #[cfg(not(test))]
 fn prepare_open_fixture_isolated(
     archive_path: &str,
     rows: usize,
-    columns: usize,
+    fixture: ProjectPersistenceFixture,
 ) -> Result<(), AppError> {
     let status = std::process::Command::new(std::env::current_exe()?)
-        .arg(PREPARE_OPEN_FIXTURE_FLAG)
+        .arg(fixture.prepare_flag())
         .arg(archive_path)
         .arg(rows.to_string())
-        .arg(columns.to_string())
+        .arg(fixture.fixture_parameter().to_string())
         .stdout(std::process::Stdio::null())
         .status()?;
     if !status.success() {
@@ -3400,17 +3490,24 @@ fn validate_open_row_count(actual: usize, expected: usize) -> Result<usize, AppE
 }
 
 fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
+    let columns = options.columns;
+    execute_open_with_fixture(options, ProjectPersistenceFixture::Baseline { columns })
+}
+
+fn execute_open_with_fixture(
+    options: Options,
+    fixture: ProjectPersistenceFixture,
+) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     let setup_started = Instant::now();
     let archive = new_owned_benchmark_archive()?;
     let archive_path = archive.path_string();
-    prepare_open_fixture_isolated(&archive_path, options.rows, options.columns)?;
+    prepare_open_fixture_isolated(&archive_path, options.rows, fixture)?;
     let archive_bytes = std::fs::metadata(&archive_path)?.len();
     let setup_ms = setup_started.elapsed().as_millis();
 
     let state = AppState::new()?;
-    let observed_perf =
-        std::sync::Arc::new(std::sync::Mutex::new(OpenPerfMetrics::default()));
+    let observed_perf = std::sync::Arc::new(std::sync::Mutex::new(OpenPerfMetrics::default()));
     let observed_perf_capture = std::sync::Arc::clone(&observed_perf);
     let (open_result, process_memory) = measure_peak_working_set_during(|| {
         with_open_perf_observer(
@@ -3435,7 +3532,19 @@ fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
                 .row_count;
             let result_rows = usize::try_from(result_rows)
                 .map_err(|_| AppError::Database("opened row count is out of range".into()))?;
-            validate_open_row_count(result_rows, options.rows)
+            let result_rows = validate_open_row_count(result_rows, options.rows)?;
+            if let ProjectPersistenceFixture::StringStress { string_bytes } = fixture {
+                state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .validate_project_persistence_stress_table(
+                        "save-current-baseline",
+                        options.rows,
+                        string_bytes,
+                    )?;
+            }
+            Ok(result_rows)
         }
         Err(error) => Err(error),
     };
@@ -3444,7 +3553,7 @@ fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
 
     Ok(PerformanceReport {
         rows: options.rows,
-        columns: options.columns,
+        columns: fixture.columns(),
         operation: options.operation,
         setup_ms,
         operation_ms,
@@ -3499,7 +3608,10 @@ fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
         calculated_result_bytes: None,
         memory_budget_bytes: None,
         memory_growth_budget_multiplier: None,
-        qualification_passed: None,
+        qualification_passed: match fixture {
+            ProjectPersistenceFixture::Baseline { .. } => None,
+            ProjectPersistenceFixture::StringStress { .. } => Some(true),
+        },
         qualification_failure: None,
         machine: None,
         tabulate: None,
@@ -3508,10 +3620,25 @@ fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
 }
 
 fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
+    let columns = options.columns;
+    execute_save_with_fixture(options, ProjectPersistenceFixture::Baseline { columns })
+}
+
+fn execute_save_with_fixture(
+    options: Options,
+    fixture: ProjectPersistenceFixture,
+) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     let setup_started = Instant::now();
     let state = AppState::new()?;
-    let archive_path = seed_save_project(&state, options.rows, options.columns)?;
+    let archive_path = match fixture {
+        ProjectPersistenceFixture::Baseline { columns } => {
+            seed_save_project(&state, options.rows, columns)?
+        }
+        ProjectPersistenceFixture::StringStress { string_bytes } => {
+            seed_project_persistence_stress_project(&state, options.rows, string_bytes)?
+        }
+    };
     let setup_ms = setup_started.elapsed().as_millis();
 
     let history = vec![serde_json::json!({
@@ -3615,7 +3742,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
 
     Ok(PerformanceReport {
         rows: options.rows,
-        columns: options.columns,
+        columns: fixture.columns(),
         operation: options.operation,
         setup_ms,
         operation_ms,
@@ -3664,7 +3791,10 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         calculated_result_bytes: None,
         memory_budget_bytes: None,
         memory_growth_budget_multiplier: None,
-        qualification_passed: None,
+        qualification_passed: match fixture {
+            ProjectPersistenceFixture::Baseline { .. } => None,
+            ProjectPersistenceFixture::StringStress { .. } => Some(true),
+        },
         qualification_failure: None,
         machine: None,
         tabulate: None,
@@ -3701,8 +3831,22 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.first().is_some_and(|arg| arg == PREPARE_OPEN_FIXTURE_FLAG) {
-        return run_open_fixture_child(&args).map_err(|error| error.to_string());
+    if args
+        .first()
+        .is_some_and(|arg| arg == PREPARE_OPEN_FIXTURE_FLAG)
+    {
+        return run_open_fixture_child(&args, ProjectPersistenceFixture::Baseline { columns: 1 })
+            .map_err(|error| error.to_string());
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG)
+    {
+        return run_open_fixture_child(
+            &args,
+            ProjectPersistenceFixture::StringStress { string_bytes: 1 },
+        )
+        .map_err(|error| error.to_string());
     }
     let mutation_child =
         take_mutation_child_request(&mut args).map_err(|error| error.to_string())?;
@@ -5493,6 +5637,58 @@ mod tests {
             serde_json::to_value(options.operation).unwrap(),
             serde_json::json!("open")
         );
+    }
+
+    #[test]
+    fn performance_cli_accepts_dedicated_string_stress_operations() {
+        for (argument, expected) in [
+            ("save-string-stress", Operation::SaveStringStress),
+            ("open-string-stress", Operation::OpenStringStress),
+        ] {
+            let options = parse_args(["--operation", argument].map(String::from)).unwrap();
+
+            assert_eq!(options.rows, 300_000);
+            assert_eq!(options.operation, expected);
+        }
+    }
+
+    #[test]
+    fn string_stress_save_is_bounded_and_open_restores_exact_values() {
+        const TEST_ROWS: usize = 4_097;
+        const HARD_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+
+        let save = execute(
+            parse_args(
+                [
+                    "--rows",
+                    &TEST_ROWS.to_string(),
+                    "--operation",
+                    "save-string-stress",
+                ]
+                .map(String::from),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(save.result_rows, TEST_ROWS);
+        assert!(save.max_retained_batch_bytes.unwrap() <= HARD_BATCH_BYTES);
+        assert!(save.max_combined_batch_bytes.unwrap() <= HARD_BATCH_BYTES);
+
+        let open = execute(
+            parse_args(
+                [
+                    "--rows",
+                    &TEST_ROWS.to_string(),
+                    "--operation",
+                    "open-string-stress",
+                ]
+                .map(String::from),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(open.result_rows, TEST_ROWS);
+        assert_eq!(open.qualification_passed, Some(true));
     }
 
     #[test]
