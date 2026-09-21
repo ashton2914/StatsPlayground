@@ -62,6 +62,7 @@ const PREPARE_OPEN_STRING_STRESS_FIXTURE_FLAG: &str = "--prepare-open-string-str
 const PROJECT_STRING_STRESS_ROWS: usize = 300_000;
 const PROJECT_STRING_STRESS_BYTES: usize = 256;
 const PROJECT_STRING_STRESS_COLUMNS: usize = 5;
+const PROJECT_SAVE_HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -3624,6 +3625,37 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
     execute_save_with_fixture(options, ProjectPersistenceFixture::Baseline { columns })
 }
 
+fn string_stress_save_qualification(
+    expected_rows: usize,
+    actual_rows: usize,
+    metrics: crate::models::save::SavePerfMetrics,
+) -> (Option<bool>, Option<String>) {
+    let mut failures = Vec::new();
+    if actual_rows != expected_rows {
+        failures.push(format!(
+            "string-stress save expected {expected_rows} rows, got {actual_rows}"
+        ));
+    }
+    if metrics.max_retained_batch_bytes > PROJECT_SAVE_HARD_BATCH_BYTES {
+        failures.push(format!(
+            "string-stress retained batch peak {} exceeds {}",
+            metrics.max_retained_batch_bytes, PROJECT_SAVE_HARD_BATCH_BYTES
+        ));
+    }
+    if metrics.max_combined_batch_bytes > PROJECT_SAVE_HARD_BATCH_BYTES {
+        failures.push(format!(
+            "string-stress combined batch peak {} exceeds {}",
+            metrics.max_combined_batch_bytes, PROJECT_SAVE_HARD_BATCH_BYTES
+        ));
+    }
+
+    if failures.is_empty() {
+        (Some(true), None)
+    } else {
+        (Some(false), Some(failures.join("; ")))
+    }
+}
+
 fn execute_save_with_fixture(
     options: Options,
     fixture: ProjectPersistenceFixture,
@@ -3739,6 +3771,12 @@ fn execute_save_with_fixture(
 
     remove_benchmark_artifacts(&archive_path);
     let (archive_bytes, result_rows, save_perf_metrics) = save_metrics_result?;
+    let (qualification_passed, qualification_failure) = match fixture {
+        ProjectPersistenceFixture::Baseline { .. } => (None, None),
+        ProjectPersistenceFixture::StringStress { .. } => {
+            string_stress_save_qualification(options.rows, result_rows, save_perf_metrics)
+        }
+    };
 
     Ok(PerformanceReport {
         rows: options.rows,
@@ -3791,11 +3829,8 @@ fn execute_save_with_fixture(
         calculated_result_bytes: None,
         memory_budget_bytes: None,
         memory_growth_budget_multiplier: None,
-        qualification_passed: match fixture {
-            ProjectPersistenceFixture::Baseline { .. } => None,
-            ProjectPersistenceFixture::StringStress { .. } => Some(true),
-        },
-        qualification_failure: None,
+        qualification_passed,
+        qualification_failure,
         machine: None,
         tabulate: None,
         table_mutation: None,
@@ -5689,6 +5724,44 @@ mod tests {
         .unwrap();
         assert_eq!(open.result_rows, TEST_ROWS);
         assert_eq!(open.qualification_passed, Some(true));
+    }
+
+    #[test]
+    fn string_stress_save_qualification_rejects_wrong_row_count() {
+        let (passed, failure) = string_stress_save_qualification(
+            300_000,
+            299_999,
+            crate::models::save::SavePerfMetrics {
+                max_retained_batch_bytes: 4 * 1024 * 1024,
+                max_combined_batch_bytes: 8 * 1024 * 1024,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(passed, Some(false));
+        assert!(failure
+            .as_deref()
+            .is_some_and(|message| message.contains("expected 300000 rows, got 299999")));
+    }
+
+    #[test]
+    fn string_stress_save_qualification_rejects_combined_cap_violation() {
+        let (passed, failure) = string_stress_save_qualification(
+            300_000,
+            300_000,
+            crate::models::save::SavePerfMetrics {
+                max_retained_batch_bytes: 4 * 1024 * 1024,
+                max_combined_batch_bytes: 8 * 1024 * 1024 + 1,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(passed, Some(false));
+        assert!(
+            failure.as_deref().is_some_and(
+                |message| message.contains("combined batch peak 8388609 exceeds 8388608")
+            )
+        );
     }
 
     #[test]

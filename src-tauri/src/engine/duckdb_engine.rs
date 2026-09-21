@@ -691,7 +691,13 @@ impl DuckDbEngine {
         let string_bytes = i64::try_from(string_bytes)
             .map_err(|_| AppError::InvalidParam("stress string width is too large".into()))?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(id));
-        let (actual_rows, mismatched_rows): (i64, i64) = self.conn.query_row(
+        let (actual_rows, mismatched_rows, minimum_row_id, maximum_row_id, distinct_row_ids): (
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            i64,
+        ) = self.conn.query_row(
             &format!(
                 "SELECT
                     count(*),
@@ -710,7 +716,10 @@ impl DuckDbEngine {
                                 CAST(9007199254740991 + \"_row_id\" AS BIGINT)
                            OR \"double_value\" IS DISTINCT FROM
                                 CAST(\"_row_id\" AS DOUBLE) * 0.25 - 100000.5
-                    )
+                    ),
+                    min(\"_row_id\"),
+                    max(\"_row_id\"),
+                    count(DISTINCT \"_row_id\")
                  FROM {table_name}"
             ),
             params![
@@ -721,8 +730,28 @@ impl DuckDbEngine {
                 "n",
                 string_bytes
             ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
+        let row_id_domain_matches = if expected_rows == 0 {
+            minimum_row_id.is_none() && maximum_row_id.is_none() && distinct_row_ids == 0
+        } else {
+            minimum_row_id == Some(1)
+                && maximum_row_id == Some(expected_rows)
+                && distinct_row_ids == expected_rows
+        };
+        if !row_id_domain_matches {
+            return Err(AppError::Database(format!(
+                "stress table row-ID domain mismatch: expected 1..={expected_rows}, got min {minimum_row_id:?}, max {maximum_row_id:?}, {distinct_row_ids} distinct IDs"
+            )));
+        }
         if actual_rows != expected_rows || mismatched_rows != 0 {
             return Err(AppError::Database(format!(
                 "stress table mismatch: expected {expected_rows} rows, got {actual_rows} with {mismatched_rows} mismatches"
@@ -17562,6 +17591,34 @@ mod tests {
         assert!(page.rows.iter().any(|row| !row[3].is_null()));
         assert!(page.rows.iter().all(|row| row[4].as_i64().is_some()));
         assert!(page.rows.iter().all(|row| row[5].as_f64().is_some()));
+    }
+
+    #[test]
+    fn project_persistence_stress_validator_rejects_shifted_row_id_domain() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_project_persistence_stress_table("stress-shifted", 4, 256)
+            .unwrap();
+        db.conn()
+            .execute_batch(
+                "UPDATE \"dataset_stress_shifted\" SET \"_row_id\" = \"_row_id\" + 10;
+                 UPDATE \"dataset_stress_shifted\" SET
+                    \"unique_text\" = repeat('u', 236)
+                        || lpad(CAST(\"_row_id\" AS VARCHAR), 20, '0'),
+                    \"repeated_text\" =
+                        repeat(chr(CAST(65 + (\"_row_id\" % 8) AS INTEGER)), 256),
+                    \"nullable_text\" = CASE
+                        WHEN \"_row_id\" % 7 = 0 THEN NULL
+                        ELSE repeat('n', 256)
+                    END,
+                    \"bigint_value\" = 9007199254740991 + \"_row_id\",
+                    \"double_value\" = CAST(\"_row_id\" AS DOUBLE) * 0.25 - 100000.5;",
+            )
+            .unwrap();
+
+        let error = db
+            .validate_project_persistence_stress_table("stress-shifted", 4, 256)
+            .expect_err("shifted row IDs must fail exact restoration validation");
+        assert!(error.to_string().contains("row-ID domain"));
     }
 
     #[test]

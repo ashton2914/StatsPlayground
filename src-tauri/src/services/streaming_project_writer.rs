@@ -624,7 +624,6 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
 
             let mut cursor: Option<ArchiveCursor> = None;
             let mut first_row = true;
-            let mut encoded_rows = Vec::new();
             let mut target_batch_bytes = TARGET_BATCH_BYTES;
 
             loop {
@@ -659,34 +658,47 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 );
 
                 let encode_started = Instant::now();
-                encoded_rows.clear();
                 let rows_allocation_bytes =
                     batch.rows.capacity().saturating_mul(std::mem::size_of::<
                         crate::engine::duckdb_engine::ArchiveBatchRow,
                     >());
                 let mut remaining_retained = batch.retained_bytes_estimate;
-                let mut batch_peak_combined = 0usize;
-                let mut batch_peak_encoded = 0usize;
+                let encoded_budget = ENCODED_CHUNK_TARGET_BYTES
+                    .min(HARD_BATCH_BYTES.saturating_sub(remaining_retained));
+                let mut encoded_rows = Vec::with_capacity(encoded_budget);
+                let mut batch_peak_encoded = encoded_rows.capacity();
+                let mut batch_peak_combined =
+                    combined_batch_allocation_estimate(remaining_retained, batch_peak_encoded);
+                if batch_peak_combined > HARD_BATCH_BYTES {
+                    return Err(AppError::InvalidParam(format!(
+                        "archive batch allocation exceeds hard cap: {batch_peak_combined} > {HARD_BATCH_BYTES}"
+                    )));
+                }
                 let mut embedded_zip_write_ms = 0u128;
                 let next_cursor = batch.next_cursor;
                 for row in batch.rows {
+                    let encoded_capacity = encoded_rows.capacity();
+                    let mut row_writer =
+                        BoundedEncodedWriter::new(&mut zip, &mut encoded_rows, encoded_capacity);
                     if !first_row {
-                        encoded_rows.push(b',');
+                        row_writer.write_all(b",")?;
                     }
                     first_row = false;
 
                     write_streamed_row(
-                        &mut encoded_rows,
+                        &mut row_writer,
                         row.row_id,
                         &row.values,
                         &column_write_modes,
                     )?;
+                    embedded_zip_write_ms =
+                        embedded_zip_write_ms.saturating_add(row_writer.sink_write_ms());
+                    drop(row_writer);
 
-                    let pre_flush_encoded_capacity = encoded_rows.capacity();
-                    batch_peak_encoded = batch_peak_encoded.max(pre_flush_encoded_capacity);
+                    batch_peak_encoded = batch_peak_encoded.max(encoded_rows.capacity());
                     let projected_with_both_buffers = combined_batch_allocation_estimate(
                         remaining_retained,
-                        pre_flush_encoded_capacity,
+                        encoded_rows.capacity(),
                     );
                     batch_peak_combined = batch_peak_combined.max(projected_with_both_buffers);
 
@@ -704,7 +716,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                         perf.zip_write_ms = perf.zip_write_ms.saturating_add(write_elapsed_ms);
                         embedded_zip_write_ms =
                             embedded_zip_write_ms.saturating_add(write_elapsed_ms);
-                        encoded_rows = Vec::new();
+                        encoded_rows.clear();
                     }
 
                     rows_written = rows_written.saturating_add(1);
@@ -736,14 +748,13 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 perf.max_combined_batch_bytes =
                     perf.max_combined_batch_bytes.max(batch_peak_combined);
                 target_batch_bytes =
-                    adaptive_target_batch_bytes(target_batch_bytes, batch.retained_bytes_estimate);
+                    adaptive_target_batch_bytes(target_batch_bytes, batch_peak_combined);
 
                 let write_started = Instant::now();
                 zip.write_all(&encoded_rows)?;
                 perf.zip_write_ms = perf
                     .zip_write_ms
                     .saturating_add(write_started.elapsed().as_millis());
-                encoded_rows = Vec::new();
             }
 
             zip.write_all(b"]}")?;
@@ -1112,6 +1123,77 @@ fn remaining_retained_after_row(remaining_retained: usize, row_bytes: usize) -> 
 
 fn combined_batch_allocation_estimate(remaining_retained: usize, encoded_capacity: usize) -> usize {
     remaining_retained.saturating_add(encoded_capacity)
+}
+
+struct BoundedEncodedWriter<'a, W: Write> {
+    sink: &'a mut W,
+    buffer: &'a mut Vec<u8>,
+    capacity_limit: usize,
+    direct: bool,
+    sink_write_ms: u128,
+}
+
+impl<'a, W: Write> BoundedEncodedWriter<'a, W> {
+    fn new(sink: &'a mut W, buffer: &'a mut Vec<u8>, capacity_limit: usize) -> Self {
+        Self {
+            sink,
+            buffer,
+            capacity_limit,
+            direct: false,
+            sink_write_ms: 0,
+        }
+    }
+
+    fn sink_write_ms(&self) -> u128 {
+        self.sink_write_ms
+    }
+
+    fn write_to_sink(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let started = Instant::now();
+        self.sink.write_all(bytes)?;
+        self.sink_write_ms = self
+            .sink_write_ms
+            .saturating_add(started.elapsed().as_millis());
+        Ok(())
+    }
+
+    fn flush_buffer_to_sink(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let started = Instant::now();
+        self.sink.write_all(self.buffer.as_slice())?;
+        self.sink_write_ms = self
+            .sink_write_ms
+            .saturating_add(started.elapsed().as_millis());
+        self.buffer.clear();
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for BoundedEncodedWriter<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.direct {
+            self.write_to_sink(bytes)?;
+            return Ok(bytes.len());
+        }
+
+        let required_len = self.buffer.len().saturating_add(bytes.len());
+        if required_len <= self.capacity_limit {
+            self.buffer.extend_from_slice(bytes);
+            return Ok(bytes.len());
+        }
+
+        self.flush_buffer_to_sink()?;
+        self.direct = true;
+        self.write_to_sink(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_buffer_to_sink()?;
+        self.sink.flush()
+    }
 }
 
 fn replace_archive_atomically_os(
@@ -2403,6 +2485,55 @@ mod tests {
         let metrics = *observed.lock().unwrap();
         assert!(metrics.max_retained_batch_bytes <= HARD_BATCH_BYTES);
         assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+        std::fs::remove_file(archive).unwrap();
+    }
+
+    #[test]
+    fn streaming_save_streams_encoded_expansion_without_exceeding_combined_cap() {
+        let state = AppState::new().unwrap();
+        let archive = temp_path("encoded-expansion");
+        let value = "\0".repeat(2 * 1024 * 1024);
+        let dataset = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "encoded-expansion",
+                "Encoded Expansion",
+                &["value".to_string()],
+                &["VARCHAR".to_string()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO \"dataset_encoded_expansion\" (\"_row_id\", \"value\")
+                     VALUES (1, ?)",
+                    params![&value],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 1 WHERE id = 'encoded-expansion'",
+                    [],
+                )
+                .unwrap();
+            db.get_dataset_meta("encoded-expansion").unwrap()
+        };
+        let snapshot = save_snapshot(&archive, vec![dataset]);
+        let observed = Arc::new(Mutex::new(SavePerfMetrics::default()));
+        let captured = Arc::clone(&observed);
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        with_save_perf_observer(
+            move |metrics| *captured.lock().unwrap() = metrics,
+            || writer.write(&snapshot, &archive, None),
+        )
+        .unwrap();
+
+        let metrics = *observed.lock().unwrap();
+        assert!(metrics.max_retained_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+        let reopened = spprj_archive::read_project_file(archive.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.tables[0].rows[0][1], serde_json::json!(value));
         std::fs::remove_file(archive).unwrap();
     }
 
