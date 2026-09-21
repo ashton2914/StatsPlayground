@@ -104,6 +104,33 @@ function testDiagnosticAxesUsePaddedNiceExtents(): void {
   assert.ok(actual.grid.bottom >= 48);
 }
 
+function testActualAxesUseIndependentObservedAndFittedExtents(): void {
+  const actual = buildActualByPredictedOption({
+    title: "Actual by Predicted",
+    labels: SAMPLE_LABELS,
+    plotRows: [
+      { rowIndex: 0, observed: 10, fitted: 15, residual: -5 },
+      { rowIndex: 1, observed: 20, fitted: 1000, residual: -980 },
+    ],
+  }) as {
+    xAxis: { min: number; max: number };
+    yAxis: { min: number; max: number };
+  };
+  const identity = findLineSeries(actual, "y=x");
+
+  assert.ok(actual.xAxis.min < 15);
+  assert.ok(actual.xAxis.max > 1000);
+  assert.deepEqual(
+    { min: actual.yAxis.min, max: actual.yAxis.max },
+    { min: 8, max: 22 },
+  );
+  identity.data.forEach(([x, y]) => {
+    assert.equal(x, y);
+    assert.ok(x >= actual.xAxis.min && x <= actual.xAxis.max);
+    assert.ok(y >= actual.yAxis.min && y <= actual.yAxis.max);
+  });
+}
+
 function testReferenceLinesFiniteAndCorrect(): void {
   const rows: FitModelPlotRow[] = [
     { rowIndex: 0, observed: 2, fitted: 1.5, residual: 0.5 },
@@ -120,7 +147,7 @@ function testReferenceLinesFiniteAndCorrect(): void {
   const identity = findLineSeries(actual, "y=x");
   const zero = findLineSeries(residual, "y=0");
 
-  assert.deepEqual(identity.data, [[1, 1], [5, 5]]);
+  assert.deepEqual(identity.data, [[1.5, 1.5], [4.5, 4.5]]);
   assert.deepEqual(zero.data, [[1, 0], [5, 0]]);
   assertAllFinite(identity.data, "identity");
   assertAllFinite(zero.data, "zero");
@@ -485,6 +512,7 @@ function testChartLayoutContainsAxisText(): void {
 
 testActualAndResidualPointsAndAxes();
 testDiagnosticAxesUsePaddedNiceExtents();
+testActualAxesUseIndependentObservedAndFittedExtents();
 testReferenceLinesFiniteAndCorrect();
 testTooltipValuesAreFinite();
 testEmptyInputProducesNonblankOption();

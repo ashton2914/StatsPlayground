@@ -192,7 +192,7 @@ function resolvePredictedExtent(rows: FitModelPlotRow[]): AxisExtent {
   return { min, max };
 }
 
-function resolveCombinedObservedFittedExtent(rows: FitModelPlotRow[]): AxisExtent {
+function resolveObservedExtent(rows: FitModelPlotRow[]): AxisExtent {
   if (rows.length === 0) {
     return { min: FALLBACK_MIN, max: FALLBACK_MAX };
   }
@@ -201,9 +201,8 @@ function resolveCombinedObservedFittedExtent(rows: FitModelPlotRow[]): AxisExten
   let max = Number.NEGATIVE_INFINITY;
   rows.forEach((row, index) => {
     const observed = ensureFinite(row.observed, "observed", index);
-    const fitted = ensureFinite(row.fitted, "fitted", index);
-    min = Math.min(min, observed, fitted);
-    max = Math.max(max, observed, fitted);
+    min = Math.min(min, observed);
+    max = Math.max(max, observed);
   });
   return { min, max };
 }
@@ -290,9 +289,14 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
   });
 
   const predictedExtent = resolvePredictedExtent(input.plotRows);
-  const combinedExtent = resolveCombinedObservedFittedExtent(input.plotRows);
+  const observedExtent = resolveObservedExtent(input.plotRows);
   const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
-  const combinedAxisExtent = paddedNiceExtent(combinedExtent.min, combinedExtent.max);
+  const observedAxisExtent = paddedNiceExtent(observedExtent.min, observedExtent.max);
+  const identityMin = Math.max(predictedAxisExtent.min, observedAxisExtent.min);
+  const identityMax = Math.min(predictedAxisExtent.max, observedAxisExtent.max);
+  const identityData: Array<[number, number]> = identityMin <= identityMax
+    ? [[identityMin, identityMin], [identityMax, identityMax]]
+    : [];
 
   return {
     ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
@@ -311,9 +315,9 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     },
     yAxis: {
       type: "value",
-      min: combinedAxisExtent.min,
-      max: combinedAxisExtent.max,
-      interval: combinedAxisExtent.interval,
+      min: observedAxisExtent.min,
+      max: observedAxisExtent.max,
+      interval: observedAxisExtent.interval,
       name: input.labels.actualAxisName,
       nameLocation: "middle",
       nameGap: 50,
@@ -340,10 +344,7 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
         showSymbol: false,
         silent: true,
         lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" },
-        data: [
-          [combinedAxisExtent.min, combinedAxisExtent.min],
-          [combinedAxisExtent.max, combinedAxisExtent.max],
-        ],
+        data: identityData,
       },
     ],
   };
