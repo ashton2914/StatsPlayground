@@ -21,9 +21,11 @@ use crate::services::spprj_archive::{
     ProjectBundle, TableColumn, TableDoc, TableEntryRef,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
-use crate::services::streaming_table_reader::{
-    stream_table_rows_profiled, StreamedTableHeader, TableStreamPerfMetrics,
-};
+#[cfg(not(any(test, feature = "perf-harness")))]
+use crate::services::streaming_table_reader::stream_table_rows;
+use crate::services::streaming_table_reader::StreamedTableHeader;
+#[cfg(any(test, feature = "perf-harness"))]
+use crate::services::streaming_table_reader::{stream_table_rows_profiled, TableStreamPerfMetrics};
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
@@ -105,31 +107,50 @@ impl ProjectArchiveTableSink for StagedProjectTableSink<'_> {
                 );
             }
         };
+        #[cfg(not(any(test, feature = "perf-harness")))]
         let mut session = ProjectTableRestoreSession::begin(
             self.state,
             header.clone(),
             None,
             Some(&row_progress),
         )?;
+        #[cfg(any(test, feature = "perf-harness"))]
+        let mut session = ProjectTableRestoreSession::begin_profiled(
+            self.state,
+            header.clone(),
+            None,
+            Some(&row_progress),
+        )?;
+        #[cfg(not(any(test, feature = "perf-harness")))]
+        if let Err(error) = stream_table_rows(reader, archive_header, &mut session) {
+            return Err(session.abort(error));
+        }
+        #[cfg(any(test, feature = "perf-harness"))]
         let mut stream_metrics = TableStreamPerfMetrics::default();
+        #[cfg(any(test, feature = "perf-harness"))]
         if let Err(error) =
             stream_table_rows_profiled(reader, archive_header, &mut session, &mut stream_metrics)
         {
             return Err(session.abort(error));
         }
+        #[cfg(any(test, feature = "perf-harness"))]
         let restore_metrics = session.perf_metrics();
+        #[cfg(any(test, feature = "perf-harness"))]
         let finish_started = std::time::Instant::now();
         let restored_id = session.finish()?;
-        self.perf_metrics.json_parse_ns = self
-            .perf_metrics
-            .json_parse_ns
-            .saturating_add(stream_metrics.json_parse_ns);
-        self.perf_metrics.rows = self.perf_metrics.rows.saturating_add(stream_metrics.rows);
-        self.perf_metrics.add_restore(restore_metrics);
-        self.perf_metrics.finalize_ns = self
-            .perf_metrics
-            .finalize_ns
-            .saturating_add(finish_started.elapsed().as_nanos());
+        #[cfg(any(test, feature = "perf-harness"))]
+        {
+            self.perf_metrics.json_parse_ns = self
+                .perf_metrics
+                .json_parse_ns
+                .saturating_add(stream_metrics.json_parse_ns);
+            self.perf_metrics.rows = self.perf_metrics.rows.saturating_add(stream_metrics.rows);
+            self.perf_metrics.add_restore(restore_metrics);
+            self.perf_metrics.finalize_ns = self
+                .perf_metrics
+                .finalize_ns
+                .saturating_add(finish_started.elapsed().as_nanos());
+        }
         if restored_id != entry.id {
             return Err(AppError::FileIO(format!(
                 "Restored table id mismatch: expected {}, got {restored_id}",
@@ -229,19 +250,35 @@ thread_local! {
 }
 
 #[cfg(any(test, feature = "perf-harness"))]
+struct OpenPerfObserverGuard {
+    previous: Option<OpenPerfObserver>,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+impl OpenPerfObserverGuard {
+    fn install(observer: OpenPerfObserver) -> Self {
+        let previous = OPEN_PERF_OBSERVER.with(|slot| slot.borrow_mut().replace(observer));
+        Self { previous }
+    }
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+impl Drop for OpenPerfObserverGuard {
+    fn drop(&mut self) {
+        OPEN_PERF_OBSERVER.with(|slot| {
+            *slot.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn with_open_perf_observer<T, FObserve, FRun>(observer: FObserve, run: FRun) -> T
 where
     FObserve: FnMut(OpenPerfMetrics) + 'static,
     FRun: FnOnce() -> T,
 {
-    OPEN_PERF_OBSERVER.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(observer));
-    });
-    let outcome = run();
-    OPEN_PERF_OBSERVER.with(|slot| {
-        *slot.borrow_mut() = None;
-    });
-    outcome
+    let _guard = OpenPerfObserverGuard::install(Box::new(observer));
+    run()
 }
 
 #[cfg(not(any(test, feature = "perf-harness")))]
@@ -619,8 +656,7 @@ impl<'a> ProjectService<'a> {
                 &mut bundle.graphs,
             )?;
             bundle.manifest.dataset_filters = filter_migration.dataset_filters;
-            let graph_requires_migration =
-                spprj_archive::refresh_project_lineage_graph(bundle)?;
+            let graph_requires_migration = spprj_archive::refresh_project_lineage_graph(bundle)?;
             let requires_migration = requires_archive_migration(&bundle.manifest.version)
                 || graph_requires_migration
                 || filter_migration.changed;
@@ -2095,7 +2131,8 @@ mod tests {
     use super::{
         buffered_compatibility_table_count, folder_from_entry_path,
         normalize_duplicate_dataset_names, reconcile_archived_history,
-        reset_streaming_table_reader_counters, streamed_table_count, ProjectService,
+        reset_streaming_table_reader_counters, streamed_table_count, with_open_perf_observer,
+        OpenPerfMetrics, ProjectService,
     };
     use crate::engine::duckdb_engine::NATURAL_ORDER_SQL;
     use crate::error::AppError;
@@ -2120,6 +2157,54 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn open_perf_observer_is_removed_during_panic_unwinding() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observer_calls = Arc::clone(&calls);
+
+        let panic = std::panic::catch_unwind(|| {
+            with_open_perf_observer(
+                move |_| {
+                    observer_calls.fetch_add(1, Ordering::SeqCst);
+                },
+                || panic!("observer scope panic"),
+            );
+        });
+
+        assert!(panic.is_err());
+        super::notify_open_perf_observer(OpenPerfMetrics::default());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_open_perf_observer_restores_outer_observer() {
+        let outer_calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = Arc::new(AtomicUsize::new(0));
+        let outer_observer_calls = Arc::clone(&outer_calls);
+        let inner_observer_calls = Arc::clone(&inner_calls);
+
+        with_open_perf_observer(
+            move |_| {
+                outer_observer_calls.fetch_add(1, Ordering::SeqCst);
+            },
+            || {
+                with_open_perf_observer(
+                    move |_| {
+                        inner_observer_calls.fetch_add(1, Ordering::SeqCst);
+                    },
+                    || super::notify_open_perf_observer(OpenPerfMetrics::default()),
+                );
+                super::notify_open_perf_observer(OpenPerfMetrics::default());
+            },
+        );
+        super::notify_open_perf_observer(OpenPerfMetrics::default());
+
+        assert_eq!(inner_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(outer_calls.load(Ordering::SeqCst), 1);
+    }
 
     fn source_between(source: &str, start: &str, end: &str) -> String {
         let start_idx = source
@@ -2663,7 +2748,11 @@ mod tests {
             .unwrap();
             db.apply_change_set(&last.change_set_id, true).unwrap();
             db.drop_change_set(&pruned.change_set_id).unwrap();
-            (first.change_set_id, pruned.change_set_id, last.change_set_id)
+            (
+                first.change_set_id,
+                pruned.change_set_id,
+                last.change_set_id,
+            )
         };
         let mut request = empty_save_request(None);
         request.history = vec![
@@ -2802,7 +2891,9 @@ mod tests {
             .unwrap();
             db.drop_change_set(&change.change_set_id).unwrap();
         }
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
 
         let reopened_state = AppState::new().unwrap();
         let opened = ProjectService::new(&reopened_state)
@@ -2883,7 +2974,9 @@ mod tests {
             .unwrap()
             .change_set_id
         };
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
 
         let reopened = AppState::new().unwrap();
         ProjectService::new(&reopened)
@@ -2893,9 +2986,7 @@ mod tests {
         db.apply_change_set(&change_set_id, true).unwrap();
         let rows = db
             .conn()
-            .prepare(
-                "SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id",
-            )
+            .prepare("SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id")
             .unwrap()
             .query_map([], |row| {
                 Ok((
@@ -2933,13 +3024,8 @@ mod tests {
             .unwrap();
         let change_set_id = {
             let db = state.db.lock().unwrap();
-            db.seed_benchmark_table(
-                "legacy-numeric-rebalance",
-                "Legacy numeric rebalance",
-                2,
-                1,
-            )
-            .unwrap();
+            db.seed_benchmark_table("legacy-numeric-rebalance", "Legacy numeric rebalance", 2, 1)
+                .unwrap();
             let added = crate::services::table_delta_mutation::add_rows_compact(
                 &db,
                 "legacy-numeric-rebalance",
@@ -2984,7 +3070,9 @@ mod tests {
                 .unwrap();
             added.change_set_id
         };
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
         rewrite_project_entries(
             &path,
             |name, bytes| {
@@ -2999,9 +3087,7 @@ mod tests {
 
         let reopened = AppState::new().unwrap();
         let reopened_service = ProjectService::new(&reopened);
-        reopened_service
-            .open_project(&path_string, None)
-            .unwrap();
+        reopened_service.open_project(&path_string, None).unwrap();
         {
             let db = reopened.db.lock().unwrap();
             let row_order: i128 = db
@@ -3463,7 +3549,10 @@ mod tests {
         ];
         service.save_project(request, None).unwrap();
         rewrite_project_manifest(&path, |manifest| {
-            manifest.as_object_mut().unwrap().remove("datasetGenerations");
+            manifest
+                .as_object_mut()
+                .unwrap()
+                .remove("datasetGenerations");
         });
 
         let reopened_state = AppState::new().unwrap();
@@ -3521,7 +3610,9 @@ mod tests {
             )
             .unwrap();
         }
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
         rewrite_project_manifest(&path, |manifest| {
             manifest["datasetGenerations"]["low-generation-history"] = serde_json::json!(0);
         });

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::MutexGuard;
+#[cfg(any(test, feature = "perf-harness"))]
 use std::time::Instant;
 
 use duckdb::appender_params_from_iter;
@@ -61,7 +62,7 @@ pub(crate) struct ProjectTableRestoreSession<'a> {
     rows_written: usize,
     rows_total: Option<usize>,
     progress: Option<&'a dyn Fn(usize, usize)>,
-    perf_metrics: ProjectTableRestorePerfMetrics,
+    perf_metrics: Option<ProjectTableRestorePerfMetrics>,
 }
 
 impl<'a> ProjectTableRestoreSession<'a> {
@@ -152,12 +153,25 @@ impl<'a> ProjectTableRestoreSession<'a> {
             rows_written: 0,
             rows_total,
             progress,
-            perf_metrics: ProjectTableRestorePerfMetrics::default(),
+            perf_metrics: None,
         })
     }
 
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub(crate) fn begin_profiled(
+        state: &'a AppState,
+        header: StreamedTableHeader,
+        rows_total: Option<usize>,
+        progress: Option<&'a dyn Fn(usize, usize)>,
+    ) -> Result<Self, AppError> {
+        let mut session = Self::begin(state, header, rows_total, progress)?;
+        session.perf_metrics = Some(ProjectTableRestorePerfMetrics::default());
+        Ok(session)
+    }
+
     pub(crate) fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<(), AppError> {
-        let validation_started = Instant::now();
+        #[cfg(any(test, feature = "perf-harness"))]
+        let validation_started = self.perf_metrics.as_ref().map(|_| Instant::now());
         let expected_row_width = self.header.columns.len() + 1;
         for row in rows {
             if row.len() != expected_row_width {
@@ -181,29 +195,39 @@ impl<'a> ProjectTableRestoreSession<'a> {
         }
 
         if rows.is_empty() {
-            self.perf_metrics.validation_conversion_ns = self
-                .perf_metrics
-                .validation_conversion_ns
-                .saturating_add(validation_started.elapsed().as_nanos());
+            #[cfg(any(test, feature = "perf-harness"))]
+            if let (Some(metrics), Some(started)) = (self.perf_metrics.as_mut(), validation_started)
+            {
+                metrics.validation_conversion_ns = metrics
+                    .validation_conversion_ns
+                    .saturating_add(started.elapsed().as_nanos());
+            }
             return Ok(());
         }
-        self.perf_metrics.validation_conversion_ns = self
-            .perf_metrics
-            .validation_conversion_ns
-            .saturating_add(validation_started.elapsed().as_nanos());
+        #[cfg(any(test, feature = "perf-harness"))]
+        if let (Some(metrics), Some(started)) = (self.perf_metrics.as_mut(), validation_started) {
+            metrics.validation_conversion_ns = metrics
+                .validation_conversion_ns
+                .saturating_add(started.elapsed().as_nanos());
+        }
 
         {
             let table_name = format!("dataset_{}", self.header.id.replace('-', "_"));
-            let appender_create_started = Instant::now();
+            #[cfg(any(test, feature = "perf-harness"))]
+            let appender_create_started = self.perf_metrics.as_ref().map(|_| Instant::now());
             let mut appender = self.db.conn().appender(&table_name)?;
-            self.perf_metrics.appender_create_ns = self
-                .perf_metrics
-                .appender_create_ns
-                .saturating_add(appender_create_started.elapsed().as_nanos());
-            self.perf_metrics.appender_create_count =
-                self.perf_metrics.appender_create_count.saturating_add(1);
+            #[cfg(any(test, feature = "perf-harness"))]
+            if let (Some(metrics), Some(started)) =
+                (self.perf_metrics.as_mut(), appender_create_started)
+            {
+                metrics.appender_create_ns = metrics
+                    .appender_create_ns
+                    .saturating_add(started.elapsed().as_nanos());
+                metrics.appender_create_count = metrics.appender_create_count.saturating_add(1);
+            }
             for row in rows {
-                let conversion_started = Instant::now();
+                #[cfg(any(test, feature = "perf-harness"))]
+                let conversion_started = self.perf_metrics.as_ref().map(|_| Instant::now());
                 let mut values = row
                     .iter()
                     .enumerate()
@@ -218,23 +242,34 @@ impl<'a> ProjectTableRestoreSession<'a> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 values.push(DuckValue::Null);
-                self.perf_metrics.validation_conversion_ns = self
-                    .perf_metrics
-                    .validation_conversion_ns
-                    .saturating_add(conversion_started.elapsed().as_nanos());
-                let append_started = Instant::now();
+                #[cfg(any(test, feature = "perf-harness"))]
+                if let (Some(metrics), Some(started)) =
+                    (self.perf_metrics.as_mut(), conversion_started)
+                {
+                    metrics.validation_conversion_ns = metrics
+                        .validation_conversion_ns
+                        .saturating_add(started.elapsed().as_nanos());
+                }
+                #[cfg(any(test, feature = "perf-harness"))]
+                let append_started = self.perf_metrics.as_ref().map(|_| Instant::now());
                 appender.append_row(appender_params_from_iter(values))?;
-                self.perf_metrics.appender_append_ns = self
-                    .perf_metrics
-                    .appender_append_ns
-                    .saturating_add(append_started.elapsed().as_nanos());
+                #[cfg(any(test, feature = "perf-harness"))]
+                if let (Some(metrics), Some(started)) = (self.perf_metrics.as_mut(), append_started)
+                {
+                    metrics.appender_append_ns = metrics
+                        .appender_append_ns
+                        .saturating_add(started.elapsed().as_nanos());
+                }
             }
-            let flush_started = Instant::now();
+            #[cfg(any(test, feature = "perf-harness"))]
+            let flush_started = self.perf_metrics.as_ref().map(|_| Instant::now());
             appender.flush()?;
-            self.perf_metrics.appender_flush_ns = self
-                .perf_metrics
-                .appender_flush_ns
-                .saturating_add(flush_started.elapsed().as_nanos());
+            #[cfg(any(test, feature = "perf-harness"))]
+            if let (Some(metrics), Some(started)) = (self.perf_metrics.as_mut(), flush_started) {
+                metrics.appender_flush_ns = metrics
+                    .appender_flush_ns
+                    .saturating_add(started.elapsed().as_nanos());
+            }
         }
         #[cfg(test)]
         record_completed_append();
@@ -261,7 +296,7 @@ impl<'a> ProjectTableRestoreSession<'a> {
     }
 
     pub(crate) fn perf_metrics(&self) -> ProjectTableRestorePerfMetrics {
-        self.perf_metrics
+        self.perf_metrics.unwrap_or_default()
     }
 
     pub(crate) fn finish(self) -> Result<String, AppError> {
@@ -611,6 +646,26 @@ mod tests {
                 DuckValue::Null,
             ]
         );
+    }
+
+    #[test]
+    fn ordinary_restore_session_does_not_collect_per_row_timings() {
+        let state = AppState::new().unwrap();
+        let mut session =
+            ProjectTableRestoreSession::begin(&state, basic_streamed_header(), Some(2), None)
+                .unwrap();
+
+        session
+            .append_rows(&[json_row(1, 10), json_row(2, 20)])
+            .unwrap();
+
+        let metrics = session.perf_metrics();
+        assert_eq!(metrics.validation_conversion_ns, 0);
+        assert_eq!(metrics.appender_create_ns, 0);
+        assert_eq!(metrics.appender_append_ns, 0);
+        assert_eq!(metrics.appender_flush_ns, 0);
+        assert_eq!(metrics.appender_create_count, 0);
+        session.finish().unwrap();
     }
 
     #[test]

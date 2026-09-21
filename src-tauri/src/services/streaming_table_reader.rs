@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io::{BufReader, Read};
+#[cfg(any(test, feature = "perf-harness"))]
 use std::time::Instant;
 
 use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -55,7 +56,7 @@ pub(crate) fn stream_table_rows<R: Read, S: TableBatchSink>(
     expected: &StreamedTableHeader,
     sink: &mut S,
 ) -> Result<usize, AppError> {
-    stream_table_rows_profiled(
+    stream_table_rows_impl::<_, _, false>(
         reader,
         expected,
         sink,
@@ -69,9 +70,18 @@ pub(crate) fn stream_table_rows_profiled<R: Read, S: TableBatchSink>(
     sink: &mut S,
     metrics: &mut TableStreamPerfMetrics,
 ) -> Result<usize, AppError> {
+    stream_table_rows_impl::<_, _, true>(reader, expected, sink, metrics)
+}
+
+fn stream_table_rows_impl<R: Read, S: TableBatchSink, const PROFILE: bool>(
+    reader: R,
+    expected: &StreamedTableHeader,
+    sink: &mut S,
+    metrics: &mut TableStreamPerfMetrics,
+) -> Result<usize, AppError> {
     let mut sink_error = None;
     let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
-    let result = deserializer.deserialize_map(TableStreamVisitor {
+    let result = deserializer.deserialize_map(TableStreamVisitor::<S, PROFILE> {
         expected,
         sink,
         sink_error: &mut sink_error,
@@ -153,14 +163,16 @@ impl<'de> Visitor<'de> for HeaderScanVisitor<'_> {
     }
 }
 
-struct TableStreamVisitor<'a, S> {
+struct TableStreamVisitor<'a, S, const PROFILE: bool> {
     expected: &'a StreamedTableHeader,
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
     metrics: &'a mut TableStreamPerfMetrics,
 }
 
-impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
+impl<'de, S: TableBatchSink, const PROFILE: bool> Visitor<'de>
+    for TableStreamVisitor<'_, S, PROFILE>
+{
     type Value = usize;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -209,7 +221,7 @@ impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
                         *self.sink_error = Some(error);
                         return Err(A::Error::custom("table sink failed"));
                     }
-                    let count = map.next_value_seed(RowsSeed {
+                    let count = map.next_value_seed(RowsSeed::<S, PROFILE> {
                         sink: self.sink,
                         sink_error: self.sink_error,
                         metrics: self.metrics,
@@ -243,20 +255,22 @@ where
     Ok(())
 }
 
-struct RowsSeed<'a, S> {
+struct RowsSeed<'a, S, const PROFILE: bool> {
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
     metrics: &'a mut TableStreamPerfMetrics,
 }
 
-impl<'de, S: TableBatchSink> DeserializeSeed<'de> for RowsSeed<'_, S> {
+impl<'de, S: TableBatchSink, const PROFILE: bool> DeserializeSeed<'de>
+    for RowsSeed<'_, S, PROFILE>
+{
     type Value = usize;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_seq(RowsVisitor {
+        deserializer.deserialize_seq(RowsVisitor::<S, PROFILE> {
             sink: self.sink,
             sink_error: self.sink_error,
             metrics: self.metrics,
@@ -264,13 +278,13 @@ impl<'de, S: TableBatchSink> DeserializeSeed<'de> for RowsSeed<'_, S> {
     }
 }
 
-struct RowsVisitor<'a, S> {
+struct RowsVisitor<'a, S, const PROFILE: bool> {
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
     metrics: &'a mut TableStreamPerfMetrics,
 }
 
-impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
+impl<'de, S: TableBatchSink, const PROFILE: bool> Visitor<'de> for RowsVisitor<'_, S, PROFILE> {
     type Value = usize;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -286,12 +300,20 @@ impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
         let mut row_count = 0usize;
 
         loop {
-            let parse_started = Instant::now();
+            #[cfg(any(test, feature = "perf-harness"))]
+            let next_row = if PROFILE {
+                let parse_started = Instant::now();
+                let next_row = sequence.next_element::<Vec<Value>>()?;
+                self.metrics.json_parse_ns = self
+                    .metrics
+                    .json_parse_ns
+                    .saturating_add(parse_started.elapsed().as_nanos());
+                next_row
+            } else {
+                sequence.next_element::<Vec<Value>>()?
+            };
+            #[cfg(not(any(test, feature = "perf-harness")))]
             let next_row = sequence.next_element::<Vec<Value>>()?;
-            self.metrics.json_parse_ns = self
-                .metrics
-                .json_parse_ns
-                .saturating_add(parse_started.elapsed().as_nanos());
             let Some(row) = next_row else {
                 break;
             };
@@ -310,7 +332,9 @@ impl<'de, S: TableBatchSink> Visitor<'de> for RowsVisitor<'_, S> {
             batch_bytes = batch_bytes.saturating_add(row_bytes);
             batch.push(row);
             row_count = row_count.saturating_add(1);
-            self.metrics.rows = self.metrics.rows.saturating_add(1);
+            if PROFILE {
+                self.metrics.rows = self.metrics.rows.saturating_add(1);
+            }
 
             if batch_bytes >= STREAM_ROW_TARGET_BYTES {
                 append_batch::<A::Error, S>(self.sink, self.sink_error, &batch)?;
