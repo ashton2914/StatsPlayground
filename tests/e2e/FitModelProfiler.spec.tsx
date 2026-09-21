@@ -68,6 +68,7 @@ test("links click and drag interaction across every chart with a shared Y domain
     min: element.getAttribute("data-y-domain-min"),
     max: element.getAttribute("data-y-domain-max"),
   })));
+  const initialSummary = await component.locator(".sp-fit-model-profiler-result dd").allTextContents();
   expect(initialDomains[0]).toEqual(initialDomains[1]);
 
   const aCanvas = canvases.first();
@@ -99,12 +100,18 @@ test("links click and drag interaction across every chart with a shared Y domain
   expect(Number(
     await component.locator(".sp-fit-model-profiler-result dd").first().textContent(),
   )).toBeCloseTo(clickedState[0].marker, 3);
+  const clickedSummary = await component.locator(".sp-fit-model-profiler-result dd").allTextContents();
+  expect(clickedSummary[1]).not.toBe(initialSummary[1]);
+  expect(clickedSummary[2]).not.toBe(initialSummary[2]);
 
   await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.5);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.5);
   await page.mouse.up();
-  await expect.poll(async () => Number(await aNumber.inputValue())).toBeGreaterThan(clickedState[0].markerX);
+  await expect(aNumber).toHaveValue("4");
+  const draggedSummary = await component.locator(".sp-fit-model-profiler-result dd").allTextContents();
+  expect(draggedSummary[1]).not.toBe(clickedSummary[1]);
+  expect(draggedSummary[2]).not.toBe(clickedSummary[2]);
 
   const updatedDomains = await columns.evaluateAll((elements) => elements.map((element) => ({
     min: Number(element.getAttribute("data-y-domain-min")),

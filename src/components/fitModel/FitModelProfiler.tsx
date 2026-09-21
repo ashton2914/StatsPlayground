@@ -5,6 +5,7 @@ import { buildFitModelProfilerOption } from "@/graphCore/fitModelAdapter";
 import type { FitModelSnapshot } from "@/types/fitModel";
 
 import { FitModelDiagnosticChart } from "./FitModelDiagnosticChart";
+import { clampFitModelProfilerValue } from "./fitModelProfilerInteraction";
 import {
   fitModelProfilerYDomain,
   predictFitModelPoint,
@@ -115,7 +116,7 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
                 option={option}
                 onXAxisPointerValue={(next) => updateValue(
                   range.columnName,
-                  Math.min(range.maximum, Math.max(range.minimum, next)),
+                  clampFitModelProfilerValue(next, range.minimum, range.maximum),
                 )}
               />
               <label className="sp-fit-model-profiler-value" htmlFor={numberInputId}>
