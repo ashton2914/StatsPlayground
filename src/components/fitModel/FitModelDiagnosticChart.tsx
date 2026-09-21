@@ -62,7 +62,7 @@ export function FitModelDiagnosticChart({
 
     const themeObserver = new MutationObserver(() => {
       createChart();
-      chartRef.current.resize();
+      chartRef.current?.resize();
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
 

@@ -1018,8 +1018,8 @@ function testViewSourceContracts(): void {
   );
   assert.match(
     viewSource,
-    /onAddEffect=\{canEditInputs \? onEditInputs : undefined\}/,
-    "FitModelAnalysisResults must wire Effect Summary Add to the existing editor only when editing is allowed.",
+    /onAddEffect=\{canEditInputs && onDefinitionChange \? handleAddEffect : undefined\}/,
+    "FitModelAnalysisResults must wire Effect Summary Add to the direct term updater only when editing is allowed.",
   );
   assert.doesNotMatch(
     source,
