@@ -47,7 +47,7 @@ function testActualAndResidualPointsAndAxes(): void {
     labels: SAMPLE_LABELS,
     plotRows: rows,
   }) as {
-    xAxis: { name: string };
+    xAxis: { name: string; min?: number; max?: number };
     yAxis: { name: string };
     series: Array<{ data: Array<[number, number]> }>;
   };
@@ -346,12 +346,20 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
       type?: string;
       clip?: boolean;
       data?: Array<[number, number]>;
-      markLine?: unknown;
-      markPoint?: { data: Array<{ coord: [number, number] }> };
+      markLine?: {
+        lineStyle?: { color?: string };
+        data: Array<{ xAxis: number }>;
+      };
+      markPoint?: {
+        itemStyle?: { color?: string };
+        data: Array<{ coord: [number, number] }>;
+      };
     }>;
   };
 
   assert.equal(option.xAxis.name, "A");
+  assert.equal(option.xAxis.min, 0);
+  assert.equal(option.xAxis.max, 4);
   assert.equal(option.yAxis.name, "Y");
   assert.equal(option.yAxis.min, -2);
   assert.equal(option.yAxis.max, 8);
@@ -359,6 +367,9 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
   assert.equal(option.series.filter((series) => series.name === "Mean CI").length, 2);
   assert.ok(option.series.every((series) => series.type === "line" && series.clip === true));
   const markedSeries = option.series.find((series) => series.markLine && series.markPoint);
+  assert.equal(markedSeries?.markLine?.lineStyle?.color, "#d92d20");
+  assert.equal(markedSeries?.markLine?.data[0]?.xAxis, 2);
+  assert.equal(markedSeries?.markPoint?.itemStyle?.color, "#d92d20");
   assert.deepEqual(markedSeries?.markPoint?.data[0]?.coord, [2, 3]);
   assert.ok((markedSeries?.markPoint?.data[0]?.coord[1] ?? Number.NaN) >= option.yAxis.min);
   assert.ok((markedSeries?.markPoint?.data[0]?.coord[1] ?? Number.NaN) <= option.yAxis.max);

@@ -138,7 +138,8 @@ assert.match(html, /sp-fit-model-profiler-track/);
 assert.match(html, /aria-label="A Current value"[^>]*value="2"/);
 assert.match(html, /aria-label="B Current value"[^>]*value="4"/);
 assert.match(html, /Not estimable/);
-assert.equal((html.match(/type="range"/g) ?? []).length, 2);
+assert.match(html, /sp-fit-model-profiler-value/);
+assert.equal((html.match(/type="range"/g) ?? []).length, 0);
 assert.equal((html.match(/type="number"/g) ?? []).length, 2);
 
 console.log("fitModel profiler component contract passed");

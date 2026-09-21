@@ -82,8 +82,6 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
         {scans.map(({ range, points }, index) => {
           const value = effectiveValues[range.columnName];
           const numberInputId = `${inputIdPrefix}-number-${index}`;
-          const sliderValue = Math.min(range.maximum, Math.max(range.minimum, value));
-          const step = range.maximum === range.minimum ? 1 : (range.maximum - range.minimum) / 100;
           const option = buildFitModelProfilerOption({
             predictorName: range.columnName,
             responseName,
@@ -111,20 +109,17 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
               data-curve-start-y={points[0]?.predicted}
               data-curve-end-y={points[points.length - 1]?.predicted}
             >
-              <div className="sp-fit-model-profiler-controls">
-                <label htmlFor={numberInputId}>
-                  <span>{range.columnName}</span>
-                  <span>{t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}</span>
-                </label>
-                <input
-                  type="range"
-                  min={range.minimum}
-                  max={range.maximum}
-                  step={step}
-                  value={sliderValue}
-                  aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
-                  onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
-                />
+              <FitModelDiagnosticChart
+                title={`${range.columnName} ${t("fitModel.report.section.predictionProfiler", { defaultValue: "Prediction Profiler" })}`}
+                chartKind="predictionProfiler"
+                option={option}
+                onXAxisPointerValue={(next) => updateValue(
+                  range.columnName,
+                  Math.min(range.maximum, Math.max(range.minimum, next)),
+                )}
+              />
+              <label className="sp-fit-model-profiler-value" htmlFor={numberInputId}>
+                <span>{range.columnName}</span>
                 <input
                   id={numberInputId}
                   type="number"
@@ -133,12 +128,7 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
                   aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
                   onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
                 />
-              </div>
-              <FitModelDiagnosticChart
-                title={`${range.columnName} ${t("fitModel.report.section.predictionProfiler", { defaultValue: "Prediction Profiler" })}`}
-                chartKind="predictionProfiler"
-                option={option}
-              />
+              </label>
             </article>
           );
         })}

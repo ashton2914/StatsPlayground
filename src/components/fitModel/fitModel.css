@@ -207,41 +207,22 @@
   background: var(--bg-panel);
 }
 
-.sp-fit-model-profiler-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px;
-  align-items: center;
-  gap: 8px 10px;
-  padding: 10px;
-  border-bottom: 1px solid var(--border-main);
-}
-
-.sp-fit-model-profiler-controls label {
-  grid-column: 1 / -1;
+.sp-fit-model-profiler-value {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  color: var(--fg-secondary);
-  font-size: 11px;
-}
-
-.sp-fit-model-profiler-controls label span:first-child {
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
   color: var(--fg-primary);
   font-size: 12px;
   font-weight: 600;
 }
 
-.sp-fit-model-profiler-controls input {
+.sp-fit-model-profiler-value input {
+  width: 112px;
   min-width: 0;
   box-sizing: border-box;
-}
-
-.sp-fit-model-profiler-controls input[type="range"] {
-  width: 100%;
-}
-
-.sp-fit-model-profiler-controls input[type="number"] {
-  width: 96px;
 }
 
 .sp-fit-model-profiler-result {

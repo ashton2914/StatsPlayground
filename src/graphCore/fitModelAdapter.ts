@@ -687,6 +687,12 @@ export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): 
     ensureFinite(point.value, "value", index),
     ensureFinite(point.predicted, "predicted", index),
   ] as [number, number]);
+  const predictorValues = predicted.map(([value]) => value);
+  const predictorMin = predictorValues.length > 0 ? Math.min(...predictorValues) : undefined;
+  const predictorMax = predictorValues.length > 0 ? Math.max(...predictorValues) : undefined;
+  const hasPredictorSpan = predictorMin !== undefined
+    && predictorMax !== undefined
+    && predictorMin < predictorMax;
   const intervalPoints = input.points.filter(
     (point) => point.meanConfidenceLower !== null && point.meanConfidenceUpper !== null,
   );
@@ -703,6 +709,8 @@ export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): 
     ...baseOption("", undefined, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
     xAxis: {
       type: "value",
+      min: hasPredictorSpan ? predictorMin : undefined,
+      max: hasPredictorSpan ? predictorMax : undefined,
       name: input.predictorName,
       nameLocation: "middle",
       nameGap: 30,
@@ -757,14 +765,14 @@ export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): 
           silent: true,
           symbol: "none",
           label: { show: false },
-          lineStyle: { color: theme.fgDim, type: "dashed" },
+          lineStyle: { color: "#d92d20", width: 1.5, type: "solid" },
           data: [{ name: input.labels.currentValueName, xAxis: ensureFinite(input.currentValue, "currentValue", 0) }],
         },
         markPoint: {
           symbol: "circle",
           symbolSize: 8,
           label: { show: false },
-          itemStyle: { color: theme.accent },
+          itemStyle: { color: "#d92d20" },
           data: [{
             name: input.labels.currentValueName,
             coord: [

@@ -43,23 +43,19 @@ function profiler(value: FitModelSnapshot = snapshot) {
   );
 }
 
-test("synchronizes slider and number input, then warns on extrapolation", async ({ mount }) => {
+test("keeps one numeric input per chart and warns on numeric extrapolation", async ({ mount }) => {
   const component = await mount(profiler());
   const aColumn = component.locator('[data-profiler-column="A"]');
-  const range = aColumn.locator('input[type="range"]');
   const number = aColumn.locator('input[type="number"]');
 
+  await expect(component.locator('input[type="range"]')).toHaveCount(0);
+  await expect(component.locator('input[type="number"]')).toHaveCount(2);
   await expect(number).toHaveValue("2");
-  await range.fill("3");
-  await expect(number).toHaveValue("3");
-  await expect(component.locator(".sp-fit-model-profiler-result dd").first()).toHaveText("19");
-
   await number.fill("9");
   await expect(component.getByRole("status")).toContainText(/A/);
-  await expect(range).toHaveValue("4");
 });
 
-test("links every chart and gives them the same Y domain", async ({ mount }) => {
+test("links click and drag interaction across every chart with a shared Y domain", async ({ mount, page }) => {
   const component = await mount(profiler());
   const columns = component.locator(".sp-fit-model-profiler-column");
   const canvases = columns.locator("canvas");
@@ -74,17 +70,42 @@ test("links every chart and gives them the same Y domain", async ({ mount }) => 
   })));
   expect(initialDomains[0]).toEqual(initialDomains[1]);
 
-  await component.locator('[data-profiler-column="A"] input[type="range"]').fill("3");
-  await expect(component.locator(".sp-fit-model-profiler-result dd").first()).toHaveText("19");
+  const aCanvas = canvases.first();
+  const aNumber = component.locator('[data-profiler-column="A"] input[type="number"]');
+  const box = await aCanvas.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+
+  await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.5);
+  await expect(aNumber).not.toHaveValue("2");
   await expect.poll(async () => canvases.evaluateAll((elements) => (
     elements.map((element) => (element as HTMLCanvasElement).toDataURL())
   ))).not.toEqual(initialImages);
 
-  const updatedImages = await canvases.evaluateAll((elements) => (
+  const clickedImages = await canvases.evaluateAll((elements) => (
     elements.map((element) => (element as HTMLCanvasElement).toDataURL())
   ));
-  expect(updatedImages[0]).not.toEqual(initialImages[0]);
-  expect(updatedImages[1]).not.toEqual(initialImages[1]);
+  expect(clickedImages[0]).not.toEqual(initialImages[0]);
+  expect(clickedImages[1]).not.toEqual(initialImages[1]);
+  const clickedState = await columns.evaluateAll((elements) => elements.map((element) => ({
+    min: Number(element.getAttribute("data-y-domain-min")),
+    max: Number(element.getAttribute("data-y-domain-max")),
+    markerX: Number(element.getAttribute("data-marker-x")),
+    marker: Number(element.getAttribute("data-marker-y")),
+    curveStart: Number(element.getAttribute("data-curve-start-y")),
+    curveEnd: Number(element.getAttribute("data-curve-end-y")),
+  })));
+  expect(clickedState[0].marker).toBe(clickedState[1].marker);
+  expect(Number(
+    await component.locator(".sp-fit-model-profiler-result dd").first().textContent(),
+  )).toBeCloseTo(clickedState[0].marker, 3);
+
+  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.5);
+  await page.mouse.up();
+  await expect.poll(async () => Number(await aNumber.inputValue())).toBeGreaterThan(clickedState[0].markerX);
+
   const updatedDomains = await columns.evaluateAll((elements) => elements.map((element) => ({
     min: Number(element.getAttribute("data-y-domain-min")),
     max: Number(element.getAttribute("data-y-domain-max")),
@@ -94,18 +115,29 @@ test("links every chart and gives them the same Y domain", async ({ mount }) => 
     curveEnd: Number(element.getAttribute("data-curve-end-y")),
   })));
   expect(
-    updatedDomains.map(({ min, max, markerX, marker }) => ({ min, max, markerX, marker })),
+    updatedDomains.map(({ min, max, marker }) => ({ min, max, marker })),
   ).toEqual([
-    { min: updatedDomains[0].min, max: updatedDomains[0].max, markerX: 3, marker: 19 },
-    { min: updatedDomains[0].min, max: updatedDomains[0].max, markerX: 4, marker: 19 },
+    { min: updatedDomains[0].min, max: updatedDomains[0].max, marker: updatedDomains[0].marker },
+    { min: updatedDomains[0].min, max: updatedDomains[0].max, marker: updatedDomains[0].marker },
   ]);
-  expect(updatedDomains[0].marker).toBe(19);
+  expect(updatedDomains[0].markerX).toBeGreaterThanOrEqual(0);
+  expect(updatedDomains[0].markerX).toBeLessThanOrEqual(4);
+  expect(updatedDomains[1].markerX).toBe(4);
   expect(updatedDomains[0].marker).toBeGreaterThanOrEqual(updatedDomains[0].min);
   expect(updatedDomains[0].marker).toBeLessThanOrEqual(updatedDomains[0].max);
   expect(updatedDomains.map(({ curveStart, curveEnd }) => [curveStart, curveEnd])).toEqual([
     [13, 21],
-    [10, 28],
+    [12, 30],
   ]);
+
+  const draggedValue = await aNumber.inputValue();
+  await page.evaluate(() => document.documentElement.toggleAttribute("data-theme"));
+  await expect(canvases).toHaveCount(2);
+  const recreatedBox = await canvases.first().boundingBox();
+  expect(recreatedBox).not.toBeNull();
+  if (!recreatedBox) return;
+  await page.mouse.click(recreatedBox.x + recreatedBox.width * 0.45, recreatedBox.y + recreatedBox.height * 0.5);
+  await expect(aNumber).not.toHaveValue(draggedValue);
 });
 
 test("resets controls, curves, markers, domain, and summary coherently on snapshot replacement", async ({ mount }) => {
