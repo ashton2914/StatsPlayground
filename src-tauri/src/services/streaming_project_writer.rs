@@ -27,7 +27,7 @@ const TARGET_BATCH_BYTES: usize = 6 * 1024 * 1024;
 const HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MIN_TARGET_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const TARGET_BATCH_SAFETY_MARGIN_BYTES: usize = 128 * 1024;
-const MAX_ROWS_PER_BATCH: usize = 65_536;
+const MAX_ROWS_PER_BATCH: usize = 4_096;
 const ENCODED_CHUNK_TARGET_BYTES: usize = 4 * 1024 * 1024;
 const PROGRESS_MIN_INTERVAL_MS: u64 = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(PROGRESS_MIN_INTERVAL_MS);
@@ -2370,7 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_save_uses_byte_budget_across_large_row_batches() {
+    fn streaming_save_honors_byte_budget_with_bounded_row_batches() {
         let state = AppState::new().unwrap();
         let archive = temp_path("byte-budget");
         let dataset = seed_benchmark_dataset(&state, 20_000);
@@ -2399,7 +2399,7 @@ mod tests {
             spprj_archive::count_project_rows_streaming(archive.to_str().unwrap()).unwrap(),
             20_000
         );
-        assert_eq!(fetched_batches.load(Ordering::SeqCst), 2);
+        assert_eq!(fetched_batches.load(Ordering::SeqCst), 5);
         let metrics = *observed.lock().unwrap();
         assert!(metrics.max_retained_batch_bytes <= HARD_BATCH_BYTES);
         assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
