@@ -127,6 +127,7 @@ export function FitModelAnalysisReport({
         title: t("fitModel.report.section.actualByPredicted", { defaultValue: "Actual by Predicted" }),
         sampledSubtitle,
         plotRows: fittedResult.plotRows,
+        confidenceRows: fittedResult.diagnostics.rows,
         labels: {
           predictedAxisName: t("fitModel.report.chart.axis.predicted", { defaultValue: "Predicted" }),
           actualAxisName: t("fitModel.report.chart.axis.actual", { defaultValue: "Actual" }),

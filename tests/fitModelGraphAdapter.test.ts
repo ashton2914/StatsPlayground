@@ -405,7 +405,7 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
       data: Array<number | null>;
       markLine?: {
         data?: Array<{ name?: string; xAxis?: number }>;
-        label?: { formatter?: string };
+        label?: { formatter?: string; position?: string };
         lineStyle?: { color?: string; type?: string };
       };
     }>;
@@ -422,6 +422,7 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
   assert.equal(option.series[0]?.markLine?.data?.[0]?.name, "LogWorth = 1.3");
   assert.equal(option.series[0]?.markLine?.data?.[0]?.xAxis, -Math.log10(0.05));
   assert.equal(option.series[0]?.markLine?.label?.formatter, "LogWorth = 1.3");
+  assert.equal(option.series[0]?.markLine?.label?.position, "insideEndTop");
   assert.equal(option.series[0]?.markLine?.lineStyle?.color, "#d92d20");
   assert.equal(option.series[0]?.markLine?.lineStyle?.type, "solid");
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
@@ -461,6 +462,8 @@ function testLeveragePointsFittedBandAndNullSeries(): void {
     },
   }) as {
     title?: { subtext?: string };
+    xAxis: { min: number; max: number; interval: number };
+    yAxis: { min: number; max: number; interval: number };
     series: Array<{
       name?: string;
       type?: string;
@@ -474,9 +477,58 @@ function testLeveragePointsFittedBandAndNullSeries(): void {
   assert.deepEqual(option.series.find((series) => series.name === "Observed")?.data, [[-1, 8], [1, 12]]);
   assert.deepEqual(option.series.find((series) => series.name === "Fitted")?.data, [[-1, 9], [1, 11]]);
   assert.equal(option.series.filter((series) => series.name === "Confidence band").length, 2);
-  assert.deepEqual(option.series.find((series) => series.name === "Null effect")?.data, [[-1, 10], [1, 10]]);
+  assert.deepEqual(
+    option.series.find((series) => series.name === "Null effect")?.data,
+    [[option.xAxis.min, 10], [option.xAxis.max, 10]],
+  );
+  assert.ok(option.xAxis.min < -1);
+  assert.ok(option.xAxis.max > 1);
+  assert.ok(option.xAxis.min > -2);
+  assert.ok(option.xAxis.max < 2);
+  assert.ok(option.yAxis.min < 8);
+  assert.ok(option.yAxis.max > 12);
+  assert.ok(option.yAxis.min > 6);
+  assert.ok(option.yAxis.max < 14);
+  assert.ok(option.xAxis.interval > 0);
+  assert.ok(option.yAxis.interval > 0);
   assert.ok(option.series.every((series) => series.clip === true));
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
+}
+
+function testActualByPredictedMeanConfidenceBand(): void {
+  const input = {
+    title: "Actual by Predicted",
+    labels: SAMPLE_LABELS,
+    plotRows: [
+      { rowIndex: 1, observed: 8, fitted: 9, residual: -1 },
+      { rowIndex: 2, observed: 12, fitted: 11, residual: 1 },
+    ],
+    confidenceRows: [
+      { rowIndex: 2, fitted: 11, meanConfidenceLower: 10.5, meanConfidenceUpper: 11.5 },
+      { rowIndex: 1, fitted: 9, meanConfidenceLower: 8.5, meanConfidenceUpper: 9.5 },
+    ],
+  };
+  const option = buildActualByPredictedOption(input) as {
+    series: Array<{
+      name?: string;
+      type?: string;
+      stack?: string;
+      silent?: boolean;
+      lineStyle?: { color?: string; type?: string };
+      areaStyle?: { color?: string; opacity?: number };
+      data?: Array<[number, number]>;
+    }>;
+  };
+
+  const confidenceSeries = option.series.filter((series) => series.stack === "actual-confidence");
+  assert.equal(confidenceSeries.length, 2);
+  assert.deepEqual(confidenceSeries[0]?.data, [[9, 8.5], [11, 10.5]]);
+  assert.deepEqual(confidenceSeries[1]?.data, [[9, 1], [11, 1]]);
+  assert.ok((confidenceSeries[1]?.areaStyle?.opacity ?? 0) > 0);
+  assert.ok(confidenceSeries.every((series) => series.silent === true));
+  const identity = option.series.find((series) => series.type === "line" && !series.stack);
+  assert.equal(identity?.lineStyle?.color, "#d92d20");
+  assert.equal(identity?.lineStyle?.type, "solid");
 }
 
 function testChartLayoutContainsAxisText(): void {
@@ -533,8 +585,9 @@ testSinglePointReferenceLinesUseExpandedFiniteExtent();
 testResidualQqPointsAndReferenceLine();
 testResidualQqBoundaryInputs();
 testPredictionProfilerCurveAndConfidenceBand();
-testEffectSummaryHorizontalBarsAndSignificanceReference();
 testLeveragePointsFittedBandAndNullSeries();
+testActualByPredictedMeanConfidenceBand();
+testEffectSummaryHorizontalBarsAndSignificanceReference();
 testChartLayoutContainsAxisText();
 
 console.log("fitModel graph adapter contract passed");

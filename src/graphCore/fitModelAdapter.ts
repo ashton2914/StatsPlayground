@@ -20,7 +20,15 @@ export interface FitModelChartInput {
   title: string;
   sampledSubtitle?: string;
   plotRows: FitModelPlotRow[];
+  confidenceRows?: readonly FitModelConfidenceRow[];
   labels: FitModelChartLabels;
+}
+
+export interface FitModelConfidenceRow {
+  rowIndex: number;
+  fitted: number;
+  meanConfidenceLower: number | null;
+  meanConfidenceUpper: number | null;
 }
 
 export interface FitModelChartLabels {
@@ -297,6 +305,17 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
   const identityData: Array<[number, number]> = identityMin <= identityMax
     ? [[identityMin, identityMin], [identityMax, identityMax]]
     : [];
+  const confidenceRows = (input.confidenceRows ?? [])
+    .filter((row) => row.meanConfidenceLower !== null && row.meanConfidenceUpper !== null)
+    .map((row, index) => {
+      const x = ensureFinite(row.fitted, "confidence.fitted", index);
+      const lower = ensureFinite(row.meanConfidenceLower as number, "meanConfidenceLower", index);
+      const upper = ensureFinite(row.meanConfidenceUpper as number, "meanConfidenceUpper", index);
+      return { x, lower, width: ensureFinite(upper - lower, "meanConfidenceWidth", index) };
+    })
+    .sort((left, right) => left.x - right.x);
+  const confidenceLower = confidenceRows.map(({ x, lower }) => [x, lower] as [number, number]);
+  const confidenceWidth = confidenceRows.map(({ x, width }) => [x, width] as [number, number]);
 
   return {
     ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
@@ -331,6 +350,7 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
         name: input.labels.actualSeriesName,
         type: "scatter",
         clip: true,
+        z: 3,
         symbolSize: POINT_SYMBOL_SIZE,
         progressive: 400,
         progressiveThreshold: 3000,
@@ -338,12 +358,37 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
         data: points,
       },
       {
+        name: `${input.labels.identityReferenceName} confidence`,
+        type: "line",
+        clip: true,
+        z: 1,
+        stack: "actual-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { opacity: 0 },
+        data: confidenceLower,
+      },
+      {
+        name: `${input.labels.identityReferenceName} confidence`,
+        type: "line",
+        clip: true,
+        z: 1,
+        stack: "actual-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { color: "#d92d20", opacity: 0.14 },
+        data: confidenceWidth,
+      },
+      {
         name: input.labels.identityReferenceName,
         type: "line",
         clip: true,
+        z: 2,
         showSymbol: false,
         silent: true,
-        lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" },
+        lineStyle: { color: "#d92d20", width: 2, type: "solid" },
         data: identityData,
       },
     ],
@@ -541,7 +586,13 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
         markLine: {
           silent: true,
           symbol: "none",
-          label: { show: true, color: theme.fgDim, formatter: input.labels.significanceReferenceName },
+          label: {
+            show: true,
+            color: "#d92d20",
+            formatter: input.labels.significanceReferenceName,
+            position: "insideEndTop",
+            distance: 6,
+          },
           lineStyle: { color: "#d92d20", width: 1.5, type: "solid" },
           data: [{ name: input.labels.significanceReferenceName, xAxis: significanceLogWorth }],
         },
@@ -569,9 +620,22 @@ export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): 
     ensureFinite(point.upper - point.lower, "confidenceWidth", index),
   ] as [number, number]);
   const xValues = [...points, ...fitted].map(([x]) => x);
-  const nullExtent = xValues.length === 0
-    ? { min: FALLBACK_MIN, max: FALLBACK_MAX }
-    : axisExtentFromRaw(Math.min(...xValues), Math.max(...xValues));
+  const yValues = [
+    ...points.map(([, y]) => y),
+    ...input.plot.confidenceBand.flatMap((point, index) => [
+      ensureFinite(point.lower, "lower", index),
+      ensureFinite(point.upper, "upper", index),
+    ]),
+    ...(input.plot.nullLineY === null
+      ? []
+      : [ensureFinite(input.plot.nullLineY, "nullLineY", 0)]),
+  ];
+  const xExtent = xValues.length === 0
+    ? { min: FALLBACK_MIN, max: FALLBACK_MAX, interval: 0.2 }
+    : paddedNiceExtent(Math.min(...xValues), Math.max(...xValues));
+  const yExtent = yValues.length === 0
+    ? { min: FALLBACK_MIN, max: FALLBACK_MAX, interval: 0.2 }
+    : paddedNiceExtent(Math.min(...yValues), Math.max(...yValues));
   const subtitle = input.plot.pValue === null
     ? undefined
     : `${input.labels.pValueLabel}: ${tooltipValue(ensureFinite(input.plot.pValue, "pValue", 0))}`;
@@ -585,8 +649,8 @@ export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): 
         silent: true,
         lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" as const },
         data: [
-          [nullExtent.min, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
-          [nullExtent.max, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
+          [xExtent.min, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
+          [xExtent.max, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
         ],
       }];
 
@@ -594,22 +658,28 @@ export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): 
     ...baseOption(input.title, subtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
     xAxis: {
       type: "value",
+      min: xExtent.min,
+      max: xExtent.max,
+      interval: xExtent.interval,
       name: input.labels.leverageAxisName,
       nameLocation: "middle",
       nameGap: 30,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     yAxis: {
       type: "value",
+      min: yExtent.min,
+      max: yExtent.max,
+      interval: yExtent.interval,
       name: input.labels.adjustedResponseAxisName || input.responseName,
       nameLocation: "middle",
       nameGap: 42,
       axisLine: { show: true, lineStyle: { color: theme.axisLine } },
       axisTick: { show: true, lineStyle: { color: theme.axisLine } },
-      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10, formatter: formatAxisTick },
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     series: [

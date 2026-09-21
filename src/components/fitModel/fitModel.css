@@ -277,6 +277,11 @@
   height: 240px;
 }
 
+[data-fit-model-analysis-report] > [data-analysis-block="report"] {
+  box-sizing: border-box;
+  width: min(100%, 820px);
+}
+
 .sp-fit-model-analysis-graph-predicted,
 .sp-fit-model-analysis-graph-leverage {
   width: min(100%, 820px);

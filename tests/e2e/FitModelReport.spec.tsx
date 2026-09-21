@@ -399,6 +399,11 @@ for (const viewport of [
     if (viewport.width >= 1000) {
       expect(Math.abs(matchedChartBoxes[0].width - matchedChartBoxes[1].width)).toBeLessThanOrEqual(2);
       expect(Math.abs(matchedChartBoxes[0].chartHeight - matchedChartBoxes[1].chartHeight)).toBeLessThanOrEqual(2);
+      const topLevelFrameWidths = await component.locator(
+        "[data-fit-model-analysis-report] > [data-analysis-block='report']",
+      ).evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width));
+      expect(topLevelFrameWidths.length).toBeGreaterThan(1);
+      expect(Math.max(...topLevelFrameWidths) - Math.min(...topLevelFrameWidths)).toBeLessThanOrEqual(2);
     }
     const chartBoxes = await component.locator('[data-chart-kind="actualByPredicted"], [data-chart-kind="residualByPredicted"]').evaluateAll((elements) => elements.map((element) => {
       const box = element.getBoundingClientRect();

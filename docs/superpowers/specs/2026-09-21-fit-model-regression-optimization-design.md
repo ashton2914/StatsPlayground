@@ -128,8 +128,9 @@ The relevant report order becomes:
 12. Prediction Profiler
 13. Warnings
 
-Leverage Plot and Actual by Predicted use the same responsive frame width and
-chart height.
+All top-level report sections use the same responsive frame width while their
+heights remain content-driven. Leverage Plot and Actual by Predicted also use
+the same chart height.
 
 ### Automatic Numeric Axes
 
@@ -147,6 +148,15 @@ axis. Residual by Predicted includes zero and uses symmetric, nice Y limits so
 the chart is visually balanced. Axis-label formatters remove floating-point
 artifacts such as long endpoint decimals.
 
+Leverage Plot applies the same padded nice-extent policy independently to both
+axes, using its adjusted points, fitted line, confidence band, and null line.
+Explicit bounds prevent the ECharts value-axis default from forcing zero into
+the window and compressing a narrow effect range.
+
+Actual by Predicted renders the Rust-computed row mean-confidence intervals as
+a translucent red band around the solid red `y=x` fitted line. The frontend
+only maps the returned interval coordinates and does not recompute inference.
+
 Chart grids reserve explicit left, right, and bottom space, use `containLabel`,
 and set axis-name gaps so titles and tick labels remain visible at desktop and
 narrow widths.
@@ -154,8 +164,10 @@ narrow widths.
 ### Effect Summary
 
 The significance reference is fixed at `-log10(0.05) = 1.30103`. It renders as
-a red solid vertical line labeled `LogWorth = 1.3`. The chart uses the same
-unclipped grid and axis-label policy as the diagnostic plots.
+a red solid vertical line labeled `LogWorth = 1.3`. Its label is anchored at
+the top inside edge of the line so it cannot overlap the X-axis tick labels.
+The chart uses the same unclipped grid and axis-label policy as the diagnostic
+plots.
 
 ## Add Effect Interaction
 
