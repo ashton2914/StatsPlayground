@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use nalgebra::linalg::SVD;
 use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
 use crate::engine::fit_model::effects::{compute_effect_leverage_plots, compute_effect_tests};
+use crate::engine::fit_model::reporting_basis::reporting_basis;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
@@ -249,11 +252,24 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         _ => None,
     };
 
+    let resolved = resolved_terms(&input.model_matrix_spec);
+    let fitted_geometry = coefficient_covariance_geometry(&geometry)?;
+    let means = input
+        .predictor_ranges
+        .iter()
+        .map(|range| (range.column_name.clone(), range.mean))
+        .collect::<BTreeMap<_, _>>();
+    let reporting = reporting_basis(&coefficients, &fitted_geometry, &resolved, &means)?;
+    let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
+    coefficient_term_ids.push("Intercept".to_string());
+    coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
+
     let allow_parameter_inference = !saturated_model && !perfect_fit && df_error > 0;
     let parameter_estimates = parameter_estimates(
-        &input,
-        &coefficients,
-        &geometry,
+        &reporting.coefficients,
+        &coefficient_term_ids,
+        &reporting.term_labels,
+        &reporting.covariance_geometry,
         mse,
         df_error as u64,
         confidence_level,
@@ -287,11 +303,11 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         perfect_fit,
         ill_conditioned,
     );
-    let resolved = resolved_terms(&input.model_matrix_spec);
     let effect_tests = compute_effect_tests(
         &input.design_matrix,
         &response,
         &resolved,
+        Some(&reporting),
         sse,
         mse,
         df_error as u64,
@@ -310,9 +326,6 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         method: input.model_matrix_spec.centering_method().clone(),
         centers: input.model_matrix_spec.centers().to_vec(),
     };
-    let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
-    coefficient_term_ids.push("Intercept".to_string());
-    coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
     let snapshot_covariance = if allow_parameter_inference {
         covariance_matrix(&geometry, mse)?
             .map(matrix_to_finite_rows)
@@ -455,30 +468,25 @@ fn matrix_to_finite_rows(matrix: DMatrix<f64>) -> Result<Vec<Vec<f64>>, FitModel
 }
 
 fn parameter_estimates(
-    input: &FitModelData,
     coefficients: &DVector<f64>,
-    geometry: &FitGeometry,
+    term_ids: &[String],
+    labels: &[String],
+    covariance_geometry: &DMatrix<f64>,
     mse: Option<f64>,
     df_error: u64,
     confidence_level: f64,
     allow_inference: bool,
 ) -> Result<Vec<FitModelParameterEstimate>, FitModelEngineError> {
-    let mut estimates = Vec::with_capacity(coefficients.len());
-    let mut term_ids = Vec::with_capacity(coefficients.len());
-    let mut labels = Vec::with_capacity(coefficients.len());
-
-    term_ids.push("Intercept".to_string());
-    labels.push("Intercept".to_string());
-    for term in input.model_matrix_spec.terms() {
-        term_ids.push(term.term_id().to_string());
-        labels.push(term.label().to_string());
+    if term_ids.len() != coefficients.len()
+        || labels.len() != coefficients.len()
+        || covariance_geometry.nrows() != coefficients.len()
+        || covariance_geometry.ncols() != coefficients.len()
+    {
+        return Err(FitModelEngineError::InvalidInput(
+            "parameter reporting dimensions must match coefficients".to_string(),
+        ));
     }
-
-    let covariance = if allow_inference {
-        covariance_matrix(geometry, mse)?
-    } else {
-        None
-    };
+    let mut estimates = Vec::with_capacity(coefficients.len());
     let t_critical = if allow_inference {
         t_critical(df_error, confidence_level)
     } else {
@@ -488,15 +496,13 @@ fn parameter_estimates(
     for index in 0..coefficients.len() {
         let estimate = normalize_signed_zero(coefficients[index]);
         let (standard_error, t_ratio, p_value, lower_confidence_limit, upper_confidence_limit) =
-            if let (Some(cov), Some(critical), Some(mse_value)) =
-                (covariance.as_ref(), t_critical, mse)
-            {
+            if let (Some(critical), Some(mse_value)) = (t_critical, mse) {
                 if !mse_value.is_finite() || mse_value < 0.0 {
                     return Err(FitModelEngineError::NumericalFailure(
                         "MSE for inference is invalid".to_string(),
                     ));
                 }
-                let variance = cov[(index, index)];
+                let variance = mse_value * covariance_geometry[(index, index)];
                 if variance < 0.0 {
                     return Err(FitModelEngineError::NumericalFailure(
                         "variance estimate became negative".to_string(),
@@ -582,6 +588,19 @@ fn covariance_matrix(
         _ => return Ok(None),
     };
 
+    let geometry_matrix = coefficient_covariance_geometry(geometry)?;
+    let covariance = geometry_matrix * mse_value;
+    if covariance.iter().any(|value| !value.is_finite()) {
+        return Err(FitModelEngineError::NumericalFailure(
+            "covariance matrix contains non-finite value".to_string(),
+        ));
+    }
+    Ok(Some(covariance))
+}
+
+fn coefficient_covariance_geometry(
+    geometry: &FitGeometry,
+) -> Result<DMatrix<f64>, FitModelEngineError> {
     if geometry.singular_values.len() != geometry.v_t.nrows() {
         return Err(FitModelEngineError::NumericalFailure(
             "SVD singular value count does not match design columns".to_string(),
@@ -602,14 +621,12 @@ fn covariance_matrix(
     let v = geometry.v_t.transpose();
     let xtx_inverse = &v * inverse_diag * &geometry.v_t;
 
-    let covariance = xtx_inverse * mse_value;
-    if covariance.iter().any(|value| !value.is_finite()) {
+    if xtx_inverse.iter().any(|value| !value.is_finite()) {
         return Err(FitModelEngineError::NumericalFailure(
-            "covariance matrix contains non-finite value".to_string(),
+            "coefficient covariance geometry contains non-finite value".to_string(),
         ));
     }
-
-    Ok(Some(covariance))
+    Ok(xtx_inverse)
 }
 
 fn resolved_terms(spec: &ModelMatrixSpec) -> Vec<FitModelResolvedTerm> {
@@ -938,6 +955,70 @@ mod tests {
                 .expect("upper confidence limit"),
             estimate + margin,
         );
+    }
+
+    #[test]
+    fn hierarchical_interactions_report_centered_parameters_without_changing_predictions() {
+        let a = vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0];
+        let b = vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 1.0, 4.0];
+        let c = vec![1.0, 2.0, 0.0, 3.0, 4.0, 1.0, 2.0, 5.0, 3.0, 0.0];
+        let noise = [0.1, -0.2, 0.05, 0.15, -0.1, 0.2, -0.05, 0.1, -0.15, -0.1];
+        let response = (0..a.len())
+            .map(|row| {
+                5.0 + 2.0 * a[row] - 3.0 * b[row] + 0.5 * c[row] + 4.0 * a[row] * b[row]
+                    - 1.5 * a[row] * c[row]
+                    + noise[row]
+            })
+            .collect::<Vec<_>>();
+        let input = build_input(
+            "Y",
+            vec![
+                term(FitModelTermKind::Main, &["A"]),
+                term(FitModelTermKind::Main, &["B"]),
+                term(FitModelTermKind::Main, &["C"]),
+                term(FitModelTermKind::Interaction, &["A", "B"]),
+                term(FitModelTermKind::Interaction, &["A", "C"]),
+            ],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([
+                ("A".to_string(), a),
+                ("B".to_string(), b),
+                ("C".to_string(), c),
+            ]),
+            response,
+            (1..=10).collect(),
+            0,
+        );
+        let raw_design = input.design_matrix.clone();
+        let raw_response = nalgebra::DVector::from_vec(input.response_values.clone());
+        let raw_svd = raw_design.clone().svd(true, true);
+        let raw_beta = raw_svd
+            .solve(&raw_response, 1e-12)
+            .expect("raw coefficients");
+        let expected_fitted = &raw_design * &raw_beta;
+        let mean_a = 2.0;
+        let mean_b = 1.7;
+        let mean_c = 2.1;
+        let expected_intercept = raw_beta[0]
+            + mean_a * raw_beta[1]
+            + mean_b * raw_beta[2]
+            + mean_c * raw_beta[3]
+            + mean_a * mean_b * raw_beta[4]
+            + mean_a * mean_c * raw_beta[5];
+        let expected_main_a = raw_beta[1] + mean_b * raw_beta[4] + mean_c * raw_beta[5];
+
+        let result = fit_linear_model(input, 0.95).expect("fit should succeed");
+        let FitModelResult::Fitted(fitted) = result else {
+            panic!("expected fitted result");
+        };
+
+        assert_close(fitted.parameter_estimates[0].estimate, expected_intercept);
+        assert_close(fitted.parameter_estimates[1].estimate, expected_main_a);
+        assert!(fitted.parameter_estimates[1].standard_error.is_some());
+        assert!(fitted.parameter_estimates[1].t_ratio.is_some());
+        for (row, expected) in fitted.plot_rows.iter().zip(expected_fitted.iter()) {
+            assert_close(row.fitted, *expected);
+        }
     }
 
     #[test]

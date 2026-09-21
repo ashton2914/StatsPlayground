@@ -2,6 +2,7 @@ use nalgebra::{DMatrix, DVector};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::ols::{deterministic_rank_grid, FitModelEngineError};
+use crate::engine::fit_model::reporting_basis::FitModelReportingBasis;
 use crate::models::fit_model::{
     FitModelEffectTest, FitModelInferenceReason, FitModelLeverageBandPoint, FitModelLeveragePlot,
     FitModelLeveragePoint, FitModelResolvedTerm,
@@ -20,6 +21,7 @@ pub(crate) fn compute_effect_tests(
     design_matrix: &DMatrix<f64>,
     response: &DVector<f64>,
     terms: &[FitModelResolvedTerm],
+    reporting_basis: Option<&FitModelReportingBasis>,
     full_sse: f64,
     full_mse: Option<f64>,
     error_degrees_of_freedom: u64,
@@ -38,6 +40,9 @@ pub(crate) fn compute_effect_tests(
         return Err(FitModelEngineError::NumericalFailure(
             "full-model SSE must be finite and non-negative".to_string(),
         ));
+    }
+    if let Some(reporting) = reporting_basis.filter(|basis| basis.centered) {
+        return compute_centered_effect_tests(terms, reporting, full_mse, error_degrees_of_freedom);
     }
 
     let effects = group_effect_columns(terms);
@@ -76,6 +81,7 @@ pub(crate) fn compute_effect_tests(
             (Some(mse), df, error_df) if mse.is_finite() && mse > 0.0 && df > 0 && error_df > 0 => {
                 finite_or_none((partial_ss / df as f64) / mse)
             }
+
             _ => None,
         };
         let p_value =
@@ -98,6 +104,85 @@ pub(crate) fn compute_effect_tests(
         });
     }
 
+    Ok(results)
+}
+
+fn compute_centered_effect_tests(
+    terms: &[FitModelResolvedTerm],
+    reporting: &FitModelReportingBasis,
+    full_mse: Option<f64>,
+    error_degrees_of_freedom: u64,
+) -> Result<Vec<FitModelEffectTest>, FitModelEngineError> {
+    let width = terms.len() + 1;
+    if reporting.coefficients.len() != width
+        || reporting.covariance_geometry.nrows() != width
+        || reporting.covariance_geometry.ncols() != width
+        || reporting.term_labels.len() != width
+    {
+        return Err(FitModelEngineError::InvalidInput(
+            "centered reporting basis dimensions must match resolved terms".to_string(),
+        ));
+    }
+
+    let effects = group_effect_columns(terms);
+    let mut results = Vec::with_capacity(effects.len());
+    for effect in effects {
+        let b = DVector::from_iterator(
+            effect.columns.len(),
+            effect
+                .columns
+                .iter()
+                .map(|index| reporting.coefficients[*index]),
+        );
+        let g = DMatrix::from_fn(effect.columns.len(), effect.columns.len(), |row, column| {
+            reporting.covariance_geometry[(effect.columns[row], effect.columns[column])]
+        });
+        let effect_df = matrix_rank(&g) as u64;
+        let estimable = effect_df == effect.columns.len() as u64 && effect_df > 0;
+        let partial_ss = if estimable {
+            let svd = g.clone().svd(true, true);
+            let tolerance = rank_tolerance(svd.singular_values.as_slice(), g.nrows(), g.ncols());
+            let solved = svd
+                .solve(&b, tolerance)
+                .map_err(|_| FitModelEngineError::SolveFailure)?;
+            let value = b.dot(&solved);
+            if !value.is_finite() || value < 0.0 {
+                return Err(FitModelEngineError::NumericalFailure(format!(
+                    "effect {} produced invalid centered partial SS",
+                    effect.term.term_id
+                )));
+            }
+            Some(value)
+        } else {
+            None
+        };
+        let f_ratio = match (partial_ss, full_mse, effect_df, error_degrees_of_freedom) {
+            (Some(ss), Some(mse), df, error_df)
+                if mse.is_finite() && mse > 0.0 && df > 0 && error_df > 0 =>
+            {
+                finite_or_none((ss / df as f64) / mse)
+            }
+            _ => None,
+        };
+        let p_value =
+            f_ratio.and_then(|ratio| upper_tail_f(ratio, effect_df, error_degrees_of_freedom));
+        let reason = if f_ratio.is_some() && p_value.is_some() {
+            None
+        } else {
+            Some(FitModelInferenceReason::InferenceNotEstimable)
+        };
+        let first_column = effect.columns[0];
+        results.push(FitModelEffectTest {
+            term_id: effect.term.term_id.clone(),
+            term_label: reporting.term_labels[first_column].clone(),
+            number_of_parameters: effect.columns.len() as u64,
+            degrees_of_freedom: effect_df,
+            sum_of_squares: partial_ss,
+            f_ratio,
+            p_value,
+            reason,
+        });
+    }
     Ok(results)
 }
 
@@ -466,8 +551,9 @@ fn normalize_signed_zero(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use nalgebra::{DMatrix, DVector};
-    use statrs::distribution::{ContinuousCDF, StudentsT};
+    use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
+    use crate::engine::fit_model::reporting_basis::FitModelReportingBasis;
     use crate::models::fit_model::{
         FitModelEffectTest, FitModelInferenceReason, FitModelResolvedTerm, FitModelTermKind,
     };
@@ -561,6 +647,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn centered_effect_test_uses_reporting_hypothesis_geometry() {
+        let (design, response, terms) = fixture();
+        let reporting = FitModelReportingBasis {
+            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            covariance_geometry: DMatrix::from_diagonal(&DVector::from_vec(vec![
+                1.0, 0.25, 0.5, 0.75,
+            ])),
+            term_labels: vec![
+                "Intercept".to_string(),
+                "(A-0)".to_string(),
+                "(B-0)".to_string(),
+                "(A-0)*(B-0)".to_string(),
+            ],
+            centered: true,
+        };
+
+        let tests = compute_effect_tests(
+            &design,
+            &response,
+            &terms,
+            Some(&reporting),
+            8.0,
+            Some(2.0),
+            4,
+        )
+        .expect("centered effect tests");
+        let test = tests
+            .iter()
+            .find(|test| test.term_id == "A")
+            .expect("A effect");
+
+        assert_close(
+            test.sum_of_squares.expect("sum of squares"),
+            2.0 * 2.0 / 0.25,
+        );
+        assert_close(test.f_ratio.expect("F ratio"), 16.0 / 2.0);
+        let expected = FisherSnedecor::new(1.0, 4.0)
+            .expect("F distribution")
+            .sf(8.0);
+        assert_close(test.p_value.expect("p-value"), expected);
+    }
+
+    #[test]
+    fn non_hierarchical_reporting_basis_retains_reduced_model_effect_tests() {
+        let (design, response, terms) = fixture();
+        let reporting = FitModelReportingBasis {
+            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            covariance_geometry: DMatrix::identity(4, 4),
+            term_labels: vec![
+                "Intercept".to_string(),
+                "A".to_string(),
+                "B".to_string(),
+                "A*B".to_string(),
+            ],
+            centered: false,
+        };
+
+        let expected = compute_effect_tests(&design, &response, &terms, None, 8.0, Some(2.0), 4)
+            .expect("raw effect tests");
+        let actual = compute_effect_tests(
+            &design,
+            &response,
+            &terms,
+            Some(&reporting),
+            8.0,
+            Some(2.0),
+            4,
+        )
+        .expect("fallback effect tests");
+
+        assert_eq!(
+            serde_json::to_vec(&actual).expect("serialize actual"),
+            serde_json::to_vec(&expected).expect("serialize expected")
+        );
+    }
+
     fn explicit_residualize(matrix: &DMatrix<f64>, values: &DVector<f64>) -> DVector<f64> {
         let svd = matrix.clone().svd(true, true);
         let sigma_max = svd.singular_values.iter().copied().fold(0.0_f64, f64::max);
@@ -576,8 +739,9 @@ mod tests {
     #[test]
     fn leverage_matches_explicit_partial_regression_projection() {
         let (design, response, terms) = fixture();
-        let mut effect_tests = compute_effect_tests(&design, &response, &terms, 8.0, Some(2.0), 4)
-            .expect("effect tests should compute");
+        let mut effect_tests =
+            compute_effect_tests(&design, &response, &terms, None, 8.0, Some(2.0), 4)
+                .expect("effect tests should compute");
         effect_tests.reverse();
         let row_indexes = vec![101, 103, 107, 109, 113, 127, 131, 137];
 
@@ -842,7 +1006,7 @@ mod tests {
     #[test]
     fn leverage_keeps_points_when_inference_is_unavailable() {
         let (design, response, terms) = fixture();
-        let effect_tests = compute_effect_tests(&design, &response, &terms, 8.0, None, 0)
+        let effect_tests = compute_effect_tests(&design, &response, &terms, None, 8.0, None, 0)
             .expect("effect geometry should compute");
         let row_indexes = (1..=8).collect::<Vec<_>>();
 
@@ -887,8 +1051,9 @@ mod tests {
             term("A", "A", FitModelTermKind::Main, &["A"]),
             term("B", "B", FitModelTermKind::Main, &["B"]),
         ];
-        let effect_tests = compute_effect_tests(&design, &response, &terms, 0.0, Some(1.0), 2)
-            .expect("effect tests should compute");
+        let effect_tests =
+            compute_effect_tests(&design, &response, &terms, None, 0.0, Some(1.0), 2)
+                .expect("effect tests should compute");
 
         let plots = compute_effect_leverage_plots(
             &design,
@@ -918,7 +1083,7 @@ mod tests {
     fn type_three_effect_tests_match_reduced_model_sse() {
         let (design, response, terms) = fixture();
         let full_sse = 8.0;
-        let tests = compute_effect_tests(&design, &response, &terms, full_sse, Some(2.0), 4)
+        let tests = compute_effect_tests(&design, &response, &terms, None, full_sse, Some(2.0), 4)
             .expect("effect tests should compute");
         let expected_p_values = [
             0.01613008990009246,
@@ -948,12 +1113,13 @@ mod tests {
             _ => design[(row, column)],
         });
         let reordered_terms = vec![terms[1].clone(), terms[0].clone(), terms[2].clone()];
-        let original = compute_effect_tests(&design, &response, &terms, 8.0, Some(2.0), 4)
+        let original = compute_effect_tests(&design, &response, &terms, None, 8.0, Some(2.0), 4)
             .expect("original effect tests should compute");
         let reordered = compute_effect_tests(
             &reordered_design,
             &response,
             &reordered_terms,
+            None,
             8.0,
             Some(2.0),
             4,
@@ -985,7 +1151,7 @@ mod tests {
     #[test]
     fn effect_test_marks_inference_unavailable_without_error_df() {
         let (design, response, terms) = fixture();
-        let tests = compute_effect_tests(&design, &response, &terms, 8.0, None, 0)
+        let tests = compute_effect_tests(&design, &response, &terms, None, 8.0, None, 0)
             .expect("effect sums of squares should still compute");
 
         assert_eq!(tests.len(), 3);
@@ -1029,7 +1195,7 @@ mod tests {
         let intercept_and_a_sse = explicit_sse_without_columns(&design, &response, &[2]);
         let sequential_a = intercept_only_sse - intercept_and_a_sse;
 
-        let tests = compute_effect_tests(&design, &response, &terms, full_sse, Some(1.0), 3)
+        let tests = compute_effect_tests(&design, &response, &terms, None, full_sse, Some(1.0), 3)
             .expect("effect tests should compute");
 
         assert_close(
@@ -1063,7 +1229,7 @@ mod tests {
             term("B", "B", FitModelTermKind::Main, &["B"]),
         ];
 
-        let tests = compute_effect_tests(&design, &response, &terms, 0.0, Some(1.0), 2)
+        let tests = compute_effect_tests(&design, &response, &terms, None, 0.0, Some(1.0), 2)
             .expect("grouped effect tests should compute");
 
         assert_eq!(tests.len(), 2);
@@ -1108,7 +1274,7 @@ mod tests {
         let response = DVector::from_element(4, 2.0);
         let terms = vec![term("A", "A", FitModelTermKind::Main, &["A"])];
 
-        let tests = compute_effect_tests(&design, &response, &terms, 1e-14, Some(1.0), 2)
+        let tests = compute_effect_tests(&design, &response, &terms, None, 1e-14, Some(1.0), 2)
             .expect("roundoff-sized negative partial SS should clamp");
 
         assert_eq!(tests[0].sum_of_squares, Some(0.0));
