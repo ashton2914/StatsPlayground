@@ -36,7 +36,7 @@ import { AxisSettingsDialog, isAxisConfigEmpty } from "./AxisSettingsDialog";
 import { bindGraphBuilderField } from "./axisBinding";
 import { updateGraphBuilder2D } from "./graphBuilderAxisInteractions";
 import { decideGraphBuilderDropRoute } from "./graphBuilderDropRouting";
-import { resolveVisibleSlotField, resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
+import { resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
 import {
   clampSampleSize,
   DEFAULT_GRAPH_SAMPLE_SIZE,
@@ -72,6 +72,15 @@ import {
   reconcileGroupThemeSlots,
   resolveGroupThemeFieldName,
 } from "./graphThemeIdentity";
+import {
+  GraphDropSlot,
+  GraphFieldPalette,
+  type GraphDropSlotBinding,
+} from "./shared/GraphBuilderChrome";
+import {
+  decodeGraphBuilderDragFields,
+  type GraphBuilderDragField,
+} from "./shared/graphBuilderDragPayload";
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 
@@ -128,6 +137,14 @@ function clampPanelSize(value: number) {
 
 function clampLeftStackPercent(value: number) {
   return Math.min(GRAPH_BUILDER_LEFT_STACK_MAX_PERCENT, Math.max(GRAPH_BUILDER_LEFT_STACK_MIN_PERCENT, value));
+}
+
+function fieldToDropSlotBinding(field: FieldRef | undefined): GraphDropSlotBinding | undefined {
+  if (!field) return undefined;
+  return {
+    columnId: field.columnId ?? field.name,
+    label: field.name,
+  };
 }
 
 export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
@@ -765,7 +782,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   );
 
   // 拖放处理
-  const onDragStart = (e: React.DragEvent, field: FieldRef) => {
+  const resolvePaletteDragFields = (field: FieldRef): GraphBuilderDragField[] => {
     // Multi-drag: when the dragged item is part of the current
     // selection AND the selection has more than one entry, drag ALL
     // selected fields together as an array. Otherwise this is a
@@ -783,11 +800,14 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       setSelectedColNames(new Set([field.name]));
       colAnchorRef.current = field.name;
     }
-    const payload = JSON.stringify(dragSet);
-    e.dataTransfer.setData(DRAG_MIME, payload);
-    // 同时写入 text/plain 作为傅底（部分 WebView 对自定义 MIME 不友好）
-    try { e.dataTransfer.setData("text/plain", payload); } catch { /* ignore */ }
-    e.dataTransfer.effectAllowed = "copy";
+    return dragSet.map((candidate) => {
+      const index = columns.findIndex((column) => column.name === candidate.name);
+      return {
+        columnId: candidate.columnId ?? candidate.name,
+        name: candidate.name,
+        sqlType: colSqlTypes[index] ?? candidate.type,
+      };
+    });
   };
 
   /** Handle a click on a column-list item. Implements the standard
@@ -834,6 +854,15 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
    *  an array of FieldRef (multi-drag). Always returns an array; empty
    *  array means "could not parse". */
   const parseDragFields = useCallback((raw: string): FieldRef[] => {
+    const sharedFields = decodeGraphBuilderDragFields(raw);
+    if (sharedFields) {
+      return sharedFields.flatMap(({ columnId }) => {
+        const field = columns.find((candidate) =>
+          (candidate.columnId ?? candidate.name) === columnId,
+        );
+        return field ? [field] : [];
+      });
+    }
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -848,7 +877,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       // ignore
     }
     return [];
-  }, []);
+  }, [columns]);
 
   /** Bind a field to an encoding slot, atomically clearing the
    *  axis's data-range overrides (min / max / tickInterval) when the
@@ -1008,6 +1037,19 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     },
     [item.mode, item.modeStates.multivariate.columns, setMultivariateState, multiX, multiY, bindFieldToSlot, setMultiAtSlot, flashRejectOnSlot, setCorrelationNotice],
   );
+
+  const routeSharedDropToSlot = useCallback((
+    slot: SlotKey,
+    fields: readonly GraphBuilderDragField[],
+  ) => {
+    const resolved = fields.flatMap(({ columnId }) => {
+      const field = columns.find((candidate) =>
+        (candidate.columnId ?? candidate.name) === columnId,
+      );
+      return field ? [field] : [];
+    });
+    if (resolved.length > 0) routeDropToSlot(slot, resolved);
+  }, [columns, routeDropToSlot]);
 
   const clearSlot = (slot: SlotKey) => {
     if (item.mode === "multivariate") {
@@ -1456,26 +1498,31 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                 {t("graph.datasetHeader", { name: dataset.name, n: columns.length })}
               </span>
             </div>
-            <div className="sp-cols-panel-list">
-              {columns.map((c, i) => {
-                const sqlType = colSqlTypes[i] ?? "";
-                const tLabel = t(`dataTable.type.${sqlType}`, { defaultValue: sqlType });
-                const selected = selectedColNames.has(c.name);
-                return (
-                  <div
-                    key={c.name}
-                    className={`sp-cols-panel-item${selected ? " sp-cols-panel-item-selected" : ""}`}
-                    draggable
-                    onClick={(e) => handleColClick(c.name, e)}
-                    onDragStart={(e) => onDragStart(e, c)}
-                    title={`${c.name} (${tLabel})`}
-                  >
-                    <span className="sp-cols-panel-item-type">{tLabel}</span>
-                    <span className="sp-cols-panel-item-name">{c.name}</span>
-                  </div>
-                );
+            <GraphFieldPalette
+              ariaLabel={t("graph.datasetHeader", { name: dataset.name, n: columns.length })}
+              disabled={readOnly}
+              items={columns.map((column, index) => {
+                const sqlType = colSqlTypes[index] ?? column.type;
+                return {
+                  columnId: column.columnId ?? column.name,
+                  name: column.name,
+                  sqlType,
+                  typeLabel: t(`dataTable.type.${sqlType}`, { defaultValue: sqlType }),
+                };
               })}
-            </div>
+              selectedIds={new Set(
+                columns
+                  .filter((column) => selectedColNames.has(column.name))
+                  .map((column) => column.columnId ?? column.name),
+              )}
+              onItemClick={(paletteItem, event) => handleColClick(paletteItem.name, event)}
+              resolveDragFields={(paletteItem) => {
+                const field = columns.find((candidate) =>
+                  (candidate.columnId ?? candidate.name) === paletteItem.columnId,
+                );
+                return field ? resolvePaletteDragFields(field) : [];
+              }}
+            />
           </div>
 
           {/* Horizontal splitter between TABLE columns and LAYERS */}
@@ -1581,11 +1628,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         <div className={`gb-center${isMultivariateMode ? " gb-center-correlation" : ""}`}>
           {/* 顶部分组槽 — 转置后显示原 Group Y。 */}
           {!isMultivariateMode && (
-            <Slot
+            <GraphDropSlot
               slot={visualSlots.top}
               label={visualSlots.top === "groupX" ? "Group X" : "Group Y"}
-              field={encoding[visualSlots.top]}
-              onDrop={(e) => handleDropOnSlot(visualSlots.top, e)}
+              binding={fieldToDropSlotBinding(encoding[visualSlots.top])}
+              onDropFields={(fields) => routeSharedDropToSlot(visualSlots.top, fields)}
               onClear={() => clearSlot(visualSlots.top)}
               onContextMenu={(x, y) => setSlotCtxMenu({ slot: visualSlots.top, x, y })}
               orientation="horizontal-top"
@@ -1605,26 +1652,29 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
           >
             {/* Z 轴槽 — 仅 3D 模式，位于 Y 轴拖动区左侧 */}
             {isThreeDMode && !isMultivariateMode && (
-              <Slot
+              <GraphDropSlot
                 slot="z"
                 label="Z"
-                field={encoding.z}
-                onDrop={(e) => handleDropOnSlot("z", e)}
+                binding={fieldToDropSlotBinding(encoding.z)}
+                onDropFields={(fields) => routeSharedDropToSlot("z", fields)}
                 onClear={() => clearSlot("z")}
                 onContextMenu={(x, y) => setSlotCtxMenu({ slot: "z", x, y })}
                 orientation="vertical-left"
               />
             )}
-            <Slot
+            <GraphDropSlot
               slot={visualSlots.left}
               label={isMultivariateMode
                 ? t("graph.multivariate.variables", { defaultValue: "Y (Variables)" })
                 : visualSlots.left.toUpperCase()}
-              field={isMultivariateMode ? multivariateSlotBinding.field : encoding[visualSlots.left]}
-              fields={isMultivariateMode
+              binding={fieldToDropSlotBinding(
+                isMultivariateMode ? multivariateSlotBinding.field : encoding[visualSlots.left],
+              )}
+              bindings={(isMultivariateMode
                 ? multivariateSlotBinding.columns
-                : (visualSlots.left === "x" ? multiX : multiY)}
-              onDrop={(e) => handleDropOnSlot(visualSlots.left, e)}
+                : (visualSlots.left === "x" ? multiX : multiY))
+                .map((field) => fieldToDropSlotBinding(field)!)}
+              onDropFields={(fields) => routeSharedDropToSlot(visualSlots.left, fields)}
               onClear={() => clearSlot(visualSlots.left)}
               onOpenManager={
                 isMultivariateMode && !multivariateSlotBinding.showManager
@@ -1716,11 +1766,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
               )}
             </div>
             {!isMultivariateMode && (
-              <Slot
+              <GraphDropSlot
                 slot={visualSlots.right}
                 label={visualSlots.right === "groupX" ? "Group X" : "Group Y"}
-                field={encoding[visualSlots.right]}
-                onDrop={(e) => handleDropOnSlot(visualSlots.right, e)}
+                binding={fieldToDropSlotBinding(encoding[visualSlots.right])}
+                onDropFields={(fields) => routeSharedDropToSlot(visualSlots.right, fields)}
                 onClear={() => clearSlot(visualSlots.right)}
                 onContextMenu={(x, y) => setSlotCtxMenu({ slot: visualSlots.right, x, y })}
                 orientation="vertical-right"
@@ -1728,11 +1778,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
             )}
             {/* Group Z 槽 — 仅 3D 模式，位于 Group Y 右侧 */}
             {isThreeDMode && !isMultivariateMode && (
-              <Slot
+              <GraphDropSlot
                 slot="groupZ"
                 label="Group Z"
-                field={encoding.groupZ}
-                onDrop={(e) => handleDropOnSlot("groupZ", e)}
+                binding={fieldToDropSlotBinding(encoding.groupZ)}
+                onDropFields={(fields) => routeSharedDropToSlot("groupZ", fields)}
                 onClear={() => clearSlot("groupZ")}
                 onContextMenu={(x, y) => setSlotCtxMenu({ slot: "groupZ", x, y })}
                 orientation="vertical-right"
@@ -1742,12 +1792,13 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
 
           {/* 底部轴槽 — 转置后显示原 Y。 */}
           {!isMultivariateMode && (
-            <Slot
+            <GraphDropSlot
               slot={visualSlots.bottom}
               label={visualSlots.bottom.toUpperCase()}
-              field={encoding[visualSlots.bottom]}
-              fields={visualSlots.bottom === "x" ? multiX : multiY}
-              onDrop={(e) => handleDropOnSlot(visualSlots.bottom, e)}
+              binding={fieldToDropSlotBinding(encoding[visualSlots.bottom])}
+              bindings={(visualSlots.bottom === "x" ? multiX : multiY)
+                .map((field) => fieldToDropSlotBinding(field)!)}
+              onDropFields={(fields) => routeSharedDropToSlot(visualSlots.bottom, fields)}
               onClear={() => clearSlot(visualSlots.bottom)}
               onOpenManager={() => setManagerOpenSlot(visualSlots.bottom)}
               onContextMenu={(x, y) => setSlotCtxMenu({ slot: visualSlots.bottom, x, y })}
@@ -1961,107 +2012,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
             );
           })()}
         </div>
-      )}
-    </div>
-  );
-}
-
-interface SlotProps {
-  slot: SlotKey;
-  label: string;
-  field?: FieldRef;
-  /** Multi-mode columns. One column renders as a regular chip; two or
-   *  more render as a summary chip that opens the manager. */
-  fields?: FieldRef[];
-  onDrop: (e: React.DragEvent) => void;
-  onClear: () => void;
-  /** Called when the slot body is clicked in multi-mode — opens the
-   *  manager popover. Required when `fields` has length >= 2. */
-  onOpenManager?: () => void;
-  /** Right-click hook — fires only when the slot has content (single
-   *  OR multi). Receives viewport coordinates so the parent can pin
-   *  the context menu at the cursor. Empty slots silently ignore
-   *  right-clicks (no menu to show), letting the native browser menu
-   *  through would just confuse the user when there's nothing to
-   *  act on. */
-  onContextMenu?: (x: number, y: number) => void;
-  orientation: "horizontal-top" | "horizontal-bottom" | "vertical-left" | "vertical-right" | "shelf";
-  required?: boolean;
-  /** When true, briefly flashes the slot red to signal a rejected
-   *  multi-drop (e.g. non-numeric mixed in). Reset by the parent
-   *  after ~400 ms. */
-  rejectFlash?: boolean;
-}
-
-function Slot({ label, field, fields, onDrop, onClear, onOpenManager, onContextMenu, orientation, required, rejectFlash }: SlotProps) {
-  const { t } = useTranslation();
-  const [over, setOver] = useState(false);
-  const isMulti = !!fields && fields.length >= 2;
-  const visibleField = resolveVisibleSlotField(field, fields);
-  const canManage = !!fields && fields.length >= 1 && !!onOpenManager;
-  const filled = isMulti || !!visibleField;
-  return (
-    <div
-      className={`gb-slot gb-slot-${orientation}${over ? " gb-slot-over" : ""}${filled ? " gb-slot-filled" : ""}${isMulti ? " gb-slot-multi" : ""}${rejectFlash ? " gb-slot-reject" : ""}`}
-      onDragEnter={(e) => {
-        e.preventDefault();
-        setOver(true);
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-        if (!over) setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        setOver(false);
-        onDrop(e);
-      }}
-      onClick={canManage ? () => onOpenManager?.() : undefined}
-      onContextMenu={(e) => {
-        // Only intercept right-clicks on filled slots — empty slots
-        // have nothing to act on so let the browser do its thing
-        // (or let the parent's right-click handler bubble up). When
-        // filled, suppress the native menu and hand the cursor
-        // position to the parent so it can render a styled menu.
-        if (!filled || !onContextMenu) return;
-        e.preventDefault();
-        e.stopPropagation();
-        onContextMenu(e.clientX, e.clientY);
-      }}
-      title={canManage ? t("graph.multiSlot.openManager", { defaultValue: "Click to manage columns" }) : undefined}
-    >
-      {!filled && (
-        <span className="gb-slot-label">{label}{required ? " *" : ""}</span>
-      )}
-      {isMulti && (
-        // Compact summary chip — shows the count and a preview of
-        // the first column name. Full management happens in the
-        // popover opened via onOpenManager.
-        <span className="gb-slot-chip gb-slot-chip-multi">
-          <span className="gb-slot-chip-name">
-            {t("graph.multiSlot.summary", {
-              defaultValue: "{{n}} cols: {{first}}",
-              n: fields!.length,
-              first: fields![0].name,
-            })}
-          </span>
-        </span>
-      )}
-      {!isMulti && visibleField && (
-        <span className="gb-slot-chip">
-          <span className="gb-slot-chip-name">{visibleField.name}</span>
-          <button
-            className="gb-slot-chip-x"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClear();
-            }}
-            title={t("graph.removeSlot")}
-          >
-            ×
-          </button>
-        </span>
       )}
     </div>
   );
@@ -3540,11 +3490,11 @@ function LegendStylePanel({ encoding, groupStyles, groupKeys, effectiveStyles, h
         {/* Overlay slot — placed under the LEGEND header and above the
             first legend entry so the visual hierarchy makes it clear: the
             legend rows below exist *because* this Overlay column is set. */}
-        <Slot
+        <GraphDropSlot
           slot="overlay"
           label="Overlay"
-          field={encoding.overlay}
-          onDrop={onDropOverlay}
+          binding={fieldToDropSlotBinding(encoding.overlay)}
+          onRawDrop={onDropOverlay}
           onClear={onClearOverlay}
           onContextMenu={onOverlayContextMenu}
           orientation="shelf"
