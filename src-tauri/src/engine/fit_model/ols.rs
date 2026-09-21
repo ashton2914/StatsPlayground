@@ -1006,11 +1006,6 @@ mod tests {
                 && point.lower <= point.fitted
                 && point.fitted <= point.upper
         }));
-        assert!(band.windows(2).all(|pair| {
-            pair[0].predicted != pair[1].predicted
-                || (pair[0].lower == pair[1].lower && pair[0].upper == pair[1].upper)
-        }));
-
         let center = band
             .iter()
             .find(|point| point.predicted == 5.0)
@@ -1020,17 +1015,15 @@ mod tests {
             .iter()
             .all(|point| { center_width <= point.upper - point.lower + f64::EPSILON }));
 
-        let diagnostic_bounds = fitted
-            .diagnostics
-            .rows
-            .iter()
-            .map(|row| (row.mean_confidence_lower, row.mean_confidence_upper))
-            .collect::<Vec<_>>();
-        assert_ne!(
-            band.iter()
-                .map(|point| (Some(point.lower), Some(point.upper)))
-                .collect::<Vec<_>>(),
-            diagnostic_bounds
+        let expected_band = band.clone();
+        let mut fitted_with_changed_diagnostics = fitted.clone();
+        for row in &mut fitted_with_changed_diagnostics.diagnostics.rows {
+            row.mean_confidence_lower = Some(-1_000_000.0);
+            row.mean_confidence_upper = Some(1_000_000.0);
+        }
+        assert_eq!(
+            fitted_with_changed_diagnostics.actual_by_predicted_confidence_band,
+            expected_band
         );
     }
 

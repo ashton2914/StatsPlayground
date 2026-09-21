@@ -65,8 +65,13 @@ pub(crate) fn compute_whole_model_confidence_band(
         return Ok(Vec::new());
     }
 
-    let mut predicted = fitted.iter().copied().collect::<Vec<_>>();
-    predicted.push(response_mean);
+    let mut predicted = if model_sum_of_squares == 0.0 {
+        vec![response_mean]
+    } else {
+        let mut coordinates = fitted.iter().copied().collect::<Vec<_>>();
+        coordinates.push(response_mean);
+        coordinates
+    };
     predicted.iter_mut().for_each(|value| {
         if *value == 0.0 {
             *value = 0.0;
@@ -795,8 +800,8 @@ mod tests {
     };
 
     use super::{
-        compute_effect_leverage_plots, compute_effect_tests, directed_effect_df,
-        rank_from_singular_values, rank_tolerance, vector_mean,
+        compute_effect_leverage_plots, compute_effect_tests, compute_whole_model_confidence_band,
+        directed_effect_df, rank_from_singular_values, rank_tolerance, vector_mean,
     };
 
     const TOLERANCE: f64 = 1e-9;
@@ -881,6 +886,33 @@ mod tests {
             (actual - expected).abs() <= TOLERANCE,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn whole_model_zero_sum_of_squares_returns_only_the_center() {
+        let fitted = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let band = compute_whole_model_confidence_band(&fitted, 2.0, 0.0, 2, Some(4.0), 10, 0.95)
+            .expect("zero model sum of squares should remain estimable");
+
+        assert_eq!(band.len(), 1);
+        let point = &band[0];
+        assert_eq!(point.predicted, 2.0);
+        assert_eq!(point.fitted, 2.0);
+        let f_critical = FisherSnedecor::new(2.0, 10.0)
+            .expect("valid F distribution")
+            .inverse_cdf(0.95);
+        let expected_margin = (2.0 * f_critical * 4.0 / 3.0).sqrt();
+        assert_close(point.lower, 2.0 - expected_margin);
+        assert_close(point.upper, 2.0 + expected_margin);
+    }
+
+    #[test]
+    fn whole_model_non_estimable_inference_returns_no_band() {
+        let fitted = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+        let band = compute_whole_model_confidence_band(&fitted, 2.0, 2.0, 1, None, 10, 0.95)
+            .expect("unavailable inference should not fail geometry");
+
+        assert!(band.is_empty());
     }
 
     #[allow(clippy::too_many_arguments)]
