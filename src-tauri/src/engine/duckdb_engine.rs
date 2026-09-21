@@ -340,7 +340,14 @@ fn time_series_request<'a>(
 
 pub(crate) struct ArchiveKeysetReadPlan {
     select_sql: String,
+    cursor_lookup_sql: String,
     pub columns: Vec<ArchiveColumnPlan>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveCursor {
+    pub natural_order_key: i128,
+    pub row_id: i64,
 }
 
 pub(crate) struct ArchiveBatchRow {
@@ -352,6 +359,7 @@ pub(crate) struct ArchiveBatchRow {
 pub(crate) struct ArchiveBatch {
     pub rows: Vec<ArchiveBatchRow>,
     pub retained_bytes_estimate: usize,
+    pub next_cursor: Option<ArchiveCursor>,
 }
 
 impl DuckDbEngine {
@@ -13023,24 +13031,23 @@ impl DuckDbEngine {
         };
 
         let select_sql = format!(
-            "SELECT \"_row_id\"{select_projection}
+            "SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS \"__archive_order_key\"{select_projection}
              FROM {table_name}
-             WHERE ? = 0
-                OR {NATURAL_ORDER_SQL} > (
-                    SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
-                )
-                OR (
-                    {NATURAL_ORDER_SQL} = (
-                        SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
-                    )
-                    AND \"_row_id\" > ?
-                )
+             WHERE ?
+                OR {NATURAL_ORDER_SQL} > ?
+                OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" > ?)
              ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
              LIMIT ?"
+        );
+        let cursor_lookup_sql = format!(
+            "SELECT {NATURAL_ORDER_SQL}
+             FROM {table_name}
+             WHERE \"_row_id\" = ?"
         );
 
         Ok(ArchiveKeysetReadPlan {
             select_sql,
+            cursor_lookup_sql,
             columns,
         })
     }
@@ -13053,30 +13060,65 @@ impl DuckDbEngine {
         target_batch_bytes: usize,
         hard_batch_bytes: usize,
     ) -> Result<ArchiveBatch, AppError> {
+        let after = if after_row_id == 0 {
+            None
+        } else {
+            let mut stmt = self.conn.prepare_cached(&plan.cursor_lookup_sql)?;
+            let mut rows = stmt.query(params![after_row_id])?;
+            let Some(row) = rows.next()? else {
+                return Ok(ArchiveBatch {
+                    rows: Vec::new(),
+                    retained_bytes_estimate: 0,
+                    next_cursor: None,
+                });
+            };
+            Some(ArchiveCursor {
+                natural_order_key: row.get(0)?,
+                row_id: after_row_id,
+            })
+        };
+
+        self.read_archive_cursor_batch(plan, after, row_limit, target_batch_bytes, hard_batch_bytes)
+    }
+
+    pub(crate) fn read_archive_cursor_batch(
+        &self,
+        plan: &ArchiveKeysetReadPlan,
+        after: Option<ArchiveCursor>,
+        row_limit: usize,
+        target_batch_bytes: usize,
+        hard_batch_bytes: usize,
+    ) -> Result<ArchiveBatch, AppError> {
         if row_limit == 0 {
             return Err(AppError::InvalidParam("row limit must be positive".into()));
         }
 
+        let cursor = after.unwrap_or(ArchiveCursor {
+            natural_order_key: 0,
+            row_id: 0,
+        });
         let mut stmt = self.conn.prepare_cached(&plan.select_sql)?;
         let mut query_rows = stmt.query(params![
-            after_row_id,
-            after_row_id,
-            after_row_id,
-            after_row_id,
+            after.is_none(),
+            cursor.natural_order_key,
+            cursor.natural_order_key,
+            cursor.row_id,
             row_limit as i64
         ])?;
 
         let mut rows = Vec::new();
         let mut releasable_bytes_estimate = 0usize;
+        let mut next_cursor = None;
 
         while let Some(row) = query_rows.next()? {
             let row_id: i64 = row.get(0)?;
+            let natural_order_key: i128 = row.get(1)?;
             let mut values = Vec::with_capacity(plan.columns.len());
             let mut row_bytes = estimate_retained_row_header_bytes(plan.columns.len());
             row_bytes = row_bytes.saturating_add(mem::size_of::<i64>());
 
             for index in 0..plan.columns.len() {
-                let value: Value = row.get(index + 1)?;
+                let value: Value = row.get(index + 2)?;
                 row_bytes = row_bytes.saturating_add(estimate_retained_value_bytes(&value));
                 if row_bytes > hard_batch_bytes {
                     return Err(AppError::InvalidParam(format!(
@@ -13110,6 +13152,10 @@ impl DuckDbEngine {
                 values,
                 retained_bytes_estimate: row_releasable_bytes,
             });
+            next_cursor = Some(ArchiveCursor {
+                natural_order_key,
+                row_id,
+            });
 
             if projected_retained_bytes >= target_batch_bytes {
                 break;
@@ -13123,6 +13169,7 @@ impl DuckDbEngine {
         Ok(ArchiveBatch {
             rows,
             retained_bytes_estimate,
+            next_cursor,
         })
     }
 
@@ -23795,6 +23842,102 @@ mod tests {
 
         assert_eq!(batch.rows.len(), 1);
         assert_eq!(archive_cell_to_json_call_count(), 0);
+    }
+
+    #[test]
+    fn archive_keyset_cursor_survives_deleting_the_previous_batch_tail() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("archive-cursor-delete", "Archive Cursor", 12, 3)
+            .unwrap();
+        let plan = db
+            .prepare_archive_keyset_read("archive-cursor-delete")
+            .unwrap();
+
+        let first = db
+            .read_archive_cursor_batch(&plan, None, 4, 1024 * 1024, 2 * 1024 * 1024)
+            .unwrap();
+        let cursor = first.next_cursor.expect("first cursor");
+        db.conn()
+            .execute(
+                "DELETE FROM dataset_archive_cursor_delete WHERE _row_id = ?",
+                duckdb::params![cursor.row_id],
+            )
+            .unwrap();
+
+        let second = db
+            .read_archive_cursor_batch(&plan, Some(cursor), 16, 1024 * 1024, 2 * 1024 * 1024)
+            .unwrap();
+
+        assert_eq!(
+            second.rows.iter().map(|row| row.row_id).collect::<Vec<_>>(),
+            (5_i64..=12).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn archive_keyset_cursor_preserves_hugeint_order_and_row_id_ties() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "archive-cursor-order",
+            "Archive Cursor Order",
+            &["value".to_string()],
+            &["BIGINT".to_string()],
+        )
+        .unwrap();
+        for (row_id, order_key) in [
+            (1_i64, i128::MIN),
+            (2_i64, 0_i128),
+            (3_i64, 0_i128),
+            (4_i64, i128::MAX),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO dataset_archive_cursor_order
+                     (_row_id, value, _row_order) VALUES (?, ?, ?)",
+                    duckdb::params![row_id, row_id * 10, order_key],
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets
+                 SET row_count = 4, next_row_id = 5
+                 WHERE id = 'archive-cursor-order'",
+                [],
+            )
+            .unwrap();
+        let expected = {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id
+                     FROM dataset_archive_cursor_order
+                     ORDER BY CAST(_row_order AS HUGEINT), _row_id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let plan = db
+            .prepare_archive_keyset_read("archive-cursor-order")
+            .unwrap();
+
+        let mut cursor = None;
+        let mut actual = Vec::new();
+        loop {
+            let batch = db
+                .read_archive_cursor_batch(&plan, cursor, 2, 1024 * 1024, 2 * 1024 * 1024)
+                .unwrap();
+            if batch.rows.is_empty() {
+                break;
+            }
+            actual.extend(batch.rows.iter().map(|row| row.row_id));
+            cursor = batch.next_cursor;
+        }
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
