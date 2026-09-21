@@ -997,7 +997,7 @@ mod tests {
         };
         let band = &fitted.actual_by_predicted_confidence_band;
 
-        assert_eq!(band.len(), 5);
+        assert!(band.len() <= GRAPH_SCATTER_RENDER_BUDGET);
         assert!(band
             .windows(2)
             .all(|pair| pair[0].predicted < pair[1].predicted));

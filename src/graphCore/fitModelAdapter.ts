@@ -304,6 +304,8 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
   const predictedExtent = resolvePredictedExtent(input.plotRows);
   const observedExtent = resolveObservedExtent(input.plotRows);
   for (const row of confidenceRows) {
+    predictedExtent.min = Math.min(predictedExtent.min, row.x);
+    predictedExtent.max = Math.max(predictedExtent.max, row.x);
     observedExtent.min = Math.min(observedExtent.min, row.lower);
     observedExtent.max = Math.max(observedExtent.max, row.lower + row.width);
   }

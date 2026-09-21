@@ -131,6 +131,26 @@ function testActualAxesUseIndependentObservedAndFittedExtents(): void {
   });
 }
 
+function testActualPredictedAxisIncludesConfidenceCoordinates(): void {
+  const actual = buildActualByPredictedOption({
+    title: "Actual by Predicted",
+    labels: SAMPLE_LABELS,
+    plotRows: [
+      { rowIndex: 0, observed: 10, fitted: 10, residual: 0 },
+      { rowIndex: 1, observed: 20, fitted: 20, residual: 0 },
+    ],
+    actualByPredictedConfidenceBand: [
+      { predicted: -5, fitted: -5, lower: -6, upper: -4 },
+      { predicted: 35, fitted: 35, lower: 34, upper: 36 },
+    ],
+  }) as {
+    xAxis: { min: number; max: number };
+  };
+
+  assert.ok(actual.xAxis.min < -5);
+  assert.ok(actual.xAxis.max > 35);
+}
+
 function testReferenceLinesFiniteAndCorrect(): void {
   const rows: FitModelPlotRow[] = [
     { rowIndex: 0, observed: 2, fitted: 1.5, residual: 0.5 },
@@ -600,6 +620,7 @@ function testChartLayoutContainsAxisText(): void {
 testActualAndResidualPointsAndAxes();
 testDiagnosticAxesUsePaddedNiceExtents();
 testActualAxesUseIndependentObservedAndFittedExtents();
+testActualPredictedAxisIncludesConfidenceCoordinates();
 testReferenceLinesFiniteAndCorrect();
 testTooltipValuesAreFinite();
 testEmptyInputProducesNonblankOption();

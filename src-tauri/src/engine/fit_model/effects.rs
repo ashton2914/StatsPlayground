@@ -13,6 +13,7 @@ use crate::models::fit_model::{
 const ROUNDING_CLAMP_FACTOR: f64 = 1e-12;
 const MIN_P_VALUE: f64 = 1e-300;
 const GRAPH_SCATTER_RENDER_BUDGET: usize = crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET;
+const CONFIDENCE_CURVE_RENDER_BUDGET: usize = GRAPH_SCATTER_RENDER_BUDGET;
 
 struct EffectColumns<'a> {
     term: &'a FitModelResolvedTerm,
@@ -65,20 +66,21 @@ pub(crate) fn compute_whole_model_confidence_band(
         return Ok(Vec::new());
     }
 
-    let mut predicted = if model_sum_of_squares == 0.0 {
+    let predicted = if model_sum_of_squares == 0.0 {
         vec![response_mean]
     } else {
-        let mut coordinates = fitted.iter().copied().collect::<Vec<_>>();
+        let (minimum, maximum) = fitted.iter().copied().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+        );
+        let grid_size = fitted
+            .len()
+            .min(CONFIDENCE_CURVE_RENDER_BUDGET.saturating_sub(3))
+            .max(2);
+        let mut coordinates = deterministic_linear_grid(minimum, maximum, grid_size);
         coordinates.push(response_mean);
         coordinates
     };
-    predicted.iter_mut().for_each(|value| {
-        if *value == 0.0 {
-            *value = 0.0;
-        }
-    });
-    predicted.sort_by(f64::total_cmp);
-    predicted.dedup_by(|left, right| left.total_cmp(right).is_eq());
 
     confidence_geometry(
         predicted,
@@ -642,6 +644,44 @@ fn confidence_geometry(
         ));
     }
 
+    let mut required_coordinates = vec![plot_center];
+    if horizontal_energy > 0.0 {
+        let critical_scale = hypothesis_degrees_of_freedom as f64 * f_critical * mse;
+        let slope_squared = finite_value(slope * slope, "leverage squared slope")?;
+        let f_ratio = finite_value(
+            slope_squared * horizontal_energy / (hypothesis_degrees_of_freedom as f64 * mse),
+            "leverage F ratio",
+        )?;
+        if f_ratio > f_critical {
+            let denominator = finite_value(
+                slope_squared - critical_scale / horizontal_energy,
+                "crossing denominator",
+            )?;
+            if denominator <= 0.0 {
+                return Err(FitModelEngineError::NumericalFailure(
+                    "significant leverage confidence geometry has no finite crossing".to_string(),
+                ));
+            }
+            let crossing_offset = finite_value(
+                (critical_scale / source_row_count as f64 / denominator).sqrt(),
+                "leverage confidence crossing",
+            )?;
+            required_coordinates.push(finite_value(
+                plot_center - crossing_offset,
+                "lower leverage confidence crossing",
+            )?);
+            required_coordinates.push(finite_value(
+                plot_center + crossing_offset,
+                "upper leverage confidence crossing",
+            )?);
+        }
+    }
+    horizontal_coordinates.extend(required_coordinates.iter().copied());
+    horizontal_coordinates = bounded_sorted_coordinates(
+        horizontal_coordinates,
+        &required_coordinates,
+        CONFIDENCE_CURVE_RENDER_BUDGET,
+    );
     horizontal_coordinates.sort_by(f64::total_cmp);
     horizontal_coordinates
         .into_iter()
@@ -673,6 +713,46 @@ fn confidence_geometry(
             ))
         })
         .collect()
+}
+
+fn deterministic_linear_grid(minimum: f64, maximum: f64, point_count: usize) -> Vec<f64> {
+    if point_count <= 1 || minimum == maximum {
+        return vec![normalize_signed_zero(minimum)];
+    }
+    let denominator = (point_count - 1) as f64;
+    (0..point_count)
+        .map(|index| {
+            normalize_signed_zero(minimum + (maximum - minimum) * index as f64 / denominator)
+        })
+        .collect()
+}
+
+fn bounded_sorted_coordinates(
+    mut coordinates: Vec<f64>,
+    required_coordinates: &[f64],
+    budget: usize,
+) -> Vec<f64> {
+    coordinates.iter_mut().for_each(|value| {
+        *value = normalize_signed_zero(*value);
+    });
+    coordinates.sort_by(f64::total_cmp);
+    coordinates.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    if coordinates.len() <= budget {
+        return coordinates;
+    }
+
+    let mut retained = required_coordinates.to_vec();
+    retained.push(coordinates[0]);
+    retained.push(coordinates[coordinates.len() - 1]);
+    retained.sort_by(f64::total_cmp);
+    retained.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    let sample_budget = budget.saturating_sub(retained.len());
+    for rank in deterministic_rank_grid(coordinates.len() as u64, sample_budget) {
+        retained.push(coordinates[(rank - 1) as usize]);
+    }
+    retained.sort_by(f64::total_cmp);
+    retained.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    retained
 }
 
 fn vector_mean(values: &DVector<f64>) -> Result<f64, FitModelEngineError> {
@@ -801,7 +881,8 @@ mod tests {
 
     use super::{
         compute_effect_leverage_plots, compute_effect_tests, compute_whole_model_confidence_band,
-        directed_effect_df, rank_from_singular_values, rank_tolerance, vector_mean,
+        confidence_geometry, directed_effect_df, rank_from_singular_values, rank_tolerance,
+        vector_mean, GRAPH_SCATTER_RENDER_BUDGET,
     };
 
     const TOLERANCE: f64 = 1e-9;
@@ -913,6 +994,79 @@ mod tests {
             .expect("unavailable inference should not fail geometry");
 
         assert!(band.is_empty());
+    }
+
+    #[test]
+    fn whole_model_confidence_curve_is_bounded_and_retains_analytic_landmarks() {
+        let source_count = GRAPH_SCATTER_RENDER_BUDGET + 101;
+        let fitted =
+            DVector::from_iterator(source_count, (0..source_count).map(|value| value as f64));
+        let response_mean = (source_count - 1) as f64 / 2.0;
+        let model_df = 1;
+        let mse = 1.0;
+        let error_df = 100;
+        let f_critical = FisherSnedecor::new(model_df as f64, error_df as f64)
+            .expect("valid F distribution")
+            .inverse_cdf(0.95);
+        let model_sum_of_squares = f_critical * 1.001;
+        let band = compute_whole_model_confidence_band(
+            &fitted,
+            response_mean,
+            model_sum_of_squares,
+            model_df,
+            Some(mse),
+            error_df,
+            0.95,
+        )
+        .expect("whole model confidence geometry");
+
+        assert!(band.len() <= GRAPH_SCATTER_RENDER_BUDGET);
+        assert!(band
+            .windows(2)
+            .all(|pair| pair[0].predicted < pair[1].predicted));
+        assert!(band.iter().any(|point| point.predicted == 0.0));
+        assert!(band
+            .iter()
+            .any(|point| point.predicted == (source_count - 1) as f64));
+        assert!(band.iter().any(|point| point.predicted == response_mean));
+        let crossings = band
+            .iter()
+            .filter(|point| {
+                (point.lower - response_mean).abs() <= TOLERANCE
+                    || (point.upper - response_mean).abs() <= TOLERANCE
+            })
+            .count();
+        assert_eq!(crossings, 2);
+    }
+
+    #[test]
+    fn significant_confidence_geometry_includes_crossings_outside_observed_domain() {
+        let error_df = 100;
+        let f_critical = FisherSnedecor::new(1.0, error_df as f64)
+            .expect("valid F distribution")
+            .inverse_cdf(0.95);
+        let slope = (f_critical * 1.001).sqrt();
+        let geometry = confidence_geometry(
+            vec![-1.0, 1.0],
+            0.0,
+            0.0,
+            slope,
+            1.0,
+            1,
+            1.0,
+            error_df,
+            0.95,
+            100,
+        )
+        .expect("effect confidence geometry");
+
+        assert!(geometry.first().expect("first crossing domain").0 < -1.0);
+        assert!(geometry.last().expect("last crossing domain").0 > 1.0);
+        let crossings = geometry
+            .iter()
+            .filter(|(_, _, lower, upper)| lower.abs() <= TOLERANCE || upper.abs() <= TOLERANCE)
+            .count();
+        assert_eq!(crossings, 2);
     }
 
     #[allow(clippy::too_many_arguments)]
