@@ -23,6 +23,7 @@ import type {
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
   McpServerStatus,
+  McpSettings,
 } from "../src/types/mcp";
 import artifactParityFixture from "../contracts/mcp/artifact-parity.v1.json";
 
@@ -552,6 +553,7 @@ function createHarnessService(): McpManagementServiceLike & {
     queuedRequests: 0,
     runningRequests: 0,
   };
+  let settings: McpSettings | null = null;
 
   let bridgeDispose: { dispose: () => Promise<void> } | null = null;
   const auditEntries: McpAuditEntry[] = [];
@@ -660,6 +662,16 @@ function createHarnessService(): McpManagementServiceLike & {
     },
     async getServerStatus() {
       return status;
+    },
+    async getSettings() {
+      return { settings };
+    },
+    async saveSettings(nextSettings) {
+      settings = nextSettings;
+      return { settings };
+    },
+    async generateToken() {
+      return "generated-e2e-token-0123456789abc";
     },
     async listAuditEntries() {
       return [...auditEntries];
