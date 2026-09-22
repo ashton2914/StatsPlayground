@@ -62,6 +62,18 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::mcp_commands::get_mcp_settings",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::save_mcp_settings",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::generate_mcp_token",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::mcp_commands::list_mcp_audit_entries",
                 CommandClass::ReadOnly,
             ),

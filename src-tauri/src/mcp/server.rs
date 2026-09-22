@@ -15,6 +15,7 @@ use crate::mcp::security::{
     enforce_http_limits, require_bearer, BearerToken, McpHttpLimitsState, McpHttpSecurityState,
 };
 use crate::mcp::tools::{McpAuditLog, StatsPlaygroundMcpServer};
+pub use crate::models::mcp::McpSettings;
 use crate::models::mcp::{McpAuditEntry, McpServerStatus};
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -23,15 +24,24 @@ const MCP_BIND_ENV: &str = "STATSPLAYGROUND_MCP_BIND";
 #[cfg(debug_assertions)]
 const MCP_TOKEN_ENV: &str = "STATSPLAYGROUND_MCP_TOKEN";
 
-struct McpStartConfiguration {
+pub struct McpStartConfiguration {
     bind_address: String,
     token: BearerToken,
 }
 
-fn production_start_configuration() -> McpStartConfiguration {
-    McpStartConfiguration {
-        bind_address: "127.0.0.1:0".to_string(),
-        token: BearerToken::generate(),
+impl McpStartConfiguration {
+    pub fn transient() -> Self {
+        Self {
+            bind_address: "127.0.0.1:0".to_string(),
+            token: BearerToken::generate(),
+        }
+    }
+
+    pub fn from_settings(settings: McpSettings) -> Self {
+        Self {
+            bind_address: format!("127.0.0.1:{}", settings.port),
+            token: BearerToken::from_runtime_value(settings.token),
+        }
     }
 }
 
@@ -65,7 +75,11 @@ impl McpServerRuntime {
         }
     }
 
-    pub async fn start(&self, broker: McpCommandBroker) -> Result<McpServerStatus, AppError> {
+    pub async fn start(
+        &self,
+        broker: McpCommandBroker,
+        configuration: McpStartConfiguration,
+    ) -> Result<McpServerStatus, AppError> {
         {
             let mut state = self
                 .inner
@@ -83,7 +97,7 @@ impl McpServerRuntime {
             }
         }
 
-        let configuration = mcp_start_configuration();
+        let configuration = mcp_start_configuration(configuration);
         let bind_address: SocketAddr = match configuration.bind_address.parse() {
             Ok(address) => address,
             Err(error) => {
@@ -225,6 +239,25 @@ impl McpServerRuntime {
         }
     }
 
+    pub fn ensure_stopped(&self) -> Result<(), AppError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        match &*state {
+            McpServerState::Stopped => Ok(()),
+            McpServerState::Starting => Err(AppError::Busy(
+                "MCP server is starting; stop it before changing settings".to_string(),
+            )),
+            McpServerState::Running(_) => Err(AppError::Busy(
+                "MCP server is running; stop it before changing settings".to_string(),
+            )),
+            McpServerState::Stopping => Err(AppError::Busy(
+                "MCP server is stopping; wait before changing settings".to_string(),
+            )),
+        }
+    }
+
     pub fn audit_entries(&self) -> Result<Vec<McpAuditEntry>, AppError> {
         self.audit_log.list()
     }
@@ -252,18 +285,19 @@ fn endpoint_for(address: SocketAddr) -> String {
 }
 
 #[cfg(debug_assertions)]
-fn mcp_start_configuration() -> McpStartConfiguration {
-    McpStartConfiguration {
-        bind_address: std::env::var(MCP_BIND_ENV).unwrap_or_else(|_| "127.0.0.1:0".to_string()),
-        token: std::env::var(MCP_TOKEN_ENV)
-            .map(BearerToken::from_runtime_value)
-            .unwrap_or_else(|_| BearerToken::generate()),
+fn mcp_start_configuration(mut configuration: McpStartConfiguration) -> McpStartConfiguration {
+    if let Ok(bind_address) = std::env::var(MCP_BIND_ENV) {
+        configuration.bind_address = bind_address;
     }
+    if let Ok(token) = std::env::var(MCP_TOKEN_ENV) {
+        configuration.token = BearerToken::from_runtime_value(token);
+    }
+    configuration
 }
 
 #[cfg(not(debug_assertions))]
-fn mcp_start_configuration() -> McpStartConfiguration {
-    production_start_configuration()
+fn mcp_start_configuration(configuration: McpStartConfiguration) -> McpStartConfiguration {
+    configuration
 }
 
 fn inactive_status(state: &str) -> McpServerStatus {
@@ -292,6 +326,7 @@ fn running_status(handle: &McpServerHandle) -> Result<McpServerStatus, AppError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::broker::McpCommandBroker;
 
     #[test]
     fn endpoint_uses_ipv4_loopback_and_mcp_path() {
@@ -301,8 +336,8 @@ mod tests {
 
     #[test]
     fn production_configuration_uses_random_loopback_defaults() {
-        let first = production_start_configuration();
-        let second = production_start_configuration();
+        let first = McpStartConfiguration::transient();
+        let second = McpStartConfiguration::transient();
 
         assert_eq!(first.bind_address, "127.0.0.1:0");
         assert_eq!(second.bind_address, "127.0.0.1:0");
@@ -310,5 +345,25 @@ mod tests {
             first.token.expose_for_management(),
             second.token.expose_for_management()
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_stopped_accepts_only_the_stopped_state() {
+        let runtime = McpServerRuntime::new();
+        runtime.ensure_stopped().expect("stopped runtime");
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Starting;
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Stopping;
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Stopped;
+        runtime
+            .start(McpCommandBroker::new(), McpStartConfiguration::transient())
+            .await
+            .expect("start runtime");
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+        runtime.stop().await.expect("stop runtime");
     }
 }
