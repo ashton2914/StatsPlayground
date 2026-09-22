@@ -1,5 +1,14 @@
 export type McpServerState = "stopped" | "starting" | "running" | "stopping";
 
+export interface McpSettings {
+  port: number;
+  token: string;
+}
+
+export interface McpSettingsState {
+  settings: McpSettings | null;
+}
+
 export type McpAuditStatus =
   | "queued"
   | "running"

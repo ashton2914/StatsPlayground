@@ -9,6 +9,8 @@ import type {
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
   McpServerStatus,
+  McpSettings,
+  McpSettingsState,
 } from "../src/types/mcp.ts";
 
 function makeStatus(overrides: Partial<McpServerStatus> = {}): McpServerStatus {
@@ -155,6 +157,9 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
     listCommandRequests: () => [],
     confirmCommandRequest: () => false,
     cancelCommandRequest: () => false,
+    getSettings: async () => ({ settings: null }),
+    saveSettings: async (settings: McpSettings) => ({ settings }),
+    generateToken: async () => "g".repeat(32),
     ...overrides,
   };
 }
@@ -173,6 +178,11 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
   assert.deepEqual(store.getState().authorizedRoots, []);
   assert.deepEqual(store.getState().commandRequests, []);
   assert.equal(store.getState().pendingConfirmations.length, 0);
+  assert.equal(store.getState().settings, null);
+  assert.equal(store.getState().settingsPort, "");
+  assert.equal(store.getState().settingsToken, "");
+  assert.equal(store.getState().settingsTokenVisible, false);
+  assert.equal(store.getState().settingsBusy, false);
   assert.equal(storage.local.calls.length, 0);
   assert.equal(storage.session.calls.length, 0);
   storage.restore();
@@ -455,6 +465,233 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
 
   assert.deepEqual(store.getState().commandRequests, [mcpVisible]);
   assert.deepEqual(store.getState().pendingConfirmations, []);
+}
+
+{
+  const timer = createTimerHarness();
+  const settings: McpSettings = {
+    port: 48123,
+    token: "saved-token-value-with-32-chars!!",
+  };
+  let settingsCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      getSettings: async () => {
+        settingsCalls += 1;
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+
+  store.getState().setViewVisible(true);
+  await flushMicrotasks();
+
+  assert.equal(settingsCalls, 1);
+  assert.deepEqual(store.getState().settings, settings);
+  assert.equal(store.getState().settingsPort, "48123");
+  assert.equal(store.getState().settingsToken, settings.token);
+}
+
+{
+  const timer = createTimerHarness();
+  const store = createMcpStore({
+    service: createService({
+      getSettings: async (): Promise<McpSettingsState> => ({ settings: null }),
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.setState({
+    settings: { port: 48123, token: "a".repeat(32) },
+    settingsPort: "48123",
+    settingsToken: "a".repeat(32),
+  });
+
+  await store.getState().refresh();
+
+  assert.equal(store.getState().settings, null);
+  assert.equal(store.getState().settingsPort, "");
+  assert.equal(store.getState().settingsToken, "");
+}
+
+{
+  const timer = createTimerHarness();
+  let saveCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      saveSettings: async (settings) => {
+        saveCalls += 1;
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+
+  store.getState().setSettingsPort(" 48123 ");
+  store.getState().setSettingsToken("z".repeat(32));
+  store.getState().toggleSettingsTokenVisible();
+
+  assert.equal(saveCalls, 0);
+  assert.equal(store.getState().settingsPort, " 48123 ");
+  assert.equal(store.getState().settingsToken, "z".repeat(32));
+  assert.equal(store.getState().settingsTokenVisible, true);
+}
+
+{
+  const timer = createTimerHarness();
+  const saved: McpSettings[] = [];
+  const store = createMcpStore({
+    service: createService({
+      saveSettings: async (settings) => {
+        saved.push(settings);
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.getState().setSettingsPort("48123");
+  store.getState().setSettingsToken("s".repeat(32));
+
+  await store.getState().saveSettings();
+
+  assert.deepEqual(saved, [{ port: 48123, token: "s".repeat(32) }]);
+  assert.deepEqual(store.getState().settings, saved[0]);
+  assert.equal(store.getState().settingsPort, "48123");
+  assert.equal(store.getState().settingsToken, "s".repeat(32));
+  assert.equal(store.getState().settingsBusy, false);
+  assert.equal(store.getState().lastError, null);
+}
+
+for (const invalidPort of ["", "12.5", " 48123 ", "0", "65536"]) {
+  const timer = createTimerHarness();
+  let saveCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      saveSettings: async (settings) => {
+        saveCalls += 1;
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.getState().setSettingsPort(invalidPort);
+  store.getState().setSettingsToken("t".repeat(32));
+
+  await assert.rejects(store.getState().saveSettings());
+  assert.equal(saveCalls, 0);
+  assert.notEqual(store.getState().lastError, null);
+}
+
+for (const invalidToken of ["t".repeat(31), "t".repeat(257), `t${" ".repeat(31)}`, `t${"\u007f".repeat(31)}`]) {
+  const timer = createTimerHarness();
+  let saveCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      saveSettings: async (settings) => {
+        saveCalls += 1;
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.getState().setSettingsPort("48123");
+  store.getState().setSettingsToken(invalidToken);
+
+  await assert.rejects(store.getState().saveSettings());
+  assert.equal(saveCalls, 0);
+  assert.notEqual(store.getState().lastError, null);
+}
+
+{
+  const timer = createTimerHarness();
+  const originalSettings = { port: 48123, token: "o".repeat(32) };
+  const generated = deferred<string>();
+  const store = createMcpStore({
+    service: createService({
+      generateToken: async () => generated.promise,
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.setState({
+    settings: originalSettings,
+    settingsPort: "49200",
+    settingsToken: "e".repeat(32),
+  });
+
+  const generatePromise = store.getState().generateSettingsToken();
+  assert.equal(store.getState().settingsBusy, true);
+  generated.resolve("n".repeat(32));
+  await generatePromise;
+
+  assert.deepEqual(store.getState().settings, originalSettings);
+  assert.equal(store.getState().settingsPort, "49200");
+  assert.equal(store.getState().settingsToken, "n".repeat(32));
+  assert.equal(store.getState().settingsBusy, false);
+}
+
+for (const action of ["generate", "save"] as const) {
+  const timer = createTimerHarness();
+  const store = createMcpStore({
+    service: createService({
+      generateToken: async () => {
+        throw new Error("token generation failed");
+      },
+      saveSettings: async () => {
+        throw new Error("settings save failed");
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.getState().setSettingsPort("48123");
+  store.getState().setSettingsToken("v".repeat(32));
+
+  if (action === "generate") {
+    await assert.rejects(store.getState().generateSettingsToken(), /token generation failed/);
+    assert.match(store.getState().lastError ?? "", /token generation failed/);
+  } else {
+    await assert.rejects(store.getState().saveSettings(), /settings save failed/);
+    assert.match(store.getState().lastError ?? "", /settings save failed/);
+  }
+  assert.equal(store.getState().settingsPort, "48123");
+  assert.equal(store.getState().settingsToken, "v".repeat(32));
+  assert.equal(store.getState().settingsBusy, false);
+}
+
+for (const state of ["starting", "running", "stopping"] as const) {
+  const timer = createTimerHarness();
+  let settingsCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      generateToken: async () => {
+        settingsCalls += 1;
+        return "g".repeat(32);
+      },
+      saveSettings: async (settings) => {
+        settingsCalls += 1;
+        return { settings };
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+  store.setState({
+    status: makeStatus({ state }),
+    settingsPort: "48123",
+    settingsToken: "v".repeat(32),
+  });
+
+  await assert.rejects(store.getState().generateSettingsToken(), /stopped/);
+  await assert.rejects(store.getState().saveSettings(), /stopped/);
+  assert.equal(settingsCalls, 0);
+  assert.match(store.getState().lastError ?? "", /stopped/);
 }
 
 console.log("mcp store behavior tests passed");
