@@ -22,6 +22,7 @@ pub mod graph_new_tile;
 pub mod graph_new_transport_service;
 pub mod hypothesis_test_service;
 pub mod io_service;
+pub mod mcp_settings_service;
 pub mod normal_capability;
 pub(crate) mod natural_row_order;
 pub mod path_authorization_service;
