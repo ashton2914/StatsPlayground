@@ -47,6 +47,7 @@ export interface McpStore {
   settingsToken: string;
   settingsTokenVisible: boolean;
   settingsBusy: boolean;
+  settingsDirty: boolean;
   refreshing: boolean;
   lastError: string | null;
   refresh: () => Promise<void>;
@@ -88,11 +89,18 @@ function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function settingsEditorState(state: McpSettingsState) {
+function settingsEditorFields(state: McpSettingsState) {
   return {
-    settings: state.settings,
     settingsPort: state.settings === null ? "" : String(state.settings.port),
     settingsToken: state.settings?.token ?? "",
+  };
+}
+
+function savedSettingsState(state: McpSettingsState) {
+  return {
+    settings: state.settings,
+    ...settingsEditorFields(state),
+    settingsDirty: false,
   };
 }
 
@@ -164,10 +172,12 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
     settingsToken: "",
     settingsTokenVisible: false,
     settingsBusy: false,
+    settingsDirty: false,
     refreshing: false,
     lastError: null,
 
     refresh: async () => {
+      const preserveSettingsEditor = get().settingsDirty || get().settingsBusy;
       set({ refreshing: true });
       try {
         const [status, auditEntries, commandRequests, settingsState] = await Promise.all([
@@ -177,23 +187,33 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
           service.getSettings(),
         ]);
         if (status.state === "stopped") {
-          set({
+          set((state) => ({
             ...createStoppedTransientState(),
-            ...settingsEditorState(settingsState),
+            settings: settingsState.settings,
+            ...(
+              preserveSettingsEditor || state.settingsDirty || state.settingsBusy
+                ? {}
+                : settingsEditorFields(settingsState)
+            ),
             refreshing: false,
             lastError: null,
-          });
+          }));
           return;
         }
-        set({
+        set((state) => ({
           status,
           auditEntries,
           commandRequests,
           pendingConfirmations: pendingConfirmations(commandRequests),
-          ...settingsEditorState(settingsState),
+          settings: settingsState.settings,
+          ...(
+            preserveSettingsEditor || state.settingsDirty || state.settingsBusy
+              ? {}
+              : settingsEditorFields(settingsState)
+          ),
           refreshing: false,
           lastError: null,
-        });
+        }));
       } catch (error) {
         set({ refreshing: false, lastError: messageFromError(error) });
         throw error;
@@ -211,11 +231,11 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
     },
 
     setSettingsPort: (settingsPort) => {
-      set({ settingsPort });
+      set({ settingsPort, settingsDirty: true });
     },
 
     setSettingsToken: (settingsToken) => {
-      set({ settingsToken });
+      set({ settingsToken, settingsDirty: true });
     },
 
     toggleSettingsTokenVisible: () => {
@@ -227,7 +247,12 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
         requireStopped(get().status);
         set({ settingsBusy: true, lastError: null });
         const settingsToken = await service.generateToken();
-        set({ settingsToken, settingsBusy: false, lastError: null });
+        set({
+          settingsToken,
+          settingsBusy: false,
+          settingsDirty: true,
+          lastError: null,
+        });
       } catch (error) {
         set({ settingsBusy: false, lastError: messageFromError(error) });
         throw error;
@@ -244,7 +269,7 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
         set({ settingsBusy: true, lastError: null });
         const saved = await service.saveSettings(settings);
         set({
-          ...settingsEditorState(saved),
+          ...savedSettingsState(saved),
           settingsBusy: false,
           lastError: null,
         });

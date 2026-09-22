@@ -496,6 +496,48 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
 
 {
   const timer = createTimerHarness();
+  const persistedSettings = [
+    { port: 48123, token: "a".repeat(32) },
+    { port: 48124, token: "b".repeat(32) },
+    { port: 48125, token: "c".repeat(32) },
+  ];
+  let settingsCalls = 0;
+  const store = createMcpStore({
+    service: createService({
+      getSettings: async () => ({
+        settings: persistedSettings[settingsCalls++],
+      }),
+      saveSettings: async () => {
+        throw new Error("settings save failed");
+      },
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+
+  store.getState().setViewVisible(true);
+  await flushMicrotasks();
+  store.getState().setSettingsPort("49200");
+  store.getState().setSettingsToken("e".repeat(32));
+
+  timer.tickAll();
+  await flushMicrotasks();
+
+  assert.deepEqual(store.getState().settings, persistedSettings[1]);
+  assert.equal(store.getState().settingsPort, "49200");
+  assert.equal(store.getState().settingsToken, "e".repeat(32));
+
+  await assert.rejects(store.getState().saveSettings(), /settings save failed/);
+  timer.tickAll();
+  await flushMicrotasks();
+
+  assert.deepEqual(store.getState().settings, persistedSettings[2]);
+  assert.equal(store.getState().settingsPort, "49200");
+  assert.equal(store.getState().settingsToken, "e".repeat(32));
+}
+
+{
+  const timer = createTimerHarness();
   const store = createMcpStore({
     service: createService({
       getSettings: async (): Promise<McpSettingsState> => ({ settings: null }),
