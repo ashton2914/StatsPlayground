@@ -7,9 +7,13 @@ import type {
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
   McpServerStatus,
+  McpSettings,
 } from "../src/types/mcp";
 
 type HarnessScenario = "stopped" | "starting" | "running" | "stopping";
+
+const SAVED_TOKEN = "saved-token-abcdefghijklmnopqrstuvwxyz";
+const GENERATED_TOKEN = "generated-token-abcdefghijklmnopqrstuvwxyz";
 
 function makeStatus(scenario: HarnessScenario): McpServerStatus {
   if (scenario === "running") {
@@ -80,11 +84,15 @@ function makeRequests(): McpCommandRequestSummary[] {
   ];
 }
 
-function createHarnessService(scenario: HarnessScenario): McpManagementServiceLike {
+function createHarnessService(
+  scenario: HarnessScenario,
+  captureSave: (settings: McpSettings) => void,
+): McpManagementServiceLike {
   let status = makeStatus(scenario);
   let auditEntries = makeAuditEntries();
   let requests = makeRequests();
   let grants: McpAuthorizedRootGrant[] = [{ rootId: "root-1", displayName: "/Users/ashton/Exports" }];
+  let settings: McpSettings = { port: 48123, token: SAVED_TOKEN };
 
   return {
     startServer: async () => {
@@ -97,6 +105,13 @@ function createHarnessService(scenario: HarnessScenario): McpManagementServiceLi
       requests = [];
     },
     getServerStatus: async () => status,
+    getSettings: async () => ({ settings }),
+    saveSettings: async (nextSettings: McpSettings) => {
+      settings = nextSettings;
+      captureSave(nextSettings);
+      return { settings };
+    },
+    generateToken: async () => GENERATED_TOKEN,
     listAuditEntries: async () => auditEntries,
     authorizeOutputRoot: async (rootPath: string) => {
       const grant = { rootId: `root-${grants.length + 1}`, displayName: rootPath };
@@ -135,10 +150,14 @@ export function McpManagementHarness({
 }) {
   const [subview, setSubview] = useState<"server" | "skills">(initialSubview);
   const [copied, setCopied] = useState<string[]>([]);
+  const [lastSave, setLastSave] = useState<McpSettings | null>(null);
   const [store] = useState(() => {
-    const created = createMcpStore({ service: createHarnessService(scenario) });
+    const created = createMcpStore({ service: createHarnessService(scenario, setLastSave) });
     created.setState({
       status: makeStatus(scenario),
+      settings: { port: 48123, token: SAVED_TOKEN },
+      settingsPort: "48123",
+      settingsToken: SAVED_TOKEN,
       auditEntries: makeAuditEntries(),
       commandRequests: [
         ...makeRequests(),
@@ -210,6 +229,10 @@ export function McpManagementHarness({
         />
       </div>
       <output data-testid="copy-log">{copied.join("\n---\n")}</output>
+      <output
+        data-testid="save-log"
+        data-last-save={lastSave === null ? "" : JSON.stringify(lastSave)}
+      />
     </main>
   );
 }
