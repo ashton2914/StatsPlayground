@@ -3,6 +3,19 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct McpSettings {
+    pub port: u16,
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettingsState {
+    pub settings: Option<McpSettings>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct McpServerStatus {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]

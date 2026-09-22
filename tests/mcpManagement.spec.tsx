@@ -9,6 +9,23 @@ function registerLifecycleStateTest(
     const component = await mount(<McpManagementHarness scenario={scenario} initialSubview="server" />);
     await expect(component.getByRole("heading", { name: "MCP Server" })).toBeVisible();
     await expect(component.getByTestId("mcp-server-state")).toContainText(scenario);
+    const settingsControls = [
+      component.getByLabel("Port", { exact: true }),
+      component.getByLabel("Token", { exact: true }),
+      component.getByRole("button", { name: "Reveal token" }),
+      component.getByRole("button", { name: "Generate token" }),
+      component.getByRole("button", { name: "Save settings" }),
+    ];
+    for (const control of settingsControls) {
+      if (scenario === "stopped") {
+        await expect(control).toBeEnabled();
+      } else {
+        await expect(control).toBeDisabled();
+      }
+    }
+    if (scenario === "stopped") {
+      await expect(component.getByRole("button", { name: "Start server" })).toBeEnabled();
+    }
     if (scenario === "running") {
       await expect(component.locator(".ai-value-block").filter({ hasText: "http://127.0.0.1:48123/mcp" })).toBeVisible();
       await expect(page.locator("body")).not.toContainText("secret-token-123");
@@ -20,6 +37,49 @@ registerLifecycleStateTest("stopped");
 registerLifecycleStateTest("starting");
 registerLifecycleStateTest("running");
 registerLifecycleStateTest("stopping");
+
+test("edits saved settings without exposing the masked token", async ({ mount, page }) => {
+  const component = await mount(<McpManagementHarness scenario="stopped" initialSubview="server" />);
+  const tokenInput = component.getByLabel("Token", { exact: true });
+
+  await expect(component.getByLabel("Port", { exact: true })).toHaveValue("48123");
+  await expect(tokenInput).toHaveAttribute("type", "password");
+  await expect(page.locator("body")).not.toContainText("saved-token-abcdefghijklmnopqrstuvwxyz");
+
+  await component.getByRole("button", { name: "Reveal token" }).click();
+  await expect(tokenInput).toHaveAttribute("type", "text");
+  await component.getByRole("button", { name: "Hide token" }).click();
+  await expect(tokenInput).toHaveAttribute("type", "password");
+});
+
+test("generates and saves edited settings", async ({ mount, page }) => {
+  const component = await mount(<McpManagementHarness scenario="stopped" initialSubview="server" />);
+  const tokenInput = component.getByLabel("Token", { exact: true });
+
+  await component.getByRole("button", { name: "Generate token" }).click();
+  await expect(tokenInput).toHaveValue("generated-token-abcdefghijklmnopqrstuvwxyz");
+  await component.getByLabel("Port", { exact: true }).fill("49152");
+  await component.getByRole("button", { name: "Save settings" }).click();
+
+  await expect(component.getByTestId("save-log")).toHaveAttribute(
+    "data-last-save",
+    JSON.stringify({ port: 49152, token: "generated-token-abcdefghijklmnopqrstuvwxyz" }),
+  );
+  await expect(page.locator("body")).not.toContainText("generated-token-abcdefghijklmnopqrstuvwxyz");
+});
+
+test("shows settings validation errors", async ({ mount }) => {
+  const component = await mount(<McpManagementHarness scenario="stopped" initialSubview="server" />);
+
+  await component.getByLabel("Port", { exact: true }).fill("0");
+  await component.getByRole("button", { name: "Save settings" }).click();
+  await expect(component.getByText("MCP port must be between 1 and 65535")).toBeVisible();
+
+  await component.getByLabel("Port", { exact: true }).fill("48123");
+  await component.getByLabel("Token", { exact: true }).fill("too-short");
+  await component.getByRole("button", { name: "Save settings" }).click();
+  await expect(component.getByText("MCP token must be between 32 and 256 bytes")).toBeVisible();
+});
 
 test("copies endpoint, token, and client config only on explicit actions", async ({ mount }) => {
   const component = await mount(<McpManagementHarness scenario="running" initialSubview="server" />);

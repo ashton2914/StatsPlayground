@@ -7,6 +7,8 @@ import type {
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
   McpServerStatus,
+  McpSettings,
+  McpSettingsState,
 } from "@/types/mcp";
 
 function isManagedMcpRequest(request: RuntimeRequestSnapshot): boolean {
@@ -39,6 +41,10 @@ export const mcpManagementService = {
   startServer: () => invoke<McpServerStatus>("start_mcp_server"),
   stopServer: () => invoke<void>("stop_mcp_server"),
   getServerStatus: () => invoke<McpServerStatus>("get_mcp_server_status"),
+  getSettings: () => invoke<McpSettingsState>("get_mcp_settings"),
+  saveSettings: (settings: McpSettings) =>
+    invoke<McpSettingsState>("save_mcp_settings", { settings }),
+  generateToken: () => invoke<string>("generate_mcp_token"),
   listAuditEntries: () => invoke<McpAuditEntry[]>("list_mcp_audit_entries"),
   authorizeOutputRoot: (rootPath: string) =>
     invoke<McpAuthorizedRootGrant>("authorize_csv_export_root", { rootPath }),

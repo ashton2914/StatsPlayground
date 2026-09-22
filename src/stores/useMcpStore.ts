@@ -6,6 +6,8 @@ import type {
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
   McpServerStatus,
+  McpSettings,
+  McpSettingsState,
 } from "@/types/mcp";
 
 export type McpManagementServiceLike = Pick<
@@ -13,6 +15,9 @@ export type McpManagementServiceLike = Pick<
   | "startServer"
   | "stopServer"
   | "getServerStatus"
+  | "getSettings"
+  | "saveSettings"
+  | "generateToken"
   | "listAuditEntries"
   | "authorizeOutputRoot"
   | "revokeOutputRoot"
@@ -37,10 +42,21 @@ export interface McpStore {
   authorizedRoots: McpAuthorizedRootGrant[];
   commandRequests: McpCommandRequestSummary[];
   pendingConfirmations: McpCommandRequestSummary[];
+  settings: McpSettings | null;
+  settingsPort: string;
+  settingsToken: string;
+  settingsTokenVisible: boolean;
+  settingsBusy: boolean;
+  settingsDirty: boolean;
   refreshing: boolean;
   lastError: string | null;
   refresh: () => Promise<void>;
   setViewVisible: (visible: boolean) => void;
+  setSettingsPort: (port: string) => void;
+  setSettingsToken: (token: string) => void;
+  toggleSettingsTokenVisible: () => void;
+  generateSettingsToken: () => Promise<void>;
+  saveSettings: () => Promise<void>;
   startServer: () => Promise<void>;
   stopServer: () => Promise<void>;
   authorizeRoot: (rootPath: string) => Promise<void>;
@@ -71,6 +87,44 @@ function removeRequest(
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function settingsEditorFields(state: McpSettingsState) {
+  return {
+    settingsPort: state.settings === null ? "" : String(state.settings.port),
+    settingsToken: state.settings?.token ?? "",
+  };
+}
+
+function savedSettingsState(state: McpSettingsState) {
+  return {
+    settings: state.settings,
+    ...settingsEditorFields(state),
+    settingsDirty: false,
+  };
+}
+
+function validateSettings(portInput: string, token: string): McpSettings {
+  if (!/^\d+$/.test(portInput)) {
+    throw new Error("MCP port must contain only decimal digits");
+  }
+  const port = Number(portInput);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("MCP port must be between 1 and 65535");
+  }
+  if (token.length < 32 || token.length > 256) {
+    throw new Error("MCP token must be between 32 and 256 bytes");
+  }
+  if (!/^[\x21-\x7e]+$/.test(token)) {
+    throw new Error("MCP token must contain only visible ASCII characters");
+  }
+  return { port, token };
+}
+
+function requireStopped(status: McpServerStatus) {
+  if (status.state !== "stopped") {
+    throw new Error("MCP settings can only be changed while the server is stopped");
+  }
 }
 
 function createStoppedTransientState() {
@@ -113,33 +167,53 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
     authorizedRoots: [],
     commandRequests: [],
     pendingConfirmations: [],
+    settings: null,
+    settingsPort: "",
+    settingsToken: "",
+    settingsTokenVisible: false,
+    settingsBusy: false,
+    settingsDirty: false,
     refreshing: false,
     lastError: null,
 
     refresh: async () => {
+      const preserveSettingsEditor = get().settingsDirty || get().settingsBusy;
       set({ refreshing: true });
       try {
-        const [status, auditEntries, commandRequests] = await Promise.all([
+        const [status, auditEntries, commandRequests, settingsState] = await Promise.all([
           service.getServerStatus(),
           service.listAuditEntries(),
           Promise.resolve(service.listCommandRequests()),
+          service.getSettings(),
         ]);
         if (status.state === "stopped") {
-          set({
+          set((state) => ({
             ...createStoppedTransientState(),
+            settings: settingsState.settings,
+            ...(
+              preserveSettingsEditor || state.settingsDirty || state.settingsBusy
+                ? {}
+                : settingsEditorFields(settingsState)
+            ),
             refreshing: false,
             lastError: null,
-          });
+          }));
           return;
         }
-        set({
+        set((state) => ({
           status,
           auditEntries,
           commandRequests,
           pendingConfirmations: pendingConfirmations(commandRequests),
+          settings: settingsState.settings,
+          ...(
+            preserveSettingsEditor || state.settingsDirty || state.settingsBusy
+              ? {}
+              : settingsEditorFields(settingsState)
+          ),
           refreshing: false,
           lastError: null,
-        });
+        }));
       } catch (error) {
         set({ refreshing: false, lastError: messageFromError(error) });
         throw error;
@@ -154,6 +228,55 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
       }
       void get().refresh().catch(() => undefined);
       startPolling(get().refresh);
+    },
+
+    setSettingsPort: (settingsPort) => {
+      set({ settingsPort, settingsDirty: true });
+    },
+
+    setSettingsToken: (settingsToken) => {
+      set({ settingsToken, settingsDirty: true });
+    },
+
+    toggleSettingsTokenVisible: () => {
+      set((state) => ({ settingsTokenVisible: !state.settingsTokenVisible }));
+    },
+
+    generateSettingsToken: async () => {
+      try {
+        requireStopped(get().status);
+        set({ settingsBusy: true, lastError: null });
+        const settingsToken = await service.generateToken();
+        set({
+          settingsToken,
+          settingsBusy: false,
+          settingsDirty: true,
+          lastError: null,
+        });
+      } catch (error) {
+        set({ settingsBusy: false, lastError: messageFromError(error) });
+        throw error;
+      }
+    },
+
+    saveSettings: async () => {
+      try {
+        requireStopped(get().status);
+        const settings = validateSettings(
+          get().settingsPort,
+          get().settingsToken,
+        );
+        set({ settingsBusy: true, lastError: null });
+        const saved = await service.saveSettings(settings);
+        set({
+          ...savedSettingsState(saved),
+          settingsBusy: false,
+          lastError: null,
+        });
+      } catch (error) {
+        set({ settingsBusy: false, lastError: messageFromError(error) });
+        throw error;
+      }
     },
 
     startServer: async () => {

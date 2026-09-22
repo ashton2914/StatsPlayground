@@ -24,6 +24,10 @@ impl BearerToken {
         Self(URL_SAFE_NO_PAD.encode(bytes))
     }
 
+    pub fn generate_for_management() -> String {
+        Self::generate().expose_for_management()
+    }
+
     pub(crate) fn from_runtime_value(value: String) -> Self {
         Self(value)
     }

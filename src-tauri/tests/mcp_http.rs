@@ -3,6 +3,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use stats_playground_lib::mcp::server::{McpSettings, McpStartConfiguration};
 use stats_playground_lib::state::AppState;
 
 static HTTP_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -197,7 +198,7 @@ fn decode_chunked_body(body: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_server_starts_default_off_rotates_token_and_serves_initialize() {
+async fn mcp_server_starts_with_saved_configuration_and_serves_initialize() {
     let _guard = HTTP_TEST_LOCK.lock().await;
     let state = AppState::new().expect("state");
     let initial = state.mcp_server.status().expect("initial status");
@@ -205,16 +206,31 @@ async fn mcp_server_starts_default_off_rotates_token_and_serves_initialize() {
     assert!(initial.endpoint.is_none());
     assert!(initial.token.is_none());
 
+    let reserved_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("reserve port")
+        .local_addr()
+        .expect("reserved address")
+        .port();
+    let settings = McpSettings {
+        port: reserved_port,
+        token: "p".repeat(32),
+    };
     let first = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::from_settings(settings.clone()),
+        )
         .await
         .expect("start");
     assert_eq!(first.state, "running");
+    assert_eq!(
+        first.endpoint,
+        Some(format!("http://127.0.0.1:{reserved_port}/mcp"))
+    );
+    assert_eq!(first.token, Some(settings.token.clone()));
     let first_endpoint = first.endpoint.as_deref().expect("endpoint");
     let first_token = first.token.as_deref().expect("token");
-    assert!(first_endpoint.starts_with("http://127.0.0.1:"));
-    assert!(first_endpoint.ends_with("/mcp"));
 
     let initialize = json!({
         "jsonrpc": "2.0",
@@ -254,12 +270,66 @@ async fn mcp_server_starts_default_off_rotates_token_and_serves_initialize() {
 
     let second = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::from_settings(settings.clone()),
+        )
         .await
         .expect("restart");
-    let second_token = second.token.as_deref().expect("second token");
-    assert_ne!(second_token, first_token);
+    assert_eq!(
+        second.endpoint,
+        Some(format!("http://127.0.0.1:{reserved_port}/mcp"))
+    );
+    assert_eq!(second.token, Some(settings.token));
     state.mcp_server.stop().await.expect("final stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_starts_transiently_with_a_new_token_after_restart() {
+    let _guard = HTTP_TEST_LOCK.lock().await;
+    let state = AppState::new().expect("state");
+    let first = state
+        .mcp_server
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
+        .await
+        .expect("first transient start");
+    let first_token = first.token.expect("first token");
+    state.mcp_server.stop().await.expect("first stop");
+
+    let second = state
+        .mcp_server
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
+        .await
+        .expect("second transient start");
+    assert_ne!(second.token.as_deref(), Some(first_token.as_str()));
+    state.mcp_server.stop().await.expect("second stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_starts_fail_when_configured_port_is_occupied() {
+    let _guard = HTTP_TEST_LOCK.lock().await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy port");
+    let port = listener.local_addr().expect("occupied address").port();
+    let state = AppState::new().expect("state");
+    let result = state
+        .mcp_server
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::from_settings(McpSettings {
+                port,
+                token: "o".repeat(32),
+            }),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(state.mcp_server.status().expect("status").state, "stopped");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -267,8 +337,14 @@ async fn concurrent_starts_never_publish_multiple_servers() {
     let _guard = HTTP_TEST_LOCK.lock().await;
     let state = AppState::new().expect("state");
     let (left, right) = tokio::join!(
-        state.mcp_server.start(state.mcp_command_broker.clone()),
-        state.mcp_server.start(state.mcp_command_broker.clone()),
+        state.mcp_server.start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient()
+        ),
+        state.mcp_server.start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient()
+        ),
     );
     let endpoints: std::collections::BTreeSet<_> = [left, right]
         .into_iter()
@@ -285,7 +361,10 @@ async fn mcp_http_lists_exact_tool_catalog() {
     let state = AppState::new().expect("state");
     let status = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
         .await
         .expect("start");
     let endpoint = status.endpoint.as_deref().expect("endpoint");
@@ -327,7 +406,10 @@ async fn mcp_http_tools_call_returns_standard_tool_response() {
     let state = AppState::new().expect("state");
     let status = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
         .await
         .expect("start");
     let endpoint = status.endpoint.as_deref().expect("endpoint");
@@ -374,7 +456,10 @@ async fn mcp_http_rejects_oversized_request_bodies() {
     let state = AppState::new().expect("state");
     let status = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
         .await
         .expect("start");
     let endpoint = status.endpoint.as_deref().expect("endpoint");
@@ -391,7 +476,10 @@ async fn mcp_http_rate_limit_returns_too_many_requests() {
     let state = AppState::new().expect("state");
     let status = state
         .mcp_server
-        .start(state.mcp_command_broker.clone())
+        .start(
+            state.mcp_command_broker.clone(),
+            McpStartConfiguration::transient(),
+        )
         .await
         .expect("start");
     let endpoint = status.endpoint.as_deref().expect("endpoint");

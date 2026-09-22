@@ -15,6 +15,7 @@ use crate::mcp::security::{
     enforce_http_limits, require_bearer, BearerToken, McpHttpLimitsState, McpHttpSecurityState,
 };
 use crate::mcp::tools::{McpAuditLog, StatsPlaygroundMcpServer};
+pub use crate::models::mcp::McpSettings;
 use crate::models::mcp::{McpAuditEntry, McpServerStatus};
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -23,20 +24,30 @@ const MCP_BIND_ENV: &str = "STATSPLAYGROUND_MCP_BIND";
 #[cfg(debug_assertions)]
 const MCP_TOKEN_ENV: &str = "STATSPLAYGROUND_MCP_TOKEN";
 
-struct McpStartConfiguration {
+pub struct McpStartConfiguration {
     bind_address: String,
     token: BearerToken,
 }
 
-fn production_start_configuration() -> McpStartConfiguration {
-    McpStartConfiguration {
-        bind_address: "127.0.0.1:0".to_string(),
-        token: BearerToken::generate(),
+impl McpStartConfiguration {
+    pub fn transient() -> Self {
+        Self {
+            bind_address: "127.0.0.1:0".to_string(),
+            token: BearerToken::generate(),
+        }
+    }
+
+    pub fn from_settings(settings: McpSettings) -> Self {
+        Self {
+            bind_address: format!("127.0.0.1:{}", settings.port),
+            token: BearerToken::from_runtime_value(settings.token),
+        }
     }
 }
 
 pub struct McpServerRuntime {
     inner: Mutex<McpServerState>,
+    operation_gate: Mutex<()>,
     audit_log: McpAuditLog,
 }
 
@@ -61,18 +72,43 @@ impl McpServerRuntime {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(McpServerState::Stopped),
+            operation_gate: Mutex::new(()),
             audit_log: McpAuditLog::default(),
         }
     }
 
-    pub async fn start(&self, broker: McpCommandBroker) -> Result<McpServerStatus, AppError> {
-        {
+    pub async fn start(
+        &self,
+        broker: McpCommandBroker,
+        configuration: McpStartConfiguration,
+    ) -> Result<McpServerStatus, AppError> {
+        self.start_with_configuration_loader(broker, || Ok(configuration))
+            .await
+    }
+
+    pub(crate) async fn start_with_configuration_loader<F>(
+        &self,
+        broker: McpCommandBroker,
+        load_configuration: F,
+    ) -> Result<McpServerStatus, AppError>
+    where
+        F: FnOnce() -> Result<McpStartConfiguration, AppError>,
+    {
+        let configuration = {
+            let _operation = self
+                .operation_gate
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
             let mut state = self
                 .inner
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
             match &*state {
-                McpServerState::Stopped => *state = McpServerState::Starting,
+                McpServerState::Stopped => {
+                    let configuration = load_configuration()?;
+                    *state = McpServerState::Starting;
+                    configuration
+                }
                 McpServerState::Running(handle) => return running_status(handle),
                 McpServerState::Starting => {
                     return Err(AppError::Busy("MCP server is starting".to_string()));
@@ -81,9 +117,9 @@ impl McpServerRuntime {
                     return Err(AppError::Busy("MCP server is stopping".to_string()));
                 }
             }
-        }
+        };
 
-        let configuration = mcp_start_configuration();
+        let configuration = mcp_start_configuration(configuration);
         let bind_address: SocketAddr = match configuration.bind_address.parse() {
             Ok(address) => address,
             Err(error) => {
@@ -93,10 +129,10 @@ impl McpServerRuntime {
                 )));
             }
         };
-        if !bind_address.ip().is_loopback() {
+        if bind_address.ip() != std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
             self.finish_failed_start()?;
             return Err(AppError::InvalidParam(
-                "MCP server bind address must use loopback".to_string(),
+                "MCP server bind address must use 127.0.0.1".to_string(),
             ));
         }
         let listener = match TcpListener::bind(bind_address).await {
@@ -225,6 +261,37 @@ impl McpServerRuntime {
         }
     }
 
+    pub fn ensure_stopped(&self) -> Result<(), AppError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        match &*state {
+            McpServerState::Stopped => Ok(()),
+            McpServerState::Starting => Err(AppError::Busy(
+                "MCP server is starting; stop it before changing settings".to_string(),
+            )),
+            McpServerState::Running(_) => Err(AppError::Busy(
+                "MCP server is running; stop it before changing settings".to_string(),
+            )),
+            McpServerState::Stopping => Err(AppError::Busy(
+                "MCP server is stopping; wait before changing settings".to_string(),
+            )),
+        }
+    }
+
+    pub(crate) fn run_while_stopped<T, F>(&self, operation: F) -> Result<T, AppError>
+    where
+        F: FnOnce() -> Result<T, AppError>,
+    {
+        let _operation = self
+            .operation_gate
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        self.ensure_stopped()?;
+        operation()
+    }
+
     pub fn audit_entries(&self) -> Result<Vec<McpAuditEntry>, AppError> {
         self.audit_log.list()
     }
@@ -252,18 +319,19 @@ fn endpoint_for(address: SocketAddr) -> String {
 }
 
 #[cfg(debug_assertions)]
-fn mcp_start_configuration() -> McpStartConfiguration {
-    McpStartConfiguration {
-        bind_address: std::env::var(MCP_BIND_ENV).unwrap_or_else(|_| "127.0.0.1:0".to_string()),
-        token: std::env::var(MCP_TOKEN_ENV)
-            .map(BearerToken::from_runtime_value)
-            .unwrap_or_else(|_| BearerToken::generate()),
+fn mcp_start_configuration(mut configuration: McpStartConfiguration) -> McpStartConfiguration {
+    if let Ok(bind_address) = std::env::var(MCP_BIND_ENV) {
+        configuration.bind_address = bind_address;
     }
+    if let Ok(token) = std::env::var(MCP_TOKEN_ENV) {
+        configuration.token = BearerToken::from_runtime_value(token);
+    }
+    configuration
 }
 
 #[cfg(not(debug_assertions))]
-fn mcp_start_configuration() -> McpStartConfiguration {
-    production_start_configuration()
+fn mcp_start_configuration(configuration: McpStartConfiguration) -> McpStartConfiguration {
+    configuration
 }
 
 fn inactive_status(state: &str) -> McpServerStatus {
@@ -291,7 +359,11 @@ fn running_status(handle: &McpServerHandle) -> Result<McpServerStatus, AppError>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
     use super::*;
+    use crate::mcp::broker::McpCommandBroker;
 
     #[test]
     fn endpoint_uses_ipv4_loopback_and_mcp_path() {
@@ -301,8 +373,8 @@ mod tests {
 
     #[test]
     fn production_configuration_uses_random_loopback_defaults() {
-        let first = production_start_configuration();
-        let second = production_start_configuration();
+        let first = McpStartConfiguration::transient();
+        let second = McpStartConfiguration::transient();
 
         assert_eq!(first.bind_address, "127.0.0.1:0");
         assert_eq!(second.bind_address, "127.0.0.1:0");
@@ -310,5 +382,113 @@ mod tests {
             first.token.expose_for_management(),
             second.token.expose_for_management()
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_stopped_accepts_only_the_stopped_state() {
+        let runtime = McpServerRuntime::new();
+        runtime.ensure_stopped().expect("stopped runtime");
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Starting;
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Stopping;
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+
+        *runtime.inner.lock().expect("runtime state") = McpServerState::Stopped;
+        runtime
+            .start(McpCommandBroker::new(), McpStartConfiguration::transient())
+            .await
+            .expect("start runtime");
+        assert!(matches!(runtime.ensure_stopped(), Err(AppError::Busy(_))));
+        runtime.stop().await.expect("stop runtime");
+    }
+
+    #[tokio::test]
+    async fn start_rejects_ipv6_loopback_bind_address() {
+        let runtime = McpServerRuntime::new();
+        let result = runtime
+            .start(
+                McpCommandBroker::new(),
+                McpStartConfiguration {
+                    bind_address: "[::1]:0".to_string(),
+                    token: BearerToken::generate(),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(AppError::InvalidParam(_))));
+        assert_eq!(runtime.status().expect("runtime status").state, "stopped");
+    }
+
+    #[tokio::test]
+    async fn start_rejects_noncanonical_ipv4_loopback_bind_address() {
+        let runtime = McpServerRuntime::new();
+        let result = runtime
+            .start(
+                McpCommandBroker::new(),
+                McpStartConfiguration {
+                    bind_address: "127.0.0.2:0".to_string(),
+                    token: BearerToken::generate(),
+                },
+            )
+            .await;
+        let rejected = matches!(result, Err(AppError::InvalidParam(_)));
+        if !rejected {
+            runtime.stop().await.expect("stop runtime");
+        }
+
+        assert!(rejected);
+        assert_eq!(runtime.status().expect("runtime status").state, "stopped");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_configuration_load_waits_for_stopped_operation() {
+        let runtime = Arc::new(McpServerRuntime::new());
+        let (save_entered_tx, save_entered_rx) = mpsc::channel();
+        let (release_save_tx, release_save_rx) = mpsc::channel();
+        let save_runtime = runtime.clone();
+        let save_task = tokio::task::spawn_blocking(move || {
+            save_runtime.run_while_stopped(|| {
+                save_entered_tx.send(()).expect("signal save entered");
+                release_save_rx.recv().expect("release save");
+                Ok(())
+            })
+        });
+        save_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("save operation entered");
+
+        let (load_called_tx, mut load_called_rx) = tokio::sync::oneshot::channel();
+        let (start_attempted_tx, start_attempted_rx) = tokio::sync::oneshot::channel();
+        let start_runtime = runtime.clone();
+        let start_task = tokio::spawn(async move {
+            let _ = start_attempted_tx.send(());
+            start_runtime
+                .start_with_configuration_loader(McpCommandBroker::new(), || {
+                    let _ = load_called_tx.send(());
+                    Ok(McpStartConfiguration::transient())
+                })
+                .await
+        });
+        start_attempted_rx.await.expect("start attempted");
+        let loaded_while_save_active =
+            tokio::time::timeout(Duration::from_millis(100), &mut load_called_rx)
+                .await
+                .is_ok();
+
+        release_save_tx.send(()).expect("release save operation");
+        save_task
+            .await
+            .expect("join save operation")
+            .expect("save operation");
+        let status = start_task
+            .await
+            .expect("join start operation")
+            .expect("start runtime");
+        runtime.stop().await.expect("stop runtime");
+
+        assert!(!loaded_while_save_active);
+        assert_eq!(status.state, "running");
     }
 }

@@ -71,7 +71,17 @@ export function McpServerPanel({
   const authorizedRoots = store((state) => state.authorizedRoots);
   const commandRequests = store((state) => state.commandRequests);
   const pendingConfirmations = store((state) => state.pendingConfirmations);
+  const settings = store((state) => state.settings);
+  const settingsPort = store((state) => state.settingsPort);
+  const settingsToken = store((state) => state.settingsToken);
+  const settingsTokenVisible = store((state) => state.settingsTokenVisible);
+  const settingsBusy = store((state) => state.settingsBusy);
   const lastError = store((state) => state.lastError);
+  const setSettingsPort = store((state) => state.setSettingsPort);
+  const setSettingsToken = store((state) => state.setSettingsToken);
+  const toggleSettingsTokenVisible = store((state) => state.toggleSettingsTokenVisible);
+  const generateSettingsToken = store((state) => state.generateSettingsToken);
+  const saveSettings = store((state) => state.saveSettings);
   const startServer = store((state) => state.startServer);
   const stopServer = store((state) => state.stopServer);
   const authorizeRoot = store((state) => state.authorizeRoot);
@@ -107,6 +117,7 @@ export function McpServerPanel({
 
   const canStart = status.state === "stopped";
   const canStop = status.state === "running";
+  const canEditSettings = status.state === "stopped" && !settingsBusy;
 
   return (
     <section className="ai-panel ai-panel-server">
@@ -142,6 +153,81 @@ export function McpServerPanel({
         <div className="ai-summary-item">
           <span className="ai-summary-label">{t("ai.mcpServer.running", { defaultValue: "Running" })}</span>
           <span>{status.runningRequests}</span>
+        </div>
+      </div>
+
+      <div className="ai-section-block ai-settings-section">
+        <div className="ai-section-header">
+          <h3>{t("ai.mcpServer.settings", { defaultValue: "Settings" })}</h3>
+        </div>
+        <p className="ai-settings-hint">
+          {settings === null
+            ? t("ai.mcpServer.transientSettingsHint", {
+              defaultValue: "No settings are saved. Start server can still use a transient configuration.",
+            })
+            : t("ai.mcpServer.savedSettingsHint", {
+              defaultValue: "Saved settings are used the next time the MCP server starts.",
+            })}
+        </p>
+        <div className="ai-settings-form">
+          <div className="ai-settings-field">
+            <label htmlFor="mcp-settings-port">
+              {t("ai.mcpServer.port", { defaultValue: "Port" })}
+            </label>
+            <input
+              id="mcp-settings-port"
+              type="number"
+              min={1}
+              max={65535}
+              inputMode="numeric"
+              value={settingsPort}
+              onChange={(event) => setSettingsPort(event.target.value)}
+              disabled={!canEditSettings}
+            />
+          </div>
+          <div className="ai-settings-field">
+            <label htmlFor="mcp-settings-token">
+              {t("ai.mcpServer.savedToken", { defaultValue: "Token" })}
+            </label>
+            <div className="ai-settings-token-row">
+              <input
+                id="mcp-settings-token"
+                type={settingsTokenVisible ? "text" : "password"}
+                autoComplete="off"
+                value={settingsToken}
+                onChange={(event) => setSettingsToken(event.target.value)}
+                disabled={!canEditSettings}
+              />
+              <button
+                type="button"
+                className="btn-sm"
+                onClick={toggleSettingsTokenVisible}
+                disabled={!canEditSettings}
+              >
+                {settingsTokenVisible
+                  ? t("ai.mcpServer.hideToken", { defaultValue: "Hide token" })
+                  : t("ai.mcpServer.revealToken", { defaultValue: "Reveal token" })}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="ai-inline-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void generateSettingsToken().catch(() => undefined)}
+            disabled={!canEditSettings}
+          >
+            {t("ai.mcpServer.generateToken", { defaultValue: "Generate token" })}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void saveSettings().catch(() => undefined)}
+            disabled={!canEditSettings}
+          >
+            {t("ai.mcpServer.saveSettings", { defaultValue: "Save settings" })}
+          </button>
         </div>
       </div>
 
