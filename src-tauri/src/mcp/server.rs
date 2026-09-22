@@ -129,13 +129,10 @@ impl McpServerRuntime {
                 )));
             }
         };
-        if !matches!(
-            bind_address.ip(),
-            std::net::IpAddr::V4(address) if address.is_loopback()
-        ) {
+        if bind_address.ip() != std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
             self.finish_failed_start()?;
             return Err(AppError::InvalidParam(
-                "MCP server bind address must use IPv4 loopback".to_string(),
+                "MCP server bind address must use 127.0.0.1".to_string(),
             ));
         }
         let listener = match TcpListener::bind(bind_address).await {
@@ -421,6 +418,27 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(AppError::InvalidParam(_))));
+        assert_eq!(runtime.status().expect("runtime status").state, "stopped");
+    }
+
+    #[tokio::test]
+    async fn start_rejects_noncanonical_ipv4_loopback_bind_address() {
+        let runtime = McpServerRuntime::new();
+        let result = runtime
+            .start(
+                McpCommandBroker::new(),
+                McpStartConfiguration {
+                    bind_address: "127.0.0.2:0".to_string(),
+                    token: BearerToken::generate(),
+                },
+            )
+            .await;
+        let rejected = matches!(result, Err(AppError::InvalidParam(_)));
+        if !rejected {
+            runtime.stop().await.expect("stop runtime");
+        }
+
+        assert!(rejected);
         assert_eq!(runtime.status().expect("runtime status").state, "stopped");
     }
 
