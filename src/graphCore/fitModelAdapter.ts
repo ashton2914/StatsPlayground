@@ -312,8 +312,14 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
   }
   const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
   const observedAxisExtent = paddedNiceExtent(observedExtent.min, observedExtent.max);
-  const identityMin = Math.max(predictedAxisExtent.min, observedAxisExtent.min);
-  const identityMax = Math.min(predictedAxisExtent.max, observedAxisExtent.max);
+  const identityPredictedMin = predictedExtent.min < predictedExtent.max
+    ? predictedExtent.min
+    : predictedAxisExtent.min;
+  const identityPredictedMax = predictedExtent.min < predictedExtent.max
+    ? predictedExtent.max
+    : predictedAxisExtent.max;
+  const identityMin = Math.max(identityPredictedMin, observedAxisExtent.min);
+  const identityMax = Math.min(identityPredictedMax, observedAxisExtent.max);
   const identityData: Array<[number, number]> = identityMin <= identityMax
     ? [[identityMin, identityMin], [identityMax, identityMax]]
     : [];

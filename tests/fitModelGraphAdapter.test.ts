@@ -580,6 +580,7 @@ function testActualByPredictedWholeModelConfidenceBand(): void {
   const identity = option.series.find((series) => series.type === "line" && !series.stack);
   assert.equal(identity?.lineStyle?.color, "#d92d20");
   assert.equal(identity?.lineStyle?.type, "solid");
+  assert.deepEqual(identity?.data, [[9, 9], [11, 11]]);
 }
 
 function testActualByPredictedRejectsInvalidWholeModelBandWidths(): void {
