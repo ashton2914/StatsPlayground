@@ -954,6 +954,14 @@ impl<'a> ProjectService<'a> {
             .db
             .into_inner()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let staged_navigation = staged_state
+            .table_navigation
+            .into_inner()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let staged_tabulate = staged_state
+            .tabulate_sessions
+            .into_inner()
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let staged_display = staged_state
             .column_display
             .into_inner()
@@ -962,6 +970,16 @@ impl<'a> ProjectService<'a> {
             .state
             .db
             .lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut live_navigation = self
+            .state
+            .table_navigation
+            .write()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut live_tabulate = self
+            .state
+            .tabulate_sessions
+            .write()
             .map_err(|e| AppError::Database(e.to_string()))?;
         let mut live_display = self
             .state
@@ -973,9 +991,15 @@ impl<'a> ProjectService<'a> {
             .project
             .write()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        live_tabulate.shutdown()?;
         *live_db = staged_db;
+        *live_navigation = staged_navigation;
+        *live_tabulate = staged_tabulate;
         *live_display = staged_display;
         *live_project = Some(project.clone());
+        self.state
+            .graph_new_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if let Some(cb) = &progress_cb {
             cb(total, total, "完成", 0, 0);
         }
@@ -2166,8 +2190,9 @@ mod tests {
     };
     use crate::models::project::ProjectInfo;
     use crate::models::save::SaveProjectRequest;
-    use crate::models::table::CreateTableFromRowsRequest;
     use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
+    use crate::models::table::{CreateTableFromRowsRequest, TableNavigationRequest};
+    use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic};
     use crate::services::data_service::DataService;
     use crate::services::project_table_restore::{
         completed_append_count, reset_completed_append_count,
@@ -2464,6 +2489,101 @@ mod tests {
         assert_eq!(dataset_row_count(&state, "fixture-table"), 12_000);
         assert_eq!(streamed_table_count(), 1);
         assert_eq!(buffered_compatibility_table_count(), 0);
+    }
+
+    #[test]
+    fn open_project_rebinds_navigation_readers_to_restored_database() {
+        let path = save_project_fixture(750, 2);
+        let state = AppState::new().unwrap();
+
+        ProjectService::new(&state)
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
+
+        let service = DataService::new(&state);
+        let meta = state
+            .db
+            .lock()
+            .unwrap()
+            .get_dataset_meta("fixture-table")
+            .unwrap();
+        let column_ids = service
+            .get_column_descriptors("fixture-table")
+            .unwrap()
+            .into_iter()
+            .map(|column| column.column_id)
+            .collect();
+        let result = service
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "post-open-row-501".into(),
+                dataset_id: "fixture-table".into(),
+                generation: meta.generation,
+                start: 500,
+                count: 1,
+                column_ids,
+                sort: None,
+                filters: Vec::new(),
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .unwrap();
+
+        assert_eq!(result.start, 500);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], serde_json::json!(501));
+    }
+
+    #[test]
+    fn open_project_rebinds_tabulate_sessions_to_restored_database() {
+        let path = save_project_fixture(10, 2);
+        let state = AppState::new().unwrap();
+
+        ProjectService::new(&state)
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
+
+        let generation = state
+            .db
+            .lock()
+            .unwrap()
+            .get_dataset_generation("fixture-table")
+            .unwrap();
+        let tabulate = state.tabulate_sessions.read().unwrap().clone();
+        let status = tabulate
+            .prepare(&TabulateSessionRequest {
+                dataset_id: "fixture-table".into(),
+                source_generation: generation,
+                row_fields: vec!["value_1".into()],
+                column_fields: Vec::new(),
+                statistics: vec![TabulateStatistic {
+                    id: "count".into(),
+                    field: "value_2".into(),
+                    kind: StatisticKind::Count,
+                    quantile: None,
+                }],
+                include_row_totals: false,
+                include_column_totals: false,
+            })
+            .unwrap();
+
+        assert_eq!(status.source_generation, generation);
+    }
+
+    #[test]
+    fn open_project_advances_graph_runtime_epoch() {
+        let path = save_project_fixture(1, 1);
+        let state = AppState::new().unwrap();
+        let previous_epoch = state.graph_new_epoch.load(Ordering::Acquire);
+
+        ProjectService::new(&state)
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
+
+        assert_eq!(
+            state.graph_new_epoch.load(Ordering::Acquire),
+            previous_epoch + 1
+        );
     }
 
     #[test]
