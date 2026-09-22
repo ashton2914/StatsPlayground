@@ -395,7 +395,7 @@ const graphBuilderNewHandler = sourceBetween(
   "const handleCreateGraphBuilderNew = async () => {",
   "const handleCreateTabulate = () => {",
 );
-assert.match(workspaceSource, />\s*Graph Builder-new\s*</);
+assert.match(workspaceSource, /\{t\("menu\.massiveDataGraph"\)\}/);
 assert.match(graphBuilderNewHandler, /await clearWorkspaceDocumentSelection\(\)/);
 assert.match(graphBuilderNewHandler, /openGraphBuilderNew\(dataset\.id, dataset\.generation\)/);
 assert.doesNotMatch(graphBuilderNewHandler, /recordAction|addGraphBuilder\(/);

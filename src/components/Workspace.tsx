@@ -2634,7 +2634,7 @@ export function Workspace() {
                 role="menuitem"
                 tabIndex={activeDatasetId && !readOnly ? 0 : -1}
               >
-                Graph Builder-new
+                {t("menu.massiveDataGraph")}
               </div>
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportGraphSpgh}>{t("menu.importSpgh")}</div>
