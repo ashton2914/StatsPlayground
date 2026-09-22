@@ -498,7 +498,8 @@ git commit -m "feat(mcp): add persistent settings editor"
 
 **Files:**
 - Modify if required by discovered regressions: only files already listed in
-  Tasks 1 through 4.
+  Tasks 1 through 4, plus `tests/McpEndToEndHarness.tsx` as the integrated MCP
+  regression-fix and test-harness surface.
 - Update external record: GitHub Issue 254 comment.
 
 **Interfaces:**
