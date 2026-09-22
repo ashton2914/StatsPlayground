@@ -38,10 +38,11 @@ fn save_settings(
     runtime: &McpServerRuntime,
     settings: McpSettings,
 ) -> Result<McpSettingsState, AppError> {
-    runtime.ensure_stopped()?;
-    McpSettingsService::new(home.to_path_buf()).save(&settings)?;
-    Ok(McpSettingsState {
-        settings: Some(settings),
+    runtime.run_while_stopped(|| {
+        McpSettingsService::new(home.to_path_buf()).save(&settings)?;
+        Ok(McpSettingsState {
+            settings: Some(settings),
+        })
     })
 }
 
@@ -50,14 +51,15 @@ pub async fn start_mcp_server(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<McpServerStatus, AppError> {
-    let configuration = load_start_configuration(
-        &app.path()
-            .home_dir()
-            .map_err(|error| AppError::FileIO(error.to_string()))?,
-    )?;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
     state
         .mcp_server
-        .start(state.mcp_command_broker.clone(), configuration)
+        .start_with_configuration_loader(state.mcp_command_broker.clone(), || {
+            load_start_configuration(&home)
+        })
         .await
 }
 
@@ -85,12 +87,11 @@ pub fn save_mcp_settings(
     state: State<'_, AppState>,
     settings: McpSettings,
 ) -> Result<McpSettingsState, AppError> {
-    state.mcp_server.ensure_stopped()?;
-    let service = settings_service(&app)?;
-    service.save(&settings)?;
-    Ok(McpSettingsState {
-        settings: Some(settings),
-    })
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
+    save_settings(&home, &state.mcp_server, settings)
 }
 
 #[tauri::command]
