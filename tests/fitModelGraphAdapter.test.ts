@@ -488,15 +488,30 @@ function testLeveragePointsFittedBandAndNullSeries(): void {
       name?: string;
       type?: string;
       clip?: boolean;
-      stack?: string;
       data?: Array<[number, number]>;
+      renderItem?: (
+        params: { dataIndex?: number },
+        api: { coord: (point: [number, number]) => [number, number] },
+      ) => { type: string; shape: { points: Array<[number, number]> } } | null;
     }>;
   };
 
   assert.match(option.title?.subtext ?? "", /0\.001/);
   assert.deepEqual(option.series.find((series) => series.name === "Observed")?.data, [[-1, 8], [1, 12]]);
   assert.deepEqual(option.series.find((series) => series.name === "Fitted")?.data, [[-1, 9], [1, 11]]);
-  assert.equal(option.series.filter((series) => series.name === "Confidence band").length, 2);
+  const confidenceSeries = option.series.find((series) => series.type === "custom");
+  assert.ok(confidenceSeries?.renderItem);
+  const confidenceShape = confidenceSeries.renderItem(
+    { dataIndex: 0 },
+    { coord: (point) => point },
+  );
+  assert.equal(confidenceShape?.type, "polygon");
+  assert.deepEqual(confidenceShape?.shape.points, [
+    [-1, 8.5],
+    [1, 10.5],
+    [1, 11.5],
+    [-1, 9.5],
+  ]);
   assert.deepEqual(
     option.series.find((series) => series.name === "Null effect")?.data,
     [[option.xAxis.min, 10], [option.xAxis.max, 10]],
@@ -536,29 +551,36 @@ function testActualByPredictedWholeModelConfidenceBand(): void {
     series: Array<{
       name?: string;
       type?: string;
-      stack?: string;
       silent?: boolean;
       lineStyle?: { color?: string; type?: string };
-      areaStyle?: { color?: string; opacity?: number };
       data?: Array<[number, number]>;
+      renderItem?: (
+        params: { dataIndex?: number },
+        api: { coord: (point: [number, number]) => [number, number] },
+      ) => { type: string; shape: { points: Array<[number, number]> } } | null;
     }>;
   };
 
-  const confidenceSeries = option.series.filter((series) => series.stack === "actual-confidence");
-  assert.equal(confidenceSeries.length, 2);
-  assert.deepEqual(confidenceSeries[0]?.data, [[9, 6], [11, 10.25]]);
-  assert.deepEqual(confidenceSeries[1]?.data, [[9, 3.5], [11, 3.75]]);
-  assert.equal(
-    confidenceSeries.some((series) => series.data?.some(([x, y]) => x === 9 && y === 7)),
-    false,
+  const confidenceSeries = option.series.find((series) => series.type === "custom");
+  assert.ok(confidenceSeries?.renderItem);
+  const confidenceShape = confidenceSeries.renderItem(
+    { dataIndex: 0 },
+    { coord: (point) => point },
   );
-  assert.ok((confidenceSeries[1]?.areaStyle?.opacity ?? 0) > 0);
-  assert.ok(confidenceSeries.every((series) => series.silent === true));
+  assert.equal(confidenceShape?.type, "polygon");
+  assert.deepEqual(confidenceShape?.shape.points, [
+    [9, 6],
+    [11, 10.25],
+    [11, 14],
+    [9, 9.5],
+  ]);
+  assert.equal(confidenceSeries.silent, true);
   assert.ok(option.yAxis.min < 6);
   assert.ok(option.yAxis.max > 14);
   const identity = option.series.find((series) => series.type === "line" && !series.stack);
   assert.equal(identity?.lineStyle?.color, "#d92d20");
   assert.equal(identity?.lineStyle?.type, "solid");
+  assert.deepEqual(identity?.data, [[9, 9], [11, 11]]);
 }
 
 function testActualByPredictedRejectsInvalidWholeModelBandWidths(): void {
