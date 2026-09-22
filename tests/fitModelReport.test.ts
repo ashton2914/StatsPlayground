@@ -897,6 +897,18 @@ function testRenderNotComputableContract(): void {
   assert.match(html, /insufficientRows|fitModel\.report\.reason\.insufficientRows/);
 }
 
+function testWarningsSectionIsHiddenWhenEmpty(): void {
+  const html = renderReport({
+    status: "success",
+    result: createFittedResult({ warnings: [] }),
+    error: null,
+    configurationKey: "cfg-no-warnings",
+  });
+
+  assert.doesNotMatch(html, />Warnings</);
+  assert.doesNotMatch(html, /No warnings\./);
+}
+
 function testRenderLoadingStaleAndErrorOldResultContracts(): void {
   const loadingState: FitModelReportState = {
     status: "loading",
@@ -1076,6 +1088,7 @@ testValidRemoveTransitionReturnsUpdatedTermsAndExactUndoIdentity();
 testUndoTransitionRestoresOnceAndClearsSnapshot();
 testRenderFittedContracts();
 testRenderNotComputableContract();
+testWarningsSectionIsHiddenWhenEmpty();
 testRenderLoadingStaleAndErrorOldResultContracts();
 testStaleEquationUsesResultTermsNotCurrentItemTerms();
 testUnavailableLoadIssueRendersWithoutEquation();

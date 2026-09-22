@@ -11,6 +11,7 @@ import type {
   FitModelPlotRow,
   FitModelQqRow,
 } from "@/types/fitModel";
+import { buildBandSeries } from "./confidenceBand";
 import { getGraphTheme } from "./theme";
 
 const POINT_SYMBOL_SIZE = 6;
@@ -299,7 +300,7 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     if (width < 0) {
       throw new Error(`fitModelAdapter: negative confidenceWidth at actualByPredictedConfidenceBand[${index}]`);
     }
-    return { x, lower, width };
+    return { x, lower, upper };
   });
   const predictedExtent = resolvePredictedExtent(input.plotRows);
   const observedExtent = resolveObservedExtent(input.plotRows);
@@ -307,7 +308,7 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     predictedExtent.min = Math.min(predictedExtent.min, row.x);
     predictedExtent.max = Math.max(predictedExtent.max, row.x);
     observedExtent.min = Math.min(observedExtent.min, row.lower);
-    observedExtent.max = Math.max(observedExtent.max, row.lower + row.width);
+    observedExtent.max = Math.max(observedExtent.max, row.upper);
   }
   const predictedAxisExtent = paddedNiceExtent(predictedExtent.min, predictedExtent.max);
   const observedAxisExtent = paddedNiceExtent(observedExtent.min, observedExtent.max);
@@ -317,7 +318,7 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
     ? [[identityMin, identityMin], [identityMax, identityMax]]
     : [];
   const confidenceLower = confidenceRows.map(({ x, lower }) => [x, lower] as [number, number]);
-  const confidenceWidth = confidenceRows.map(({ x, width }) => [x, width] as [number, number]);
+  const confidenceUpper = confidenceRows.map(({ x, upper }) => [x, upper] as [number, number]);
 
   return {
     ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
@@ -359,30 +360,13 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
         itemStyle: { color: theme.accent },
         data: points,
       },
-      {
-        name: `${input.labels.identityReferenceName} confidence`,
-        type: "line",
-        clip: true,
-        z: 1,
-        stack: "actual-confidence",
-        showSymbol: false,
-        silent: true,
-        lineStyle: { opacity: 0 },
-        areaStyle: { opacity: 0 },
-        data: confidenceLower,
-      },
-      {
-        name: `${input.labels.identityReferenceName} confidence`,
-        type: "line",
-        clip: true,
-        z: 1,
-        stack: "actual-confidence",
-        showSymbol: false,
-        silent: true,
-        lineStyle: { opacity: 0 },
-        areaStyle: { color: "#d92d20", opacity: 0.14 },
-        data: confidenceWidth,
-      },
+      ...buildBandSeries(
+        confidenceLower,
+        confidenceUpper,
+        "#d92d20",
+        0.14,
+        "fit-model-actual-by-predicted",
+      ),
       {
         name: input.labels.identityReferenceName,
         type: "line",
@@ -617,9 +601,9 @@ export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): 
     ensureFinite(point.effectLeverage, "effectLeverage", index),
     ensureFinite(point.lower, "lower", index),
   ] as [number, number]);
-  const width = input.plot.confidenceBand.map((point, index) => [
+  const upper = input.plot.confidenceBand.map((point, index) => [
     ensureFinite(point.effectLeverage, "effectLeverage", index),
-    ensureFinite(point.upper - point.lower, "confidenceWidth", index),
+    ensureFinite(point.upper, "upper", index),
   ] as [number, number]);
   const xValues = [...points, ...fitted].map(([x]) => x);
   const yValues = [
@@ -685,28 +669,13 @@ export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): 
       splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
     },
     series: [
-      {
-        name: input.labels.confidenceSeriesName,
-        type: "line",
-        clip: true,
-        stack: "leverage-confidence",
-        showSymbol: false,
-        silent: true,
-        lineStyle: { opacity: 0 },
-        areaStyle: { opacity: 0 },
-        data: lower,
-      },
-      {
-        name: input.labels.confidenceSeriesName,
-        type: "line",
-        clip: true,
-        stack: "leverage-confidence",
-        showSymbol: false,
-        silent: true,
-        lineStyle: { opacity: 0 },
-        areaStyle: { color: theme.accent, opacity: 0.16 },
-        data: width,
-      },
+      ...buildBandSeries(
+        lower,
+        upper,
+        theme.accent,
+        0.16,
+        `fit-model-leverage-${input.plot.termId}`,
+      ),
       {
         name: input.labels.fittedSeriesName,
         type: "line",

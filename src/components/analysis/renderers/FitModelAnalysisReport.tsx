@@ -48,8 +48,6 @@ export interface FitModelAnalysisReportProps {
   onAddEffect?: (terms: FitModelTerm[]) => void;
   onRemoveTerm: (termId: string) => void;
   onUndoRemove: (() => void) | null;
-  onSaveColumns?: () => void;
-  saveColumnsDisabled?: boolean;
 }
 
 function columns(entries: Array<[string, ReactNode, boolean?]>): AnalysisTableColumn[] {
@@ -92,8 +90,6 @@ export function FitModelAnalysisReport({
   onAddEffect,
   onRemoveTerm,
   onUndoRemove,
-  onSaveColumns,
-  saveColumnsDisabled = false,
 }: FitModelAnalysisReportProps) {
   const { t } = useTranslation();
   const undefinedValue = localizedFallback(
@@ -180,11 +176,6 @@ export function FitModelAnalysisReport({
       <AnalysisStack direction="horizontal" data-analysis-block="actions">
         {state.status === "stale" ? (
           <AnalysisText>{t("fitModel.report.stale", { defaultValue: "Stale result" })}</AnalysisText>
-        ) : null}
-        {onSaveColumns ? (
-          <AnalysisButton onClick={onSaveColumns} disabled={saveColumnsDisabled}>
-            {t("fitModel.report.saveColumns.open", { defaultValue: "Save Columns" })}
-          </AnalysisButton>
         ) : null}
       </AnalysisStack>
 
@@ -503,13 +494,11 @@ export function FitModelAnalysisReport({
             }}
           />
 
-          <AnalysisFrame
-            title={t("fitModel.report.section.warnings", { defaultValue: "Warnings" })}
-            data-analysis-block="report"
-          >
-            {fittedResult.warnings.length === 0 ? (
-              <AnalysisText>{t("fitModel.report.noWarnings", { defaultValue: "No warnings." })}</AnalysisText>
-            ) : (
+          {fittedResult.warnings.length > 0 ? (
+            <AnalysisFrame
+              title={t("fitModel.report.section.warnings", { defaultValue: "Warnings" })}
+              data-analysis-block="report"
+            >
               <AnalysisStack>
                 {fittedResult.warnings.map((warning) => (
                   <AnalysisText key={warning}>
@@ -517,8 +506,8 @@ export function FitModelAnalysisReport({
                   </AnalysisText>
                 ))}
               </AnalysisStack>
-            )}
-          </AnalysisFrame>
+            </AnalysisFrame>
+          ) : null}
         </>
       ) : null}
 

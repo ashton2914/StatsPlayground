@@ -208,7 +208,7 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   const disclosureButtons = component.locator(
     "[data-fit-model-analysis-report] .analysis-ui-frame-title",
   );
-  await expect(disclosureButtons).toHaveCount(13);
+  await expect(disclosureButtons).toHaveCount(12);
   const sectionTitles = await disclosureButtons.allTextContents();
   expect(sectionTitles.map((title) => title.replace(/^[▾▸]\s*/u, "").trim())).toEqual([
     "Model Specification",
@@ -223,7 +223,6 @@ test("renders approved report order and effect interactions", async ({ mount }) 
     "Effect Tests",
     "Row Diagnostics",
     "Prediction Profiler",
-    "Warnings",
   ]);
   const reportBlocks = component.locator("[data-fit-model-analysis-report] > [data-analysis-block]");
   for (const blockIndex of [3, 10]) {
