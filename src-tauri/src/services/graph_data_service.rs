@@ -1122,10 +1122,15 @@ impl ProjectionMetadata {
         };
         let resolved_y_column = if has_backend_projection_aliases {
             "__sp_y"
+        } else if let Some(column) = y_column.filter(|column| {
+            stats
+                .projected_columns
+                .iter()
+                .any(|projected| projected == *column)
+        }) {
+            column.as_str()
         } else if has_melt_value_alias {
             "__sp_value__"
-        } else if let Some(column) = y_column {
-            column
         } else {
             return Err(AppError::InvalidParam(
                 "graph request is missing role y".to_string(),
@@ -4419,6 +4424,60 @@ mod tests {
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("unknown graph column"))
         );
+    }
+
+    #[test]
+    fn multi_x_merge_keeps_bound_y_values_distinct() {
+        let state = AppState::new().expect("state");
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            "multi-x-bound-y",
+            "Multi X Bound Y",
+            &["x_input".into(), "y_output".into()],
+            &["DOUBLE".into(), "DOUBLE".into()],
+        )
+        .expect("create table");
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_multi_x_bound_y\" (_row_id, x_input, y_output)
+                 VALUES (1, 1.0, 10.0), (2, 2.0, 20.0), (3, 3.0, 40.0)",
+                [],
+            )
+            .expect("insert rows");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 3 WHERE id = $1",
+                params!["multi-x-bound-y"],
+            )
+            .expect("update row count");
+        drop(db);
+
+        let service = GraphDataService::new(&state);
+        let mut request = build_request("multi-x-bound-y", 0);
+        request.fields = vec![
+            GraphFieldBinding {
+                role: "multiX0".to_string(),
+                column: "x_input".to_string(),
+            },
+            GraphFieldBinding {
+                role: "y".to_string(),
+                column: "y_output".to_string(),
+            },
+        ];
+        request.elements = vec![GraphElementRequest {
+            kind: "fitline".to_string(),
+            summary_stat: "none".to_string(),
+            correlation_method: None,
+            time_series: None,
+        }];
+
+        let chunks = service.collect_for_test(&request).expect("graph chunks");
+        let chunk = chunks.first().expect("graph chunk");
+        let x_values = extract_f64_slice(chunk, &chunk.header.x_values);
+        let y_values = extract_f64_slice(chunk, &chunk.header.y_values);
+
+        assert_eq!(x_values, vec![1.0, 2.0, 3.0]);
+        assert_eq!(y_values, vec![10.0, 20.0, 40.0]);
     }
 
     #[test]

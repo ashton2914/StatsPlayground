@@ -1056,6 +1056,16 @@ for (const element of [
   );
   assert.ok(series.length > 0, `frame-backed ${element.kind} must emit a renderable series`);
   assert.ok(series.some((entry) => Array.isArray(entry.data) && entry.data.length > 0));
+  if (element.kind === "fitline") {
+    const fitSeries = series.find((entry) =>
+      entry.type === "line" && Array.isArray(entry.data) && entry.data.length > 0
+    );
+    assert.ok(fitSeries, "frame-backed fitline must emit fitted coordinates");
+    assert.ok(
+      (fitSeries.data as [number, number][]).some(([x, y]) => Math.abs(x - y) > 1e-6),
+      "fitline must preserve distinct X/Y vectors instead of collapsing to y = x",
+    );
+  }
 }
 
 {
