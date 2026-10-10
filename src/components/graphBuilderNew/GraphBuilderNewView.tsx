@@ -37,13 +37,11 @@ if (import.meta.hot) import.meta.hot.dispose(unsubscribeSessionClose);
 interface GraphBuilderNewViewProps {
   sessionId: string;
   dataset: DatasetMeta | undefined;
-  onClose: () => void;
 }
 
 export function GraphBuilderNewView({
   sessionId,
   dataset,
-  onClose,
 }: GraphBuilderNewViewProps) {
   const { t } = useTranslation();
   const session = useGraphBuilderNewStore((state) => (
@@ -152,7 +150,7 @@ export function GraphBuilderNewView({
     setColumns(session.id, xColumnId || null, session.yColumnId);
   };
   const updateY = (yColumnId: string) => {
-    if (useProjectStore.getState().readOnly || (yColumnId && !xColumnIds.has(yColumnId))) return;
+    if (useProjectStore.getState().readOnly || (yColumnId && !numericColumnIds.has(yColumnId))) return;
     setColumns(session.id, session.xColumnId, yColumnId || null);
   };
   const updateOverlay = (overlayColumnId: string) => {
@@ -166,7 +164,7 @@ export function GraphBuilderNewView({
     columnId: column.columnId,
     name: column.name,
     sqlType: column.sqlType,
-    typeLabel: inferFieldType(column.sqlType) === "continuous" ? "#" : "A",
+    typeLabel: t(`dataTable.type.${column.sqlType}`, { defaultValue: column.sqlType }),
   }));
   const bindingFor = (columnId: string | null): GraphDropSlotBinding | null => {
     if (!columnId) return null;
@@ -213,15 +211,6 @@ export function GraphBuilderNewView({
         </div>
         <div className="gb-toolbar-spacer" />
         <span className="graph-builder-new-source">{dataset?.name ?? t("graphNew.sourceUnavailable")}</span>
-        <button
-          className="graph-builder-new-close"
-          type="button"
-          aria-label="Close Graph Builder-new"
-          title="Close"
-          onClick={onClose}
-        >
-          &times;
-        </button>
       </GraphBuilderToolbarSection>
 
       <div className="gb-body graph-builder-new-body">
@@ -378,11 +367,9 @@ export function GraphBuilderNewView({
                   && current.overlayColumnId === session.overlayColumnId
                   && current.xMode === session.xMode) setCamera(session.id, camera);
               }}
-              xTitle={columns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
-              yTitle={columns.find((column) => column.columnId === session.yColumnId)?.name ?? ""}
             />
           ) : (
-            <div className="graph-builder-new-plot-placeholder" aria-hidden="true" />
+            <div className="gb-empty" role="status">{t("graph.dragHint")}</div>
           )}
           </section>
           <GraphDropSlot

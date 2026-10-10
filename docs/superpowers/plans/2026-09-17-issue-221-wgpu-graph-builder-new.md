@@ -688,8 +688,10 @@ Keep gesture transforms in the WebView compositor, apply overscan, show provisio
 
 Camera core implemented and verified: pointer pan, wheel anchoring, reset,
 75 ms settle, latest-only frames and zoom retention across resize/DPR. Camera
-cache misses never trigger source scans. Preview currently uses bounded crop,
-not overscan, so Step 2 remains partially complete. Hover/click remain deferred.
+cache misses never trigger source scans. WebView-owned axes stay readable
+during gestures. The bounded crop previews only transforms that fully cover the
+plot; zoom-out and uncovered pans retain the last coherent frame until the
+settled replacement arrives. Hover/click remain deferred.
 Final checks: 88 Rust, 21 CT, five TS scripts and frontend/backend builds passed.
 Native gesture acceptance and P95 qualification remain pending.
 

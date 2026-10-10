@@ -574,7 +574,10 @@ The user confirmed native point plotting, then prioritized pan/zoom and caches
 over hover/table selection. Pointer pan, pointer-anchored wheel zoom, reset,
 resize/DPR camera retention and a 75 ms settled debounce are implemented.
 Gestures locally reproject the plot raster; preview uses bounded cropping,
-frozen/faded axes and hatched uncovered areas, not the planned overscan.
+WebView-owned axes that stay readable during gestures. Zoom-in uses the bounded
+crop for immediate compositor feedback; zoom-out and uncovered pans retain the
+last coherent frame until the settled replacement arrives instead of exposing
+hatched cache boundaries.
 
 Completed keys survive close/reopen in CPU LRU, with a pinned active graph and
 8 MiB decoded-tile LRU per pyramid. CPU reservations are capped at 768 MiB

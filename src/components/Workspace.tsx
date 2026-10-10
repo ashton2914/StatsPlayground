@@ -2873,10 +2873,6 @@ export function Workspace() {
                 <GraphBuilderNewView
                   sessionId={activeGraphBuilderNewId}
                   dataset={dataset}
-                  onClose={() => {
-                    closeGraphBuilderNew(activeGraphBuilderNewId);
-                    setActiveGraphBuilderNewId(null);
-                  }}
                 />
               );
             })()

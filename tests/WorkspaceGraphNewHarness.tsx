@@ -93,7 +93,9 @@ export function WorkspaceGraphNewHarness({ missingOnly = false, legacyFolders = 
         handlers.onFrame({ header: { ...request, width, height, frameId: 1, format: "rgba8", byteLength: pixels.length, readbackCompletedAtUnixMicros: 1 }, payload: pixels.buffer });
         resolve({ requestId: request.requestId, processedRows: 2, finiteRows: 2, excludedNonFiniteRows: 0, selectedMarks: 2, exactVisible: true, visibleRows: 2,
           meanAvailable: true, meanGroups: request.showMean ? 2 : null, meanVisible: request.showMean, rawMode: request.rawMode, rawLineAvailable: true, rawLineSegments: 1,
-          xAxis: { kind: "numeric", utc: false, ticks: [] }, width, height, cameraDomain: request.cameraDomain ?? { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+          xAxis: { kind: "numeric", utc: false, ticks: [] },
+          yAxis: { kind: "numeric", utc: false, ticks: [] },
+          width, height, cameraDomain: request.cameraDomain ?? { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
           plotRect: { x: 64, y: 16, width: width - 80, height: height - 48 }, buildMs: 1, renderMs: 1, readbackMs: 1, sourceProjectionQueryCount: 1, renderGenerationCheckCount: 4 });
       }, 20));
       return { completion, canPresent: () => !cancelled && !presented, markPresented: () => { presented = true; }, cancel: async () => { cancelled = true; }, snapshot: () => ({ maximumQueueDepth: 1, droppedSupersededFrames: 0, rejectedFrames: 0, presentedFrames: Number(presented), pendingFrameId: null }) };

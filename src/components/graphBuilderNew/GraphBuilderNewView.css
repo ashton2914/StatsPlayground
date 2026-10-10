@@ -45,24 +45,6 @@
   font-size: 12px;
 }
 
-.graph-builder-new-close {
-  width: 30px;
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--gbn-muted);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.graph-builder-new-close:hover {
-  border-color: var(--gbn-border);
-  background: var(--gbn-hover);
-  color: var(--gbn-text);
-}
-
 .graph-builder-new-body {
   min-height: 0;
   flex: 1;
@@ -280,27 +262,27 @@
   text-align: center;
 }
 
-.graph-builder-new-plot-placeholder {
-  width: min(78%, 760px);
-  aspect-ratio: 16 / 10;
-  border-left: 1px solid var(--gbn-placeholder);
-  border-bottom: 1px solid var(--gbn-placeholder);
+.graph-builder-new-stage > .gb-empty {
+  align-self: start;
+  width: 100%;
 }
 
 .graph-new-chart {
+  position: relative;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) 22px 30px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   color: var(--gbn-text);
   font-size: 12px;
+  user-select: none;
 }
 
 .graph-new-canvas-host {
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 2;
   position: relative;
   min-width: 0;
@@ -345,17 +327,21 @@
 .graph-new-reset:disabled { opacity: 0.4; cursor: default; }
 .graph-new-reset:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
 
-.graph-new-y-title {
-  grid-row: 2;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  align-self: center;
-  overflow: hidden;
-  max-height: 100%;
+.graph-new-frame-status {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  right: 38px;
+  max-width: min(48%, 420px);
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--gbn-panel) 88%, transparent);
+  color: var(--gbn-muted);
+  font-size: 11px;
+  line-height: 14px;
+  text-align: right;
+  pointer-events: none;
 }
-
-.graph-new-x-title { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.graph-new-frame-status { grid-column: 1 / -1; color: var(--gbn-muted); align-self: center; font-size: 11px; }
 
 .graph-new-layers { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 0 0 8px; min-height: 28px; text-align: left; }
 .graph-new-mean-toggle, .graph-new-legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -413,7 +399,18 @@
 .graph-new-mean-swatch { width: 20px; height: 0; border-top: 2px solid #dc2626; }
 .graph-new-line-swatch { width: 20px; height: 0; border-top: 1px solid #1f6feb; }
 .graph-new-axis-ticks { position: absolute; inset: 0; pointer-events: none; }
-.graph-new-axis-ticks span { position: absolute; font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.graph-new-axis-ticks span {
+  position: absolute;
+  color: var(--gbn-text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
 .graph-new-mean-reason { color: var(--gbn-muted); font-size: 11px; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {

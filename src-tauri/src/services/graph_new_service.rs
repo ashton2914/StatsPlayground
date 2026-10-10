@@ -354,6 +354,19 @@ impl<'a> GraphNewService<'a> {
                 raw_line.as_ref().map_or(0, |segments| segments.len())
             };
             let x_axis = axis_ticks(&built.pyramid.x_axis, domain, request.width)?;
+            let y_axis = GraphNewAxis {
+                kind: GraphNewXMode::Numeric,
+                utc: false,
+                ticks: super::graph_new_ticks::numeric_ticks(domain.y_min, domain.y_max)?
+                    .into_iter()
+                    .map(|tick| GraphNewAxisTick {
+                        value: tick.value,
+                        position: tick.position,
+                        label: Some(tick.label),
+                    })
+                    .collect(),
+                origin: None,
+            };
             let scene = GraphNewScene { width: request.width, height: request.height,
                 device_pixel_ratio: request.device_pixel_ratio, domain, points,
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
@@ -398,6 +411,7 @@ impl<'a> GraphNewService<'a> {
             };
             let mut completion = GraphNewRenderCompletion { request_id: request.request_id.clone(),
                 x_axis,
+                y_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
                 raw_line_segments: enabled_raw_segments,
                 overlay_groups: built.pyramid.overlay.groups.clone(),
@@ -959,7 +973,9 @@ fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain
                 let nanos = tick.value * f64::from(origin.unit_nanos);
                 (nanos - nanos.round()).abs() < 1e-6
             })).map(|tick| GraphNewAxisTick {
-            value: tick.value, position: tick.position, label: None,
+            value: tick.value,
+            position: tick.position,
+            label: (axis.kind == GraphNewXMode::Numeric).then_some(tick.label),
         }).collect()
     };
     Ok(GraphNewAxis { kind: axis.kind, utc: axis.utc, ticks, origin: axis.origin.clone() })

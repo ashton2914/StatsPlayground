@@ -2,7 +2,7 @@ use super::graph_new_lod::{GraphDomain, SourcePoint};
 use super::graph_new_overlay::{
     EnabledOverlayMask, GroupedLineSegment, GroupedMeanPoint, OverlayCatalog,
 };
-use super::graph_new_text::{glyph_index, numeric_atlas, ATLAS_HEIGHT, ATLAS_WIDTH};
+use super::graph_new_text::{numeric_atlas, ATLAS_HEIGHT, ATLAS_WIDTH};
 use super::graph_new_ticks::{normalized, numeric_ticks, validate_domain};
 use super::graph_new_transport_service::{
     session_renderer, SyntheticFrame, SyntheticFrameRenderer,
@@ -566,12 +566,6 @@ impl ScenePipeline {
             let vertical = plot[1] + (1.0 - tick.position as f32) * plot[3];
             marks.push(rect([plot[0], vertical], [plot[2], ratio], GRID));
         }
-        for horizontal in [true, false] {
-            if horizontal && scene.presentation.x_axis.is_some() { continue; }
-            for (label, position) in axis_labels(scene, horizontal)? {
-                text(&mut marks, &label, position, (2.0 * ratio).max(1.0));
-            }
-        }
         marks.push(rect(
             [plot[0] - ratio, plot[1]],
             [ratio, plot[3] + ratio],
@@ -938,67 +932,12 @@ fn clip_mean_segment(mut start: [f64; 2], mut end: [f64; 2], domain: GraphDomain
     Some([start, end])
 }
 
-fn axis_labels(scene: &GraphNewScene, horizontal: bool) -> Result<Vec<(String, [f32; 2])>, AppError> {
-    let (width, height) = scene.physical_size()?;
-    let plot = scene.plot();
-    let ratio = scene.device_pixel_ratio as f32;
-    let scale = (2.0 * ratio).max(1.0);
-    let text_height = 5.0 * scale;
-    let mut ticks = if horizontal {
-        numeric_ticks(scene.domain.x_min, scene.domain.x_max)?
-    } else {
-        numeric_ticks(scene.domain.y_min, scene.domain.y_max)?
-    };
-    if !horizontal { ticks.reverse(); }
-    let mut labels = Vec::new();
-    let mut previous_end = f32::NEG_INFINITY;
-    for tick in ticks {
-        let text_width = tick.label.len() as f32 * 4.0 * scale;
-        if text_width > if horizontal { width as f32 } else { 56.0 * ratio } {
-            continue;
-        }
-        let position = if horizontal {
-            [
-                (plot[0] + tick.position as f32 * plot[2] - text_width / 2.0)
-                    .clamp(0.0, width as f32 - text_width),
-                plot[1] + plot[3] + 8.0 * ratio,
-            ]
-        } else {
-            [
-                plot[0] - 4.0 * ratio - text_width,
-                plot[1] + (1.0 - tick.position as f32) * plot[3] - text_height / 2.0,
-            ]
-        };
-        let start = position[if horizontal { 0 } else { 1 }];
-        if start < previous_end + 4.0 * ratio || position[0] < 0.0 || position[1] < 0.0
-            || position[1] + text_height > height as f32 {
-            continue;
-        }
-        previous_end = start + if horizontal { text_width } else { text_height };
-        labels.push((tick.label, position));
-    }
-    Ok(labels)
-}
-
 fn rect(position: [f32; 2], size: [f32; 2], color: [f32; 4]) -> Mark {
     Mark {
         position,
         size,
         color,
         kind_glyph: [0.0; 2],
-    }
-}
-
-fn text(marks: &mut Vec<Mark>, label: &str, position: [f32; 2], scale: f32) {
-    for (index, glyph) in label.chars().take(24).enumerate() {
-        if let Some(slot) = glyph_index(glyph) {
-            marks.push(Mark {
-                position: [position[0] + index as f32 * 4.0 * scale, position[1]],
-                size: [3.0 * scale, 5.0 * scale],
-                color: INK,
-                kind_glyph: [2.0, slot as f32],
-            });
-        }
     }
 }
 
@@ -1673,7 +1612,7 @@ mod tests {
                 .any(|value| value == [71, 85, 105, 255]));
             assert_eq!(
                 pixel(&empty, width, 62 * ratio, 136 * ratio),
-                [71, 85, 105, 255]
+                [255, 255, 255, 255]
             );
             for vertical in 0..160 * ratio {
                 for horizontal in 0..width {
@@ -1695,41 +1634,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_bounded_distinct_and_spaced_at_minimum_and_normal_sizes() {
-        for (width, height) in [(96, 64), (240, 160)] {
-            for ratio in [0.5, 1.0, 2.0] {
-                for (minimum, maximum) in [(1.0001, 1.0009), (1e-200, 3e-200),
-                    (-f64::MAX, f64::MAX), (1.0, f64::from_bits(1.0f64.to_bits() + 1)),
-                    (0.0, f64::from_bits(4))] {
-                    let mut input = scene();
-                    input.width = width;
-                    input.height = height;
-                    input.device_pixel_ratio = ratio;
-                    input.domain = GraphDomain { x_min: minimum, x_max: maximum, y_min: minimum, y_max: maximum };
-                    let scale = (2.0 * ratio as f32).max(1.0);
-                    for horizontal in [true, false] {
-                        let labels = axis_labels(&input, horizontal).unwrap();
-                        for (label, position) in &labels {
-                            assert!(position[0] >= 0.0 && position[1] >= 0.0);
-                            assert!(position[0] + label.len() as f32 * 4.0 * scale <= (width as f64 * ratio).ceil() as f32);
-                            assert!(position[1] + 5.0 * scale <= (height as f64 * ratio).ceil() as f32);
-                            assert!(5.0 * scale / ratio as f32 >= 8.0);
-                        }
-                        for pair in labels.windows(2) {
-                            assert_ne!(pair[0].0, pair[1].0);
-                            let axis = if horizontal { 0 } else { 1 };
-                            let extent = if horizontal { pair[0].0.len() as f32 * 4.0 * scale } else { 5.0 * scale };
-                            assert!(pair[1].1[axis] >= pair[0].1[axis] + extent + 4.0 * ratio as f32);
-                        }
-                        if horizontal && width == 240 { assert!(!labels.is_empty()); }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn gpu_close_decimal_labels_keep_readable_height() {
+    fn gpu_frame_leaves_axis_text_to_the_webview() {
         for ratio in [0.5, 1.0, 2.0] {
             let mut input = scene();
             input.device_pixel_ratio = ratio;
@@ -1741,7 +1646,7 @@ mod tests {
             let ink_rows = (first_row..height as usize).filter(|&vertical| {
                 (0..width as usize).any(|horizontal| pixel(&frame, width as usize, horizontal, vertical) == [71, 85, 105, 255])
             }).count();
-            assert!(ink_rows >= (8.0 * ratio).ceil() as usize, "DPR {ratio}: {ink_rows} ink rows");
+            assert_eq!(ink_rows, 0, "DPR {ratio}: native frame rendered axis text");
         }
     }
 

@@ -4133,6 +4133,12 @@ mod tests {
                 ticks: vec![],
                 origin: None,
             },
+            y_axis: GraphNewAxis {
+                kind: GraphNewXMode::Numeric,
+                utc: false,
+                ticks: vec![],
+                origin: None,
+            },
             raw_line_available: true,
             raw_line_segments: 0,
             raw_mode: GraphNewRawMode::Scatter,

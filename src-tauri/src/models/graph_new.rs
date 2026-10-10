@@ -179,6 +179,7 @@ pub struct GraphNewGpuCacheStats {
 pub struct GraphNewRenderCompletion {
     pub request_id: String,
     pub x_axis: GraphNewAxis,
+    pub y_axis: GraphNewAxis,
     pub raw_line_available: bool,
     pub raw_line_segments: usize,
     pub raw_mode: GraphNewRawMode,
