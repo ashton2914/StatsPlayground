@@ -38,6 +38,14 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::mcp_commands::plan_vscode_mcp_launch",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::execute_vscode_mcp_launch",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::calculated_column_commands::validate_calculated_column",
                 CommandClass::ReadOnly,
             ),

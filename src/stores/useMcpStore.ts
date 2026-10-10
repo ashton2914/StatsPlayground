@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 import { mcpManagementService } from "@/services/mcpManagementService";
 import type {
+  VsCodeLaunchPlan,
+  VsCodeLaunchResult,
   McpAuditEntry,
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
@@ -30,12 +32,20 @@ type IntervalHandle = ReturnType<typeof setInterval>;
 
 interface McpStoreDependencies {
   service: McpManagementServiceLike;
+  launchService: Pick<typeof mcpManagementService, "selectWorkspace" | "planVsCodeLaunch" | "executeVsCodeLaunch">;
   setInterval: (callback: () => void, ms: number) => IntervalHandle;
   clearInterval: (handle: IntervalHandle) => void;
   refreshIntervalMs: number;
 }
 
 export interface McpStore {
+  launchBusy: boolean;
+  launchPlan: VsCodeLaunchPlan | null;
+  launchResult: VsCodeLaunchResult | null;
+  launchError: string | null;
+  launchVSCode: () => Promise<void>;
+  executeVsCodeLaunch: () => Promise<void>;
+  cancelVsCodeLaunch: () => void;
   viewVisible: boolean;
   status: McpServerStatus;
   auditEntries: McpAuditEntry[];
@@ -139,6 +149,7 @@ function createStoppedTransientState() {
 
 export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
   const service = input.service ?? mcpManagementService;
+  const launchService = input.launchService ?? mcpManagementService;
   const setIntervalImpl = input.setInterval ?? ((callback, ms) => setInterval(callback, ms));
   const clearIntervalImpl = input.clearInterval ?? ((handle) => clearInterval(handle));
   const refreshIntervalMs = input.refreshIntervalMs ?? 2000;
@@ -161,6 +172,42 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
   };
 
   return create<McpStore>((set, get) => ({
+    launchBusy: false,
+    launchPlan: null,
+    launchResult: null,
+    launchError: null,
+    launchVSCode: async () => {
+      if (get().launchBusy) return;
+      set({ launchBusy: true, launchPlan: null, launchResult: null, launchError: null });
+      try {
+        const selected = await launchService.selectWorkspace();
+        if (selected !== null) {
+          const launchPlan = await launchService.planVsCodeLaunch(selected);
+          set({ launchPlan });
+        }
+      } catch (error) {
+        set({ launchError: messageFromError(error) });
+      } finally {
+        set({ launchBusy: false });
+      }
+    },
+    cancelVsCodeLaunch: () => {
+      if (!get().launchBusy) set({ launchPlan: null, launchError: null });
+    },
+    executeVsCodeLaunch: async () => {
+      const plan = get().launchPlan;
+      if (!plan || get().launchBusy) return;
+      set({ launchBusy: true, launchError: null, launchPlan: null });
+      try {
+        const launchResult = await launchService.executeVsCodeLaunch({ planId: plan.planId, approveConflict: plan.confirmationRequired });
+        set({ launchResult, settingsDirty: false });
+      } catch (error) {
+        set({ launchError: messageFromError(error) });
+      } finally {
+        try { await get().refresh(); } catch { /* refresh exposes its own error */ }
+        set({ launchBusy: false });
+      }
+    },
     viewVisible: false,
     status: STOPPED_STATUS,
     auditEntries: [],

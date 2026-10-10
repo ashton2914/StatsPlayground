@@ -296,6 +296,34 @@ impl McpServerRuntime {
         self.audit_log.list()
     }
 
+    /// The sole running-state settings write: verify and hold the active runtime
+    /// while persisting its exact credentials (or writing its workspace config).
+    pub(crate) fn with_active_configuration<T>(
+        &self,
+        settings: &McpSettings,
+        operation: impl FnOnce() -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let _gate = self
+            .operation_gate
+            .lock()
+            .map_err(|_| AppError::Busy("MCP operation unavailable".into()))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::Busy("MCP runtime unavailable".into()))?;
+        match &*state {
+            McpServerState::Running(handle)
+                if handle.endpoint == format!("http://127.0.0.1:{}/mcp", settings.port)
+                    && handle.token.expose_for_management() == settings.token =>
+            {
+                operation()
+            }
+            _ => Err(AppError::Busy(
+                "MCP runtime changed. Create a new launch plan.".into(),
+            )),
+        }
+    }
+
     fn finish_failed_start(&self) -> Result<(), AppError> {
         let mut state = self
             .inner

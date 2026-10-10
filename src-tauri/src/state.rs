@@ -37,6 +37,7 @@ pub struct AppState {
     pub workflow_run_journal: Mutex<HashMap<String, WorkflowRunJournalEntry>>,
     pub mcp_command_broker: McpCommandBroker,
     pub mcp_server: McpServerRuntime,
+    pub vscode_launch: crate::services::vscode_launch_service::VsCodeLaunchService,
 }
 
 impl AppState {
@@ -57,6 +58,7 @@ impl AppState {
             workflow_run_journal: Mutex::new(HashMap::new()),
             mcp_command_broker: McpCommandBroker::new(),
             mcp_server: McpServerRuntime::new(),
+            vscode_launch: Default::default(),
         })
     }
 

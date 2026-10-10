@@ -418,3 +418,15 @@ Select-String -Path src/graphCore/*.ts,src/components/**/*.tsx `
 
 - 仅使用已授权根目录对应的 `rootId + relativePath`。
 - 覆盖流程必须在应用内完成确认。
+
+## Launch VS Code 与 MCP
+
+- 在 MCP Server 面板点击“启动 VS Code”，选择工作目录，再确认预览。已有不同的 `StatsPlayground` 配置时必须明确确认替换；取消则不写入。
+- `.mcp.json` 或兼容的 `.vscode/mcp.json` 包含本地访问凭据。Git 已跟踪该文件时应用拒绝写入：先备份配置，再将该文件从 Git 跟踪中移除，或自行通过 VS Code 的安全输入机制管理凭据。不要把令牌提交到仓库。
+- JSONC 格式错误、重复属性或 `.vscode`/`mcp.json` 路径链接会阻止配置；先修复文件或选择普通本地目录后重试。计划过期或文件变化后重新选择目录。
+- “已配置，但未找到/无法启动 VS Code”表示 MCP 配置已保存。安装或打开 Stable Visual Studio Code，再手动打开所选目录；无需重新生成令牌。macOS 使用系统或用户 Applications 目录，Windows 使用标准安装目录，Linux 需要 PATH 中的 Stable `code`。
+- VS Code 某些界面手动启动 MCP 时可能显示 `Cannot start an MCP server before the session runtime has been created. Send a message first.`：打开 Chat 并先发送一条消息，随后重试 MCP。应用的启动按钮只负责服务、工作区配置和编辑器启动，无法替代 VS Code 的 Chat session runtime。
+- 端点应在重启后保持一致。若应用提示运行设置与保存设置不同，先停止 MCP 服务，再按已保存的设置重启；不要直接覆盖正在使用的凭据。
+- 调试构建默认也使用保存设置。如果出现旧的固定端口 `48188` 和 `Active MCP settings are invalid`，更新后完整退出并重启应用，清除旧进程的开发配置。显式设置的 `STATSPLAYGROUND_MCP_BIND`/`STATSPLAYGROUND_MCP_TOKEN` 仍会覆盖调试配置；验收保存设置的流程时请取消这两个环境变量。
+
+- VS Code 的 MCP 迁移提示将工作区配置转为根目录 `.mcp.json`/`mcpServers`。新目录由本功能直接生成此格式；旧配置可继续使用。已迁移后再次启动会使用根目录配置，不会重建旧配置。若旧文件仍包含 `StatsPlayground`，先完成迁移或解决重复定义；本功能不会自动删除文件。确认期间发生迁移时，重新选择目录生成计划。根目录凭据文件同样需要 Git 本地排除保护；VS Code 自己创建的文件不由本功能提前保护。

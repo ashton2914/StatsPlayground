@@ -17,6 +17,12 @@ The flow must be safe by default:
 
 ## Scope
 
+### Approved VS Code 1.141 compatibility amendment (2026-10-10)
+
+New workspaces use root `.mcp.json` with top-level `mcpServers`. Existing root configurations take precedence over legacy `.vscode/mcp.json`; legacy-only workspaces continue using `servers` in place. The application does not automatically delete or migrate existing files. If a root configuration coexists with a legacy `StatsPlayground` entry, refuse launch planning and ask the user to complete migration or resolve the duplicate before creating another managed entry. Bind both configuration snapshots and the selected format into the launch plan so migration during confirmation invalidates it. Preview and result expose only the relative configuration path. Git protection, JSONC preservation, conflict approval, private atomic writes and rollback apply to the selected path and format.
+
+This amendment supersedes the legacy-only path and schema references below. References: [VS Code configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration), [migration](https://code.visualstudio.com/docs/agent-customization/migrate-customizations).
+
 The first release:
 
 1. selects one existing local directory;
