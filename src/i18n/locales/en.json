@@ -198,6 +198,37 @@
   },
   "ai": {
     "mcpServer": {
+      "vscode": {
+        "launch": "Launch VS Code",
+        "preview": "Configure {{folder}} for VS Code",
+        "current": "Current entry",
+        "proposed": "Proposed endpoint",
+        "availablePort": "An available loopback port",
+        "credential": "The local {{path}} file contains a credential. Keep it private.",
+        "configure": "Configure and launch",
+        "replace": "Replace entry and launch",
+        "action": {
+          "create": "Create a workspace MCP configuration.",
+          "merge": "Add StatsPlayground while preserving other configuration.",
+          "replaceManagedEntry": "Replace the conflicting StatsPlayground entry only after confirmation.",
+          "unchanged": "The workspace MCP entry is already configured."
+        },
+        "settings": {
+          "reuse": "Reuse the persistent running endpoint.",
+          "startSaved": "Start the server with saved settings.",
+          "persistRunning": "Save the current running endpoint and token for future restarts.",
+          "initializePersistent": "Start on an available loopback port and save the endpoint and token for future restarts."
+        },
+        "git": {
+          "localExclude": "Git must report this file ignored before a credential is written.",
+          "nonGit": "This folder is outside Git. Keep the generated credential file private."
+        },
+        "result": {
+          "launched": "Configured {{folder}} and launched VS Code.",
+          "configuredVsCodeNotFound": "Configured {{folder}}, but Stable VS Code was not found. Open this folder manually in Stable VS Code.",
+          "configuredLaunchFailed": "Configured {{folder}}, but VS Code could not be launched. Open this folder manually in Stable VS Code."
+        }
+      },
       "description": "Manage the in-app MCP endpoint for external AI clients.",
       "start": "Start server",
       "stop": "Stop server",

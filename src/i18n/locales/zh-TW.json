@@ -160,6 +160,37 @@
   },
   "ai": {
     "mcpServer": {
+      "vscode": {
+        "launch": "啟動 VS Code",
+        "preview": "為 {{folder}} 設定 VS Code",
+        "current": "現有設定",
+        "proposed": "擬用端點",
+        "availablePort": "可用的本機回環連接埠",
+        "credential": "本機 {{path}} 檔案包含存取憑證，請妥善保管。",
+        "configure": "設定並啟動",
+        "replace": "取代設定並啟動",
+        "action": {
+          "create": "建立工作區 MCP 設定。",
+          "merge": "新增 StatsPlayground，保留其他設定。",
+          "replaceManagedEntry": "確認後僅取代衝突的 StatsPlayground 設定。",
+          "unchanged": "工作區 MCP 已設定。"
+        },
+        "settings": {
+          "reuse": "重用已持久化的執行端點。",
+          "startSaved": "使用已儲存的設定啟動服務。",
+          "persistRunning": "儲存目前執行端點和權杖，供重新啟動後使用。",
+          "initializePersistent": "使用可用的本機回環連接埠啟動服務，並儲存端點和權杖。"
+        },
+        "git": {
+          "localExclude": "寫入憑證前必須確認 Git 已忽略此檔案。",
+          "nonGit": "此目錄不屬於 Git 工作區，請妥善保管產生的憑證檔案。"
+        },
+        "result": {
+          "launched": "已設定 {{folder}} 並啟動 VS Code。",
+          "configuredVsCodeNotFound": "已設定 {{folder}}，但找不到 Stable VS Code。請在 Stable VS Code 中手動開啟此目錄。",
+          "configuredLaunchFailed": "已設定 {{folder}}，但 VS Code 啟動失敗。請在 Stable VS Code 中手動開啟此目錄。"
+        }
+      },
       "description": "管理供外部 AI 用戶端使用的應用程式內 MCP 端點。",
       "start": "啟動服務",
       "stop": "停止服務",

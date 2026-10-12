@@ -55,3 +55,30 @@ export interface McpCommandRequestSummary {
   message?: string | null;
   percent?: number | null;
 }
+export interface VsCodeLaunchPlan {
+  configurationPath: ".mcp.json" | ".vscode/mcp.json";
+  planId: string;
+  workspaceDisplayName: string;
+  configurationAction: "create" | "merge" | "replaceManagedEntry" | "unchanged";
+  confirmationRequired: boolean;
+  currentEndpoint: string | null;
+  proposedEndpoint: string;
+  gitProtection: "localExclude" | "nonGit";
+  settingsAction: "reuse" | "startSaved" | "persistRunning" | "initializePersistent";
+  warnings: string[];
+}
+
+export interface VsCodeLaunchRequest {
+  planId: string;
+  approveConflict: boolean;
+}
+
+export interface VsCodeLaunchResult {
+  configurationPath: VsCodeLaunchPlan["configurationPath"];
+  workspaceDisplayName: string;
+  configurationResult: VsCodeLaunchPlan["configurationAction"];
+  serverState: "running";
+  endpoint: string;
+  launchResult: "launched" | "configuredVsCodeNotFound" | "configuredLaunchFailed";
+  warnings: string[];
+}

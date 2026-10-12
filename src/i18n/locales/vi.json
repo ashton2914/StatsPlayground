@@ -1,4 +1,39 @@
 {
+  "ai": {
+    "mcpServer": {
+      "vscode": {
+        "launch": "Mở VS Code",
+        "preview": "Cấu hình {{folder}} cho VS Code",
+        "current": "Cấu hình hiện tại",
+        "proposed": "Điểm cuối đề xuất",
+        "availablePort": "Một cổng loopback khả dụng",
+        "credential": "Tệp {{path}} chứa thông tin xác thực. Hãy giữ tệp này riêng tư.",
+        "configure": "Cấu hình và mở",
+        "replace": "Thay thế cấu hình và mở",
+        "action": {
+          "create": "Tạo cấu hình MCP cho thư mục làm việc.",
+          "merge": "Thêm StatsPlayground và giữ nguyên cấu hình khác.",
+          "replaceManagedEntry": "Chỉ thay thế cấu hình StatsPlayground xung đột sau khi xác nhận.",
+          "unchanged": "MCP đã được cấu hình cho thư mục này."
+        },
+        "settings": {
+          "reuse": "Dùng lại điểm cuối đang chạy đã lưu.",
+          "startSaved": "Khởi động máy chủ với thiết lập đã lưu.",
+          "persistRunning": "Lưu điểm cuối và mã thông báo hiện tại để dùng sau khi khởi động lại.",
+          "initializePersistent": "Khởi động trên cổng loopback khả dụng và lưu điểm cuối cùng mã thông báo."
+        },
+        "git": {
+          "localExclude": "Git phải bỏ qua tệp này trước khi ghi thông tin xác thực.",
+          "nonGit": "Thư mục này nằm ngoài Git. Hãy giữ tệp xác thực riêng tư."
+        },
+        "result": {
+          "launched": "Đã cấu hình {{folder}} và mở VS Code.",
+          "configuredVsCodeNotFound": "Đã cấu hình {{folder}} nhưng không tìm thấy Stable VS Code. Hãy mở thư mục này thủ công trong Stable VS Code.",
+          "configuredLaunchFailed": "Đã cấu hình {{folder}} nhưng không thể mở VS Code. Hãy mở thư mục này thủ công trong Stable VS Code."
+        }
+      }
+    }
+  },
   "graphNewUi": {
     "columns": "Cột",
     "layers": "Lớp",

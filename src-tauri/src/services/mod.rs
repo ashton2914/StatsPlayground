@@ -48,3 +48,7 @@ pub mod workflow_domain;
 pub mod workflow_executor;
 pub mod workflow_fingerprint;
 pub mod workflow_planner;
+
+pub mod vscode_workspace;
+
+pub mod vscode_launch_service;

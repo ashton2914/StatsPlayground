@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { VsCodeLaunchPreview } from "./VsCodeLaunchPreview";
+
 import { type createMcpStore } from "@/stores/useMcpStore";
 
 type McpStoreHook = ReturnType<typeof createMcpStore>;
@@ -66,6 +68,8 @@ export function McpServerPanel({
   copyText?: (value: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const launchBusy = store((state) => state.launchBusy);
+  const launchVSCode = store((state) => state.launchVSCode);
   const status = store((state) => state.status);
   const auditEntries = store((state) => state.auditEntries);
   const authorizedRoots = store((state) => state.authorizedRoots);
@@ -115,9 +119,9 @@ export function McpServerPanel({
     return [...liveRows, ...auditRows].slice(0, 8);
   }, [auditEntries, commandRequests]);
 
-  const canStart = status.state === "stopped";
-  const canStop = status.state === "running";
-  const canEditSettings = status.state === "stopped" && !settingsBusy;
+  const canStart = status.state === "stopped" && !launchBusy;
+  const canStop = status.state === "running" && !launchBusy;
+  const canEditSettings = status.state === "stopped" && !settingsBusy && !launchBusy;
 
   return (
     <section className="ai-panel ai-panel-server">
@@ -127,6 +131,9 @@ export function McpServerPanel({
           <p>{t("ai.mcpServer.description", { defaultValue: "Manage the in-app MCP endpoint for external AI clients." })}</p>
         </div>
         <div className="ai-inline-actions">
+          <button type="button" className="btn-primary" onClick={() => void launchVSCode()} disabled={launchBusy || settingsBusy || status.state === "starting" || status.state === "stopping"}>
+            {t("ai.mcpServer.vscode.launch")}
+          </button>
           <button type="button" className="btn-secondary" onClick={() => void startServer()} disabled={!canStart}>
             {t("ai.mcpServer.start", { defaultValue: "Start server" })}
           </button>
@@ -137,6 +144,7 @@ export function McpServerPanel({
       </div>
 
       <div className="ai-panel-scroll">
+      <VsCodeLaunchPreview store={store} />
       <div className="ai-summary-grid">
         <div className="ai-summary-item">
           <span className="ai-summary-label">{t("ai.mcpServer.state", { defaultValue: "State" })}</span>

@@ -26,11 +26,6 @@ fn initialize_graph_new_cache<E>(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(debug_assertions)]
-    {
-        std::env::set_var("STATSPLAYGROUND_MCP_BIND", "127.0.0.1:48188");
-        std::env::set_var("STATSPLAYGROUND_MCP_TOKEN", "statsplayground-local-dev");
-    }
     let app_state = AppState::new().expect("Failed to initialize application state");
 
     let app = tauri::Builder::default()
@@ -59,6 +54,8 @@ pub fn run() {
             commands::calculated_column_commands::upsert_calculated_column,
             commands::calculated_column_commands::convert_calculated_column_to_values,
             commands::mcp_commands::start_mcp_server,
+            commands::mcp_commands::plan_vscode_mcp_launch,
+            commands::mcp_commands::execute_vscode_mcp_launch,
             commands::mcp_commands::stop_mcp_server,
             commands::mcp_commands::get_mcp_server_status,
             commands::mcp_commands::get_mcp_settings,

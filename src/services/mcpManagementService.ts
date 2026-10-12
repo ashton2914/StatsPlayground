@@ -1,8 +1,13 @@
+import { open } from "@tauri-apps/plugin-dialog";
+
 import { invoke } from "@tauri-apps/api/core";
 
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import type { RuntimeRequestSnapshot } from "@/applicationCommands/runtime";
 import type {
+  VsCodeLaunchPlan,
+  VsCodeLaunchRequest,
+  VsCodeLaunchResult,
   McpAuditEntry,
   McpAuthorizedRootGrant,
   McpCommandRequestSummary,
@@ -38,6 +43,12 @@ export function canManageMcpCommandRequest(
 }
 
 export const mcpManagementService = {
+  selectWorkspace: async (): Promise<string | null> => {
+    const selected = await open({ directory: true, multiple: false });
+    return typeof selected === "string" ? selected : null;
+  },
+  planVsCodeLaunch: (workspacePath: string) => invoke<VsCodeLaunchPlan>("plan_vscode_mcp_launch", { workspacePath }),
+  executeVsCodeLaunch: (request: VsCodeLaunchRequest) => invoke<VsCodeLaunchResult>("execute_vscode_mcp_launch", { request }),
   startServer: () => invoke<McpServerStatus>("start_mcp_server"),
   stopServer: () => invoke<void>("stop_mcp_server"),
   getServerStatus: () => invoke<McpServerStatus>("get_mcp_server_status"),

@@ -10,7 +10,46 @@ use crate::models::mcp::{
     McpSettingsState,
 };
 use crate::services::mcp_settings_service::McpSettingsService;
+use crate::services::vscode_launch_service::{
+    VsCodeLaunchPlan, VsCodeLaunchRequest, VsCodeLaunchResult,
+};
 use crate::state::AppState;
+
+#[tauri::command]
+pub fn plan_vscode_mcp_launch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_path: String,
+) -> Result<VsCodeLaunchPlan, AppError> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| AppError::FileIO("Home directory unavailable".into()))?;
+    state
+        .vscode_launch
+        .plan(Path::new(&workspace_path), &home, &state.mcp_server)
+}
+
+#[tauri::command(async)]
+pub async fn execute_vscode_mcp_launch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: VsCodeLaunchRequest,
+) -> Result<VsCodeLaunchResult, AppError> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| AppError::FileIO("Home directory unavailable".into()))?;
+    state
+        .vscode_launch
+        .execute(
+            request,
+            &home,
+            &state.mcp_server,
+            state.mcp_command_broker.clone(),
+        )
+        .await
+}
 
 fn settings_service(app: &AppHandle) -> Result<McpSettingsService, AppError> {
     let home = app
