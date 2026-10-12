@@ -1163,6 +1163,7 @@ pub struct SpecLimitsOverride {
 #[serde(rename_all = "camelCase")]
 pub enum DistributionFitKind {
     Normal,
+    Cauchy,
     Lognormal,
     Exponential,
     Gamma,
@@ -1175,6 +1176,8 @@ pub struct DistributionAnalysisConfig {
     pub confidence_level: f64,
     pub spec_limits: BTreeMap<String, SpecLimitsOverride>,
     pub fit_distributions: Vec<DistributionFitKind>,
+    #[serde(default)]
+    pub fit_all: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -2468,6 +2471,76 @@ mod tests {
     };
     use rmcp::model::{CallToolRequestParams, CallToolResponse};
     use serde::Deserialize;
+
+    #[test]
+    fn distribution_frontend_documents_survive_mcp_response_validation() {
+        let item: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/mcp-distribution-document.json"
+        ))
+        .unwrap();
+        // Validate the concrete type first so schema drift reports the offending field.
+        serde_json::from_value::<DistributionAnalysisDefinition>(item["definition"].clone())
+            .expect("frontend distribution definition must be accepted");
+        let payloads = [
+            ("analysis.create", json!({"item": item})),
+            ("analysis.update", json!({"item": item})),
+            (
+                "document.get",
+                json!({"kind": "analysis", "id": "analysis-1", "document": item}),
+            ),
+            (
+                "analysis.run",
+                json!({
+                    "item": item, "definition": item["definition"],
+                    "dataset": {"id":"dataset-1", "name":"Acceptance", "sourcePath":null,
+                        "sourceType":"managed", "rowCount":200, "colCount":1, "generation":1,
+                        "createdAt":"2026-10-12T00:00:00.000Z", "updatedAt":"2026-10-12T00:00:00.000Z"},
+                    "state": {"status":"success", "analysisKind":"distribution", "analysisId":"analysis-1",
+                        "datasetId":"dataset-1", "configRevision":1, "request":{"fitAll":true},
+                        "result":{"mean":100.4800325,"n":200}}
+                }),
+            ),
+        ];
+        for (command, data) in payloads {
+            let output = serialize_tool_output(
+                command,
+                crate::models::mcp::McpCommandResponse {
+                    request_id: "acceptance-1".into(),
+                    changed: command != "document.get",
+                    project_revision: 2,
+                    data,
+                    warnings: vec![],
+                },
+            )
+            .unwrap_or_else(|error| panic!("{command}: {error}"));
+            let document = if command == "document.get" {
+                &output["data"]["document"]
+            } else {
+                &output["data"]["item"]
+            };
+            assert_eq!(document, &item, "{command} must preserve the full document");
+            if command == "analysis.run" {
+                assert_eq!(
+                    output["data"]["state"]["result"],
+                    json!({"mean":100.4800325,"n":200})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distribution_mcp_input_accepts_fit_all_and_cauchy() {
+        let input = json!({"analysisKind":"distribution", "sourceDatasetId":"dataset-1",
+            "draft":{"responses":[{"name":"normal_value","type":"continuous"}], "by":[],
+                "analysis":{"confidenceLevel":0.95,"specLimits":{},"fitDistributions":["cauchy"],"fitAll":true}}});
+        serde_json::from_value::<AnalysisCreateToolInput>(input)
+            .expect("supported frontend fit options");
+        let legacy: DistributionAnalysisConfig = serde_json::from_value(json!({
+            "confidenceLevel":0.95,"specLimits":{},"fitDistributions":["normal"]
+        }))
+        .expect("existing clients may omit fitAll");
+        assert_eq!(serde_json::to_value(legacy).unwrap()["fitAll"], false);
+    }
 
     #[test]
     fn tabulate_session_schemas_are_bounded_and_strict() {

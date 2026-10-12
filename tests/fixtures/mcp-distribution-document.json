@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "documentType": "analysis",
+  "id": "analysis-1",
+  "name": "Distribution acceptance",
+  "analysisKind": "distribution",
+  "configRevision": 1,
+  "source": {
+    "datasetId": "dataset-1"
+  },
+  "definition": {
+    "kind": "distribution",
+    "responses": [
+      {
+        "name": "normal_value",
+        "type": "continuous"
+      }
+    ],
+    "weight": null,
+    "frequency": null,
+    "by": [],
+    "nestedSubgroup": null,
+    "analysis": {
+      "confidenceLevel": 0.95,
+      "specLimits": {},
+      "fitDistributions": [
+        "normal"
+      ],
+      "fitAll": true
+    },
+    "graphs": {
+      "overview": {
+        "mode": "2d",
+        "modeStates": {
+          "twoD": {
+            "encoding": {
+              "x": {
+                "name": "normal_value",
+                "type": "continuous"
+              }
+            },
+            "multiX": [],
+            "multiY": [],
+            "elements": [
+              {
+                "kind": "histogram",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.overview.histogram"
+                }
+              },
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.overview.fittedCurves"
+                }
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "threeD": {
+            "encoding": {},
+            "elements": [
+              {
+                "kind": "scatter3d",
+                "enabled": true
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "multivariate": {
+            "columns": [],
+            "chartType": "correlationMatrix",
+            "correlationMethod": "pearson"
+          }
+        },
+        "filters": [],
+        "sampling": {
+          "mode": "full"
+        }
+      },
+      "boxPlot": {
+        "mode": "2d",
+        "modeStates": {
+          "twoD": {
+            "encoding": {
+              "x": {
+                "name": "normal_value",
+                "type": "continuous"
+              }
+            },
+            "multiX": [],
+            "multiY": [],
+            "elements": [
+              {
+                "kind": "boxplot",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.boxPlot"
+                }
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "threeD": {
+            "encoding": {},
+            "elements": [
+              {
+                "kind": "scatter3d",
+                "enabled": true
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "multivariate": {
+            "columns": [],
+            "chartType": "correlationMatrix",
+            "correlationMethod": "pearson"
+          }
+        },
+        "filters": [],
+        "sampling": {
+          "mode": "full"
+        }
+      },
+      "ecdf": {
+        "mode": "2d",
+        "modeStates": {
+          "twoD": {
+            "encoding": {
+              "x": {
+                "name": "normal_value",
+                "type": "continuous"
+              }
+            },
+            "multiX": [],
+            "multiY": [],
+            "elements": [
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.ecdf"
+                }
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "threeD": {
+            "encoding": {},
+            "elements": [
+              {
+                "kind": "scatter3d",
+                "enabled": true
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "multivariate": {
+            "columns": [],
+            "chartType": "correlationMatrix",
+            "correlationMethod": "pearson"
+          }
+        },
+        "filters": [],
+        "sampling": {
+          "mode": "full"
+        }
+      },
+      "normalQuantile": {
+        "mode": "2d",
+        "modeStates": {
+          "twoD": {
+            "encoding": {
+              "x": {
+                "name": "normal_value",
+                "type": "continuous"
+              }
+            },
+            "multiX": [],
+            "multiY": [],
+            "elements": [
+              {
+                "kind": "points",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.normalQuantile.points"
+                }
+              },
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.normalQuantile.reference"
+                }
+              },
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.normalQuantile.lower"
+                }
+              },
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.normalQuantile.upper"
+                }
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "threeD": {
+            "encoding": {},
+            "elements": [
+              {
+                "kind": "scatter3d",
+                "enabled": true
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "multivariate": {
+            "columns": [],
+            "chartType": "correlationMatrix",
+            "correlationMethod": "pearson"
+          }
+        },
+        "filters": [],
+        "sampling": {
+          "mode": "full"
+        }
+      }
+    }
+  },
+  "presentation": {
+    "schemaVersion": 1,
+    "layout": "distribution-v1"
+  },
+  "createdAt": "2026-10-12T00:00:00.000Z",
+  "updatedAt": "2026-10-12T00:00:00.000Z"
+}
