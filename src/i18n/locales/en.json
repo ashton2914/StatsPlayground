@@ -209,8 +209,8 @@
         "replace": "Replace entry and launch",
         "action": {
           "create": "Create a workspace MCP configuration.",
-          "merge": "Add StatsPlayground while preserving other configuration.",
-          "replaceManagedEntry": "Replace the conflicting StatsPlayground entry only after confirmation.",
+          "merge": "Add sp-mcp while preserving other configuration.",
+          "replaceManagedEntry": "Replace the conflicting sp-mcp entry only after confirmation.",
           "unchanged": "The workspace MCP entry is already configured."
         },
         "settings": {
@@ -263,9 +263,18 @@
       "noActivity": "No MCP activity in this session."
     },
     "skills": {
-      "openPlaceholder": "View Skills placeholder",
-      "placeholderLead": "Skills are not available in Phase 1.",
-      "placeholderBody": "This placeholder is truthful by design: there is no Skill runtime, installation flow, or enablement control in the current MCP scope.",
+      "description": "Built-in skills guide AI clients through sp MCP tools and analysis workflows.",
+      "synchronized": "Built-in skills synchronized to {{directory}}.",
+      "builtIn": "Built-in",
+      "guideDescription": "Detailed usage, parameters, examples, results, and recovery guidance for every MCP tool.",
+      "distributionDescription": "Analyze user-provided data, interpret Distribution results, and write a verified report through MCP.",
+      "workspaceHint": "Launch VS Code loads both skills into the selected workspace under .github/skills/.",
+      "view": "View instructions",
+      "viewNamed": "View {{name}}",
+      "instructionsNamed": "{{name}} instructions",
+      "close": "Close instructions",
+      "files": "Skill files",
+      "openPlaceholder": "View Skills",
       "backToServer": "Back to MCP Server"
     }
   },

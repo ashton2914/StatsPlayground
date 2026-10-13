@@ -39,7 +39,7 @@ function buildClientConfig(endpoint: string, token: string, masked = false): str
   return JSON.stringify(
     {
       mcpServers: {
-        StatsPlayground: {
+        "sp-mcp": {
           url: endpoint,
           headers: {
             Authorization: `Bearer ${masked ? maskToken(token) : token}`,

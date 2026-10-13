@@ -1,0 +1,520 @@
+[
+  {
+    "tool": "statsplayground_project_inspect",
+    "arguments": {
+      "includeCapabilities": true
+    }
+  },
+  {
+    "tool": "statsplayground_table_list",
+    "arguments": {
+      "limit": 50
+    }
+  },
+  {
+    "tool": "statsplayground_table_describe",
+    "arguments": {
+      "datasetId": "dataset-1",
+      "preview": {
+        "offset": 0,
+        "limit": 20
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_document_list",
+    "arguments": {
+      "kind": "analysis",
+      "limit": 50
+    }
+  },
+  {
+    "tool": "statsplayground_document_get",
+    "arguments": {
+      "kind": "analysis",
+      "id": "analysis-1"
+    }
+  },
+  {
+    "tool": "statsplayground_table_create",
+    "arguments": {
+      "request": {
+        "name": "Supplied measurements",
+        "columns": [
+          {
+            "name": "Length",
+            "sqlType": "DOUBLE"
+          },
+          {
+            "name": "Batch",
+            "sqlType": "VARCHAR"
+          }
+        ],
+        "rows": [
+          [
+            10.2,
+            "A"
+          ],
+          [
+            10.4,
+            "B"
+          ],
+          [
+            null,
+            "A"
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_table_transform_create",
+    "arguments": {
+      "draft": {
+        "name": "Sort length",
+        "outputName": "Sorted measurements",
+        "operation": {
+          "kind": "sort",
+          "sortColumns": [
+            {
+              "column": "Length",
+              "direction": "ascending"
+            }
+          ]
+        },
+        "inputBindings": [
+          {
+            "role": "source",
+            "tableDocumentId": "dataset-1"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_table_transform_run",
+    "arguments": {
+      "transformId": "transform-1"
+    }
+  },
+  {
+    "tool": "statsplayground_sql_create_table",
+    "arguments": {
+      "sql": "SELECT \"Length\", \"Batch\" FROM \"Supplied measurements\" WHERE \"Length\" IS NOT NULL",
+      "name": "Nonmissing measurements"
+    }
+  },
+  {
+    "tool": "statsplayground_table_export_csv",
+    "arguments": {
+      "datasetId": "dataset-1",
+      "rootId": "approved-root-1",
+      "relativePath": "exports/measurements.csv"
+    }
+  },
+  {
+    "tool": "statsplayground_tabulate_create",
+    "arguments": {
+      "sourceDatasetId": "dataset-1"
+    }
+  },
+  {
+    "tool": "statsplayground_tabulate_run",
+    "arguments": {
+      "tabulateId": "tabulate-1",
+      "request": {
+        "datasetId": "dataset-1",
+        "rowFields": [
+          "Batch"
+        ],
+        "columnFields": [],
+        "statistics": [
+          {
+            "id": "mean-length",
+            "field": "Length",
+            "kind": "mean"
+          }
+        ],
+        "includeRowTotals": false,
+        "includeColumnTotals": false
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_tabulate_to_table",
+    "arguments": {
+      "tabulateId": "tabulate-1",
+      "request": {
+        "datasetId": "dataset-1",
+        "rowFields": [
+          "Batch"
+        ],
+        "columnFields": [],
+        "statistics": [
+          {
+            "id": "mean-length",
+            "field": "Length",
+            "kind": "mean"
+          }
+        ],
+        "includeRowTotals": false,
+        "includeColumnTotals": false
+      },
+      "tableName": "Batch summary"
+    }
+  },
+  {
+    "tool": "statsplayground_graph_create",
+    "arguments": {
+      "sourceDatasetId": "dataset-1"
+    }
+  },
+  {
+    "tool": "statsplayground_graph_update",
+    "arguments": {
+      "graphId": "graph-1",
+      "expectedDocumentRevision": 1,
+      "definition": {
+        "id": "graph-1",
+        "name": "Length graph",
+        "sourceDatasetId": "dataset-1",
+        "mode": "2d",
+        "modeStates": {
+          "twoD": {
+            "encoding": {
+              "x": {
+                "name": "Length",
+                "type": "continuous"
+              }
+            },
+            "multiX": [],
+            "multiY": [],
+            "elements": [
+              {
+                "kind": "histogram",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.overview.histogram"
+                }
+              },
+              {
+                "kind": "line",
+                "enabled": true,
+                "options": {
+                  "elementId": "distribution.overview.fittedCurves"
+                }
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "threeD": {
+            "encoding": {},
+            "elements": [
+              {
+                "kind": "scatter3d",
+                "enabled": true
+              }
+            ],
+            "smootherLambda": 0.4
+          },
+          "multivariate": {
+            "columns": [],
+            "chartType": "correlationMatrix",
+            "correlationMethod": "pearson"
+          }
+        },
+        "createdAt": "2026-10-13T00:00:00.000Z"
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_analysis_create",
+    "arguments": {
+      "analysisKind": "distribution",
+      "sourceDatasetId": "dataset-1",
+      "draft": {
+        "responses": [
+          {
+            "name": "Length",
+            "type": "continuous"
+          }
+        ],
+        "weight": null,
+        "frequency": null,
+        "by": [],
+        "nestedSubgroup": null,
+        "analysis": {
+          "confidenceLevel": 0.95,
+          "specLimits": {},
+          "fitDistributions": [
+            "normal"
+          ],
+          "fitAll": false
+        },
+        "name": "Length distribution"
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_analysis_update",
+    "arguments": {
+      "analysisKind": "distribution",
+      "analysisId": "analysis-1",
+      "expectedConfigRevision": 1,
+      "draft": {
+        "responses": [
+          {
+            "name": "Length",
+            "type": "continuous"
+          }
+        ],
+        "weight": null,
+        "frequency": null,
+        "by": [],
+        "nestedSubgroup": null,
+        "analysis": {
+          "confidenceLevel": 0.95,
+          "specLimits": {},
+          "fitDistributions": [
+            "normal"
+          ],
+          "fitAll": false
+        },
+        "graphs": {
+          "overview": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Length",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "histogram",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.overview.histogram"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.overview.fittedCurves"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "boxPlot": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Length",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "boxplot",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.boxPlot"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "ecdf": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Length",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.ecdf"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "normalQuantile": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Length",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "points",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.points"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.reference"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.lower"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.upper"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "tool": "statsplayground_analysis_run",
+    "arguments": {
+      "analysisId": "analysis-1"
+    }
+  },
+  {
+    "tool": "statsplayground_report_create",
+    "arguments": {}
+  },
+  {
+    "tool": "statsplayground_report_update",
+    "arguments": {
+      "reportId": "report-1",
+      "expectedDocumentRevision": 1,
+      "markdown": "# Length distribution\n\nSource: supplied measurements. Insert conclusions from successful returned results.\n\n{{sp-embed kind=\"distribution\" id=\"analysis-1\"}}\n"
+    }
+  },
+  {
+    "tool": "statsplayground_project_save",
+    "arguments": {}
+  },
+  {
+    "tool": "statsplayground_snapshot_create",
+    "arguments": {
+      "name": "Before analysis revisions"
+    }
+  }
+]

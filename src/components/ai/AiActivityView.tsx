@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { type createMcpStore, useMcpStore } from "@/stores/useMcpStore";
 
 import { McpServerPanel } from "./McpServerPanel";
-import { SkillsPlaceholder } from "./SkillsPlaceholder";
+import { SkillsPanel } from "./SkillsPanel";
 
 type McpStoreHook = ReturnType<typeof createMcpStore>;
 
@@ -34,7 +34,7 @@ export function AiActivityView({
           copyText={copyText}
         />
       ) : (
-        <SkillsPlaceholder onBackToServer={() => onSelectSubview("server")} />
+        <SkillsPanel onBackToServer={() => onSelectSubview("server")} />
       )}
     </div>
   );

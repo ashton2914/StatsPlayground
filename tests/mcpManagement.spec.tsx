@@ -95,6 +95,8 @@ test("copies endpoint, token, and client config only on explicit actions", async
   await expect(copyLog).toContainText("secret-token-123");
 
   await component.getByRole("button", { name: "Copy client config" }).click();
+  await expect(copyLog).toContainText('"sp-mcp"');
+  await expect(copyLog).not.toContainText('"StatsPlayground"');
   await expect(copyLog).toContainText("Authorization");
   await expect(copyLog).toContainText("Bearer secret-token-123");
 });
@@ -125,13 +127,21 @@ test("manages grants, live requests, bounded audit rows, and confirmations", asy
   await expect(component.getByText("/Users/ashton/Exports")).toHaveCount(0);
 });
 
-test("switches subviews and keeps the Skills placeholder unavailable", async ({ mount, page }) => {
+test("shows built-in skills and opens their full instructions", async ({ mount, page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const component = await mount(<McpManagementHarness scenario="running" initialSubview="skills" />);
 
   await expect(component.getByRole("heading", { name: "Skills" })).toBeVisible();
-  await expect(component.getByText("Skills are not available in Phase 1.")).toBeVisible();
-  await expect(component.getByRole("button", { name: /Enable|Install/ })).toHaveCount(0);
+  await expect(component.getByRole("heading", { name: "Build-in" })).toBeVisible();
+  await expect(component.getByRole("heading", { name: "SP MCP Guide" })).toBeVisible();
+  await expect(component.getByRole("heading", { name: "Distribution Analyze" })).toBeVisible();
+  await component.getByRole("button", { name: "View SP MCP Guide" }).click();
+  await expect(component.getByRole("region", { name: "SP MCP Guide instructions" })).toContainText("sp-mcp");
+  await component.getByRole("button", { name: "references/tools.md", exact: true }).click();
+  const instructions = component.getByRole("region", { name: "SP MCP Guide instructions" });
+  await instructions.getByRole("link", { name: "ProjectInspectToolInput", exact: true }).click();
+  await expect(instructions.getByRole("heading", { name: "ProjectInspectToolInput", exact: true })).toBeInViewport();
+  await component.getByRole("button", { name: "Close instructions" }).click();
 
   await component.getByRole("button", { name: "MCP Server..." }).click();
   await expect(component.getByRole("heading", { name: "MCP Server" })).toBeVisible();

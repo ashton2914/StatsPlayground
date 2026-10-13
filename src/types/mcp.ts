@@ -56,6 +56,7 @@ export interface McpCommandRequestSummary {
   percent?: number | null;
 }
 export interface VsCodeLaunchPlan {
+  skills?: SkillSyncSummary;
   configurationPath: ".mcp.json" | ".vscode/mcp.json";
   planId: string;
   workspaceDisplayName: string;
@@ -74,6 +75,7 @@ export interface VsCodeLaunchRequest {
 }
 
 export interface VsCodeLaunchResult {
+  skills?: SkillSyncSummary;
   configurationPath: VsCodeLaunchPlan["configurationPath"];
   workspaceDisplayName: string;
   configurationResult: VsCodeLaunchPlan["configurationAction"];
@@ -81,4 +83,11 @@ export interface VsCodeLaunchResult {
   endpoint: string;
   launchResult: "launched" | "configuredVsCodeNotFound" | "configuredLaunchFailed";
   warnings: string[];
+}
+
+export interface SkillSyncSummary {
+  directory: string;
+  installed: string[];
+  updated: string[];
+  unchanged: string[];
 }

@@ -1942,10 +1942,7 @@ pub(crate) fn project_tool_request_to_application_command_envelope(
 impl<E: ApplicationCommandEventEmitter> ServerHandler for StatsPlaygroundMcpServer<E> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "StatsPlayground",
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .with_server_info(Implementation::new("sp-mcp", env!("CARGO_PKG_VERSION")))
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
     }
 
@@ -2473,6 +2470,23 @@ mod tests {
     use serde::Deserialize;
 
     #[test]
+    fn bundled_guide_examples_use_valid_catalog_arguments() {
+        let examples: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../built-in-skills/sp-mcp-guide/references/examples.json"
+        )).unwrap();
+        let mut covered = BTreeSet::new();
+        for example in examples {
+            let name = example["tool"].as_str().unwrap();
+            let arguments = example["arguments"].as_object().unwrap().clone();
+            project_tool_request_to_application_command_envelope(name, Some(arguments))
+                .unwrap_or_else(|error| panic!("Guide example for {name} is invalid: {error}"));
+            covered.insert(name.to_owned());
+        }
+        let expected: BTreeSet<_> = tool_catalog().into_iter().map(|entry| entry.name).collect();
+        assert_eq!(covered, expected, "Every callable tool needs a validated usage example");
+    }
+
+    #[test]
     fn distribution_frontend_documents_survive_mcp_response_validation() {
         let item: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/mcp-distribution-document.json"
@@ -2664,6 +2678,13 @@ mod tests {
                 .find_map(|value| find_schema_property(value, property)),
             _ => None,
         }
+    }
+
+    #[test]
+    fn server_identity_uses_sp_mcp_name() {
+        let (broker, _) = test_broker();
+        let server = StatsPlaygroundMcpServer::new(broker, McpAuditLog::default());
+        assert_eq!(server.get_info().server_info.name, "sp-mcp");
     }
 
     #[test]

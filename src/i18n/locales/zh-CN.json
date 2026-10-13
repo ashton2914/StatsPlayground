@@ -205,8 +205,8 @@
         "replace": "替换配置并启动",
         "action": {
           "create": "创建工作区 MCP 配置。",
-          "merge": "添加 StatsPlayground，保留其他配置。",
-          "replaceManagedEntry": "确认后仅替换冲突的 StatsPlayground 配置。",
+          "merge": "添加 sp-mcp，保留其他配置。",
+          "replaceManagedEntry": "确认后仅替换冲突的 sp-mcp 配置。",
           "unchanged": "工作区 MCP 已配置。"
         },
         "settings": {
@@ -259,9 +259,18 @@
       "noActivity": "当前会话还没有 MCP 活动。"
     },
     "skills": {
-      "openPlaceholder": "查看 Skills 占位页",
-      "placeholderLead": "Phase 1 暂不提供 Skills。",
-      "placeholderBody": "这个占位页刻意保持真实：当前 MCP 范围内没有 Skill 运行时、安装流程或启用控制。",
+      "description": "内置 Skill 引导 AI 正确使用 sp MCP 工具和分析流程。",
+      "synchronized": "内置 Skill 已同步到 {{directory}}。",
+      "builtIn": "内置",
+      "guideDescription": "详细介绍每个 MCP 工具的用法、参数、示例、结果与错误处理。",
+      "distributionDescription": "使用用户提供的数据完成 Distribution 分析、结果解读，并通过 MCP 写入与验证报告。",
+      "workspaceHint": "启动 VS Code 时，会将两个 Skill 加载到所选工作区的 .github/skills/ 中。",
+      "view": "查看使用说明",
+      "viewNamed": "查看 {{name}}",
+      "instructionsNamed": "{{name}} 使用说明",
+      "close": "关闭使用说明",
+      "files": "Skill 文件",
+      "openPlaceholder": "查看 Skills",
       "backToServer": "返回 MCP Server"
     }
   },

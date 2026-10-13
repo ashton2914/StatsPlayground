@@ -18,6 +18,10 @@ export function VsCodeLaunchPreview({ store }: { store: ReturnType<typeof create
       <p>{t("ai.mcpServer.vscode.proposed")}: {plan.settingsAction === "initializePersistent" ? t("ai.mcpServer.vscode.availablePort") : plan.proposedEndpoint}</p>
       <p>{t("ai.mcpServer.vscode.credential", { path: plan.configurationPath })}</p>
       <p>{t(`ai.mcpServer.vscode.git.${plan.gitProtection}`)}</p>
+      {plan.skills && <div>
+        <p>{t("ai.skills.workspaceHint")}</p>
+        <ul>{[...plan.skills.installed, ...plan.skills.updated, ...plan.skills.unchanged].map((path) => <li key={path}><code>{path}</code></li>)}</ul>
+      </div>}
       <div className="ai-inline-actions">
         <button className="btn-primary" type="button" disabled={busy} onClick={() => void execute()}>
           {t(plan.confirmationRequired ? "ai.mcpServer.vscode.replace" : "ai.mcpServer.vscode.configure")}
@@ -25,7 +29,7 @@ export function VsCodeLaunchPreview({ store }: { store: ReturnType<typeof create
         <button className="btn-secondary" type="button" disabled={busy} onClick={cancel}>{t("common.cancel")}</button>
       </div>
     </div>}
-    {result && <p role="status">{t(`ai.mcpServer.vscode.result.${result.launchResult}`, { folder: result.workspaceDisplayName })} ({result.configurationPath})</p>}
+    {result && <div role="status"><p>{t(`ai.mcpServer.vscode.result.${result.launchResult}`, { folder: result.workspaceDisplayName })} ({result.configurationPath})</p>{result.skills && <p>{t("ai.skills.synchronized", { directory: result.skills.directory })}</p>}</div>}
     {error && <p role="alert" className="ai-error-text">{error}</p>}
   </>;
 }

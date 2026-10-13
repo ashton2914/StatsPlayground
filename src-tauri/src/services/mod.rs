@@ -52,3 +52,4 @@ pub mod workflow_planner;
 pub mod vscode_workspace;
 
 pub mod vscode_launch_service;
+pub mod built_in_skills;
