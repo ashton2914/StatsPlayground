@@ -3096,7 +3096,7 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
     })?;
     let version = value["version"].as_u64().ok_or_else(|| {
         AppError::InvalidParam(
-            "Unsupported graphBuildersNew document version (expected 1 or 2)".into(),
+            "Unsupported graphBuildersNew document version (expected 1, 2 or 3)".into(),
         )
     })?;
     let fields: &[&str] = match version {
@@ -3126,9 +3126,10 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
             "rawMode",
             "camera",
         ],
+        3 => &["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "xMode", "camera", "layers"],
         _ => {
             return Err(AppError::InvalidParam(
-                "Unsupported graphBuildersNew document version (expected 1 or 2)".into(),
+                "Unsupported graphBuildersNew document version (expected 1, 2 or 3)".into(),
             ))
         }
     };
@@ -3147,15 +3148,15 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
             validate_display_basename(text)?;
         }
     }
-    if value["showMean"].as_bool().is_none()
+    if (version < 3 && value["showMean"].as_bool().is_none())
         || !matches!(
             value["xMode"].as_str(),
             Some("auto" | "numeric" | "time" | "duration" | "category")
         )
-        || !matches!(
+        || (version < 3 && !matches!(
             value["rawMode"].as_str(),
             Some("scatter" | "line" | "pointsLine")
-        )
+        ))
     {
         return Err(AppError::InvalidParam(
             "Invalid graphBuildersNew modes or showMean".into(),
@@ -3172,7 +3173,7 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
             )
         })?;
     }
-    if version == 2 {
+    if version >= 2 {
         let overlay_column_id = if value["overlayColumnId"].is_null() {
             None
         } else {
@@ -3186,6 +3187,11 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
             overlay_column_id,
             &value["hiddenOverlayGroupIds"],
         )?;
+    }
+    if version == 3 {
+        let layers: Vec<super::graph_new_layers::GraphNewLayer> = serde_json::from_value(value["layers"].clone())
+            .map_err(|_| AppError::InvalidParam("graph_new_invalid_layers".into()))?;
+        super::graph_new_layers::validate_layers(&layers)?;
     }
     Ok(())
 }
@@ -7485,6 +7491,15 @@ mod tests {
     #[test]
     fn graph_builder_new_archive_accepts_v1_document() {
         validate_graph_builder_new_value(&native_graph_document()).unwrap();
+    }
+
+
+    #[test] fn graph_builder_new_archive_roundtrips_v3_independent_layers() {
+        let mut bundle=native_graph_bundle();let mut document=native_graph_document_v2();let object=document.as_object_mut().unwrap();object.insert("version".into(),serde_json::json!(3));object.remove("showMean");object.remove("rawMode");object.insert("layers".into(),serde_json::json!([
+          {"id":"raw","kind":"line","options":{"summaryStat":"none","missingValues":"break","connection":"spline"}},
+          {"id":"mean","kind":"line","options":{"summaryStat":"median","errorInterval":"ci95","fill":"between"}}
+        ]));set_graph_builders_new(&mut bundle,vec![document.clone()],HashMap::new()).unwrap();let path=temp_project_path("native-graph-v3-roundtrip");write_project_archive(&bundle,path.to_str().unwrap()).unwrap();let reopened=read_project_file(path.to_str().unwrap()).unwrap();assert_eq!(reopened.graph_builders_new,vec![document.clone()]);std::fs::remove_file(path).unwrap();
+        document["layers"][1]["id"]=serde_json::json!("raw");assert!(validate_graph_builder_new_value(&document).is_err());document["layers"]=serde_json::json!([]);validate_graph_builder_new_value(&document).unwrap();document["showMean"]=serde_json::json!(true);assert!(validate_graph_builder_new_value(&document).is_err());
     }
 
     #[test]

@@ -474,7 +474,7 @@ fn measure_graph_new_cache(state: &AppState, build: &GraphNewBuildRequest) -> Re
     let mut request = GraphNewRenderRequest {
         request_id: "cache-cold".into(), session_id: "cache-first".into(), dataset_id: build.dataset_id.clone(),
         dataset_generation: build.dataset_generation, x_column_id: build.x_column_id.clone(), y_column_id: build.y_column_id.clone(),
-        width: 1920, height: 1080, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, x_mode: Default::default(), raw_mode: Default::default(),
+        width: 1920, height: 1080, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None, x_mode: Default::default(), raw_mode: Default::default(),
         overlay_column_id: None, hidden_overlay_group_ids: vec![],
     };
     let render = |request: &GraphNewRenderRequest| {
@@ -1732,7 +1732,7 @@ fn execute_graph_new_runs_with_config(
                 renderer_generation: 1,
                 camera_generation: 0,
                 camera_domain: None,
-                show_mean: false,
+                show_mean: false, layers: None, layer_configuration_id: None,
                 x_mode: Default::default(),
                 raw_mode: Default::default(),
                 overlay_column_id: request.overlay_column_id.clone(),
@@ -3977,7 +3977,7 @@ fn execute_graph_new_csv(source: &str, artifacts: &str, axis: Option<&(String, c
         let mut request = GraphNewRenderRequest { request_id: "csv-cold".into(), session_id: "csv".into(),
             dataset_id: "graph-new-csv".into(), dataset_generation: dataset.generation as u64,
             x_column_id, y_column_id, width: 1280, height: 720, device_pixel_ratio: 1.0,
-            renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: true, x_mode: *x_mode, raw_mode: *raw_mode,
+            renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: true, layers: None, layer_configuration_id: None, x_mode: *x_mode, raw_mode: *raw_mode,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let mut runs = Vec::new();
         let mut domain = GraphNewCameraDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 };
@@ -4126,6 +4126,7 @@ mod tests {
         exact_visible: bool,
     ) -> GraphNewRenderCompletion {
         GraphNewRenderCompletion {
+            layer_configuration_id: None, layer_states: vec![],
             request_id: "overlay-phase".into(),
             x_axis: GraphNewAxis {
                 kind: GraphNewXMode::Numeric,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { createGraphNewLayer } from "../src/components/graphBuilderNew/graphNewLayers";
 import { GraphBuilderNewView } from "../src/components/graphBuilderNew/GraphBuilderNewView";
 import i18n from "../src/i18n";
 import { dataService } from "../src/services/dataService";
@@ -10,6 +11,7 @@ import type { GraphBuilderNewCamera, GraphBuilderNewDocument } from "../src/type
 import type { ColumnDescriptor, DatasetMeta } from "../src/types/data";
 
 interface GraphBuilderNewHarnessProps {
+  legacyLayers?: boolean;
   deferClose?: boolean;
   savedCamera?: GraphBuilderNewCamera;
   locale?: "en" | "zh-CN";
@@ -68,7 +70,7 @@ function createOverlayGroups(count: number) {
   }));
 }
 
-export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, deferClose = false }: GraphBuilderNewHarnessProps) {
+export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, legacyLayers = false, deferClose = false }: GraphBuilderNewHarnessProps) {
   const [ready, setReady] = useState(false);
   const [descriptorCalls, setDescriptorCalls] = useState(0);
   const [lastRequest, setLastRequest] = useState<GraphNewRenderRequest | null>(null);
@@ -189,6 +191,8 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
             ? selectedMarks
             : mode === "largeExact" ? (request.cameraDomain ? 7 : 2_032_293) : request.cameraDomain ? (mode === "unknownCount" ? null : 1) : 3;
           resolve({ requestId: request.requestId, processedRows: finiteRows + 1,
+            layerConfigurationId: request.layerConfigurationId,
+            layerStates: request.layers?.map(layer => ({ layerId: layer.id, available: true, reason: null, marks: 3 })),
             rawMode: request.rawMode ?? "scatter", rawLineAvailable: mode !== "unknownCount", rawLineSegments: request.rawMode === "scatter" ? 0 : 2,
             xAxis: fixtureAxis ?? (["duration", "time", "category"].includes(request.xMode ?? "") ? { kind: request.xMode, utc: request.xMode === "time",
               ticks: [0, 0.25, 0.5, 0.75, 1].map((position, index) => ({ value: domain.xMin + position * (domain.xMax - domain.xMin), position,
@@ -255,7 +259,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         rawMode: "scatter",
         camera: savedCamera ?? null,
       }
-      : {
+      : legacyLayers ? {
         version: 1,
         id: SESSION_ID,
         name: "Graph Builder-new 1",
@@ -264,7 +268,18 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         yColumnId: savedCamera ? "column-y" : null,
         showMean: true,
         xMode: "auto",
-        rawMode: "scatter",
+        rawMode: "pointsLine",
+        camera: savedCamera ?? null,
+      }      : {
+        version: 3,
+        id: SESSION_ID,
+        name: "Graph Builder-new 1",
+        datasetId: DATASET.id,
+        xColumnId: savedCamera ? "column-x" : null,
+        yColumnId: savedCamera ? "column-y" : null,
+        layers: [createGraphNewLayer("points", "points-1")],
+        overlayColumnId: null, hiddenOverlayGroupIds: [],
+        xMode: "auto",
         camera: savedCamera ?? null,
       }]);
     useGraphBuilderNewStore.getState().reopen(SESSION_ID, mode === "stale" ? DATASET.generation - 1 : DATASET.generation);

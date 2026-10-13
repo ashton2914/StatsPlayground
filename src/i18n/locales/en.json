@@ -1,5 +1,6 @@
 {
   "graphNewUi": {
+    "addLayerHint": "Add a graph element to begin",
     "columns": "Columns",
     "layers": "Layers",
     "legend": "Legend",
@@ -41,6 +42,7 @@
     "unavailable": "{{feature}} is not available yet."
   },
   "graphNew": {
+    "layerOverflow": "The selected statistic exceeds the numeric range. Choose another statistic.",
     "sourceUnavailable": "The source table is no longer available.",
     "sourceChanged": "The source table changed. Close this session and open a new one.",
     "fieldUnavailable": "{{field}} (unavailable)",

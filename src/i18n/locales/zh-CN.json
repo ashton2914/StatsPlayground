@@ -1,5 +1,6 @@
 {
   "graphNewUi": {
+    "addLayerHint": "添加图形元素以开始绘图",
     "columns": "列",
     "layers": "图层",
     "legend": "图例",
@@ -41,6 +42,7 @@
     "unavailable": "{{feature}} 尚未实现。"
   },
   "graphNew": {
+    "layerOverflow": "所选统计量超出数值范围，请选择其他统计量。",
     "sourceUnavailable": "源数据表已不可用。",
     "sourceChanged": "源数据表已更改。请关闭此视图并重新打开。",
     "fieldUnavailable": "{{field}}（不可用）",

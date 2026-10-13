@@ -96,6 +96,14 @@ async function main() {
   for (const invalid of [{ xMode: "guessLocale" }, { rawMode: "mean" }, { rawMode: false }]) {
     assert.throws(() => graphNewService.render({ ...cameraRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
   }
+  const layer = { id: "p", kind: "points", options: { summaryStat: "none", errorInterval: "auto", intervalStyle: "errorBar", jitter: "stacked", jitterLimit: 0.5 } } as const;
+  for (const layers of [[layer, layer], [{...layer,options:{...layer.options,jitterLimit:2}}], [{...layer,options:{...layer.options,unknown:true}}]]) {
+    assert.throws(()=>graphNewService.render({...cameraRequest,layers} as any,handlers),/graph_new_invalid_layer/);
+  }
+  const layerRequest={...cameraRequest,layers:[layer],layerConfigurationId:"new"} as any;
+  const staleLayer=graphNewService.render(layerRequest,{...handlers,activeIdentity:()=>layerRequest});
+  resolveRender({...cameraCompletion,layerConfigurationId:"old",layerStates:[{layerId:"p",available:true,marks:2,reason:null}]});
+  await assert.rejects(staleLayer.completion,/graph_new_render_failed/);assert.equal(staleLayer.diagnostic(),"graph_new_completion_layers_invalid");
   const approximateScatterRequest = { ...cameraRequest, rawMode: "scatter" } as const;
   const approximateScatterCompletion = {
     ...cameraCompletion,

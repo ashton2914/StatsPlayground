@@ -37,10 +37,11 @@ pub(crate) struct ScenePresentation {
     pub(crate) raw_line: Option<Arc<Vec<GroupedLineSegment>>>,
     pub(crate) show_points: bool,
     pub(crate) x_axis: Option<crate::models::graph_new::GraphNewAxis>,
+    pub(crate) layer_geometry: Option<Arc<super::graph_new_layers::PreparedLayers>>,
 }
 
 impl Default for ScenePresentation {
-    fn default() -> Self { Self { raw_line: None, show_points: true, x_axis: None } }
+    fn default() -> Self { Self { raw_line: None, show_points: true, x_axis: None, layer_geometry: None } }
 }
 
 impl GraphNewScene {
@@ -124,12 +125,15 @@ impl GraphNewScene {
     }
 
     pub(crate) fn point_upload_bytes(&self) -> u64 {
+        if let Some(layers) = &self.presentation.layer_geometry { return (layers.points.len()+layers.raw_points.len()*self.points.len()).max(1) as u64 * 40; }
         if self.point_buffer_required() {
             self.enabled_point_count().max(1) as u64 * 40
         } else {
             0
         }
     }
+
+    pub(crate) fn layer_upload_bytes(&self) -> u64 { self.presentation.layer_geometry.as_ref().map_or(0, |p| (p.lines.len() + p.intervals.len()*3).max(1) as u64 * 24 + p.fills.len().max(1) as u64 * 216) }
 
     fn point_color_bytes(&self, group_code: u16) -> [u8; 4] {
         self.overlay.rgba_bytes(group_code).unwrap_or([31, 111, 235, 255])
@@ -155,7 +159,14 @@ impl GraphNewScene {
 
     fn plot(&self) -> [f32; 4] {
         let ratio = self.device_pixel_ratio;
-        let left = (64.0 * ratio).ceil();
+        let gutter = if self.presentation.layer_geometry.is_some() {
+            // Numeric labels use an 11px font in the host. Reserve their text
+            // width plus a small gap, rather than a fixed 64px empty gutter.
+            super::graph_new_ticks::numeric_ticks(self.domain.y_min, self.domain.y_max)
+                .ok().and_then(|ticks| ticks.iter().map(|tick| tick.label.chars().count()).max())
+                .map_or(64.0, |characters| (characters as f64 * 7.0 + 12.0).clamp(32.0, 96.0))
+        } else { 64.0 };
+        let left = (gutter * ratio).ceil();
         let top = (16.0 * ratio).ceil();
         let right = ((self.width as f64 - 16.0) * ratio).floor();
         let bottom = ((self.height as f64 - 32.0) * ratio).floor();
@@ -287,6 +298,11 @@ impl PointBasis {
 }
 
 pub(crate) struct ScenePipeline {
+    fill_pipeline: wgpu::RenderPipeline,
+    fill_vertices: wgpu::Buffer,
+    fill_capacity: u64,
+    fill_count: u32,
+    layers_active: bool,
     raw_pipeline: wgpu::RenderPipeline,
     raw_clipped_pipeline: wgpu::RenderPipeline,
     grouped_raw_pipeline: wgpu::RenderPipeline,
@@ -451,6 +467,17 @@ impl ScenePipeline {
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: None,
         });
+        let fill_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("graph-new layer fill"), layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_layer"), compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<ColoredVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4] })] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        });
         let mean_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("graph-new mean pipeline"), layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_mean"), compilation_options: Default::default(),
@@ -463,6 +490,7 @@ impl ScenePipeline {
             multiview_mask: None, cache: None,
         });
         Self {
+            fill_pipeline, fill_vertices: Self::raw_buffer(device, 12), fill_capacity: 12, fill_count: 0, layers_active: false,
             pipeline,
             raw_pipeline,
             raw_clipped_pipeline,
@@ -618,7 +646,8 @@ impl ScenePipeline {
         } else {
             self.hits += 1;
         }
-        let mean_camera = self.prepare_mean(device, queue, scene)?;
+        let mean_camera = if scene.presentation.layer_geometry.is_some() { [1.0, 1.0, 0.0, 0.0] } else { self.prepare_mean(device, queue, scene)? };
+        self.prepare_layers(device, queue, scene)?;
         self.raw_count = 0;
         if let Some(segments) = &scene.presentation.raw_line {
             let clipped = basis.is_some_and(|basis| basis.camera_relative);
@@ -737,23 +766,41 @@ impl ScenePipeline {
         Ok(())
     }
 
+    fn prepare_layers(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &GraphNewScene) -> Result<(), AppError> {
+        self.layers_active = scene.presentation.layer_geometry.is_some();
+        self.fill_count = 0;
+        let Some(prepared) = &scene.presentation.layer_geometry else { return Ok(()); };
+        let (points, lines, fills) = layer_marks(scene, prepared)?;
+        let point_bytes = bytemuck::cast_slice::<Mark,u8>(&points);
+        let line_bytes = bytemuck::cast_slice::<MeanSegment,u8>(&lines);
+        let fill_bytes = bytemuck::cast_slice::<ColoredVertex,u8>(&fills);
+        for (buffer, capacity, bytes) in [(&mut self.instances, &mut self.capacity, point_bytes), (&mut self.mean_instances, &mut self.mean_capacity, line_bytes), (&mut self.fill_vertices, &mut self.fill_capacity, fill_bytes)] {
+            if bytes.len() as u64 > *capacity { let next = Self::buffer(device, bytes.len().max(12) as u64); buffer.destroy(); *buffer=next; *capacity=bytes.len().max(12) as u64; }
+            if !bytes.is_empty() { queue.write_buffer(buffer, 0, bytes); }
+        }
+        self.total=points.len() as u32; self.mean_segments=lines.len() as u32; self.fill_count=fills.len() as u32;
+        self.content_hash=None; self.mean_source=Weak::new(); self.mean_basis=None; self.mean_mask=None;
+        Ok(())
+    }
+
     pub(crate) fn cache_stats(&self) -> GraphNewGpuCacheStats {
-        GraphNewGpuCacheStats { allocated_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + 64 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
-            geometry_capacity_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity,
+        GraphNewGpuCacheStats { allocated_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + self.fill_capacity + 64 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
+            geometry_capacity_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + self.fill_capacity,
             geometry_uploads: self.uploads, geometry_hits: self.hits,
             mean_geometry_uploads: self.mean_uploads, mean_geometry_hits: self.mean_hits }
     }
 
     pub(crate) fn replacement_bytes(&self, scene: &GraphNewScene) -> u64 {
         let points = scene.point_upload_bytes();
-        let mean = scene
+        let mean = scene.presentation.layer_geometry.as_ref().map_or_else(|| scene
             .mean
             .as_ref()
-            .map_or(24, |mean| enabled_mean_segments(scene, mean).max(1) as u64 * 24);
+            .map_or(24, |mean| enabled_mean_segments(scene, mean).max(1) as u64 * 24), |p| (p.lines.len() + p.intervals.len()*3).max(1) as u64 * 24);
         let raw = scene.raw_upload_bytes();
         (if points > self.capacity { points } else { 0 })
             + (if raw > self.raw_capacity { raw } else { 0 })
             + (if mean > self.mean_capacity { mean } else { 0 })
+            + scene.presentation.layer_geometry.as_ref().map_or(0, |p| { let bytes=p.fills.len().max(1) as u64*216; if bytes>self.fill_capacity { bytes } else { 0 } })
             + (if 1024 * 40 > self.decoration_capacity { 1024 * 40 } else { 0 })
     }
 
@@ -862,8 +909,12 @@ impl ScenePipeline {
         pass.set_vertex_buffer(0, self.decoration_instances.slice(..));
         pass.draw(0..6, 0..self.decorations);
         pass.set_scissor_rect(self.plot[0], self.plot[1], self.plot[2], self.plot[3]);
+        if self.fill_count > 0 {
+            pass.set_pipeline(&self.fill_pipeline); pass.set_vertex_buffer(0, self.fill_vertices.slice(..)); pass.draw(0..self.fill_count, 0..1);
+        }
+        pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.instances.slice(..));
-        pass.draw(0..6, 0..self.total);
+        if !self.layers_active { pass.draw(0..6, 0..self.total); }
         if self.raw_count > 0 {
             if self.raw_grouped {
                 pass.set_pipeline(&self.grouped_raw_pipeline);
@@ -883,7 +934,69 @@ impl ScenePipeline {
         pass.set_pipeline(&self.mean_pipeline);
         pass.set_vertex_buffer(0, self.mean_instances.slice(..));
         pass.draw(0..6, 0..self.mean_segments);
+        if self.layers_active { pass.set_pipeline(&self.pipeline); pass.set_vertex_buffer(0, self.instances.slice(..)); pass.draw(0..6, 0..self.total); }
     }
+}
+
+fn layer_marks(scene: &GraphNewScene, prepared: &super::graph_new_layers::PreparedLayers) -> Result<(Vec<Mark>,Vec<MeanSegment>,Vec<ColoredVertex>),AppError> {
+    let point_count=prepared.points.len().checked_add(prepared.raw_points.len().saturating_mul(scene.points.len())).ok_or_else(|| AppError::Stats("graph_new_cache_pressure".into()))?;
+    if point_count > MAX_SCENE_POINTS {return Err(AppError::Stats("graph_new_cache_pressure".into()));}
+    let mut layer_points=Vec::with_capacity(point_count);layer_points.extend_from_slice(&prepared.points);
+    for (layer_index,options) in &prepared.raw_points {for point in &scene.points {layer_points.push(super::graph_new_layers::LayerPoint{point:*point,layer_index:*layer_index,jitter:match options.jitter.as_str(){"uniform"=>2,"normal"=>3,_=>1},limit:options.jitter_limit});}}
+    let project=|p:[f64;2]| [normalized(p[0],scene.domain.x_min,scene.domain.x_max),normalized(p[1],scene.domain.y_min,scene.domain.y_max)];
+    let plot=scene.plot(); let ratio=scene.device_pixel_ratio as f32;
+    let mut xs:Vec<f64>=layer_points.iter().map(|p| p.point.x).collect(); xs.sort_unstable_by(f64::total_cmp); xs.dedup();
+    let bandwidth=if scene.presentation.x_axis.as_ref().is_some_and(|a| a.kind==crate::models::graph_new::GraphNewXMode::Category) {
+        (normalized(1.,scene.domain.x_min,scene.domain.x_max)-normalized(0.,scene.domain.x_min,scene.domain.x_max)).abs()*f64::from(plot[2])
+    } else if xs.len()<2 { f64::from(plot[2]).min(450.) } else {
+        xs.windows(2).map(|p| (normalized(p[1],scene.domain.x_min,scene.domain.x_max)-normalized(p[0],scene.domain.x_min,scene.domain.x_max))*f64::from(plot[2])).filter(|g|*g>0.).fold(f64::INFINITY,f64::min).min(f64::from(plot[2])).min(450.).max(8.)
+    };
+    let mut offsets=vec![0.;layer_points.len()];
+    let mut stacked=Vec::<usize>::new();
+    let mut random=std::collections::BTreeMap::<(u16,u16,u8),Vec<usize>>::new();
+    for (i,p) in layer_points.iter().enumerate() { if p.limit==0. || p.jitter==0 {continue;} if p.jitter==1 {stacked.push(i);} else {random.entry((p.layer_index,p.point.group_code,p.jitter)).or_default().push(i);} }
+    // Fixed source-domain bins keep the distribution shape without regrouping
+    // observations as the screen projection changes during zoom.
+    let jitter_domain = prepared.jitter_domain.unwrap_or_else(|| {
+        let mut domain = scene.domain;
+        if let Some(first) = layer_points.first() {
+            domain.y_min = first.point.y; domain.y_max = first.point.y;
+            for point in &layer_points { domain.y_min = domain.y_min.min(point.point.y); domain.y_max = domain.y_max.max(point.point.y); }
+        }
+        domain
+    });
+    let stack_band = if scene.presentation.x_axis.as_ref().is_some_and(|a| a.kind==crate::models::graph_new::GraphNewXMode::Category) { 1. }
+        else { xs.windows(2).map(|pair| pair[1]-pair[0]).filter(|gap| gap.is_finite() && *gap>0.).reduce(f64::min).unwrap_or(1.) };
+    let bucket=|i:usize| {let p=layer_points[i];(p.layer_index,p.point.group_code,if p.point.x==0. {0} else {p.point.x.to_bits()},(normalized(p.point.y,jitter_domain.y_min,jitter_domain.y_max)*128.).round() as i64)};
+    stacked.sort_unstable_by_key(|&i|(bucket(i),layer_points[i].point.row_id));
+    let mut start=0;while start<stacked.len(){let mut end=start+1;while end<stacked.len() && bucket(stacked[end])==bucket(stacked[start]) {end+=1;}let n=end-start;if n>1 {let limit=layer_points[stacked[start]].limit;let spacing=(stack_band*0.04*limit).min(stack_band*limit/(n-1) as f64);for (rank,&i) in stacked[start..end].iter().enumerate(){let x=layer_points[i].point.x;let dx=(rank as f64-(n-1) as f64/2.)*spacing;offsets[i]=(normalized(x+dx,scene.domain.x_min,scene.domain.x_max)-normalized(x,scene.domain.x_min,scene.domain.x_max))*f64::from(plot[2]);}}start=end;}
+    drop(stacked);
+    for indices in random.values() {
+        let values:Vec<f64>=indices.iter().map(|&i| {let p=layer_points[i];if p.jitter==2 {stable_unit(p.point.row_id,0x243f6a8885a308d3)*2.-1.} else {((-2.*stable_unit(p.point.row_id,0x13198a2e03707344).max(1e-12).ln()).sqrt()*(std::f64::consts::TAU*stable_unit(p.point.row_id,0xa4093822299f31d0)).cos()/3.).clamp(-1.,1.)}}).collect();
+        let mean=values.iter().sum::<f64>()/values.len() as f64;let max=values.iter().map(|v|(v-mean).abs()).fold(1_f64,f64::max);
+        for (&i,v) in indices.iter().zip(values) {offsets[i]=(v-mean)/max*bandwidth*layer_points[i].limit/2.;}
+    }
+    let mut points=Vec::with_capacity(layer_points.len());
+    for (i,p) in layer_points.iter().enumerate() {if !scene.enabled_groups.is_enabled(p.point.group_code) {continue;}let xy=project([p.point.x,p.point.y]);let px=f64::from(plot[0])+xy[0]*f64::from(plot[2])+offsets[i];let py=f64::from(plot[1])+(1.-xy[1])*f64::from(plot[3]);
+        if px < f64::from(plot[0])-8. || px > f64::from(plot[0]+plot[2])+8. || py < f64::from(plot[1])-8. || py>f64::from(plot[1]+plot[3])+8. {continue;}
+        let radius=if layer_points.len()>50_000 {ratio}else{3.*ratio};points.push(Mark{position:[px as f32-radius,py as f32-radius],size:[radius*2.;2],color:scene.point_color(p.point.group_code),kind_glyph:[4.,0.]}); }
+    let mut lines=Vec::with_capacity(prepared.lines.len()+prepared.intervals.len()*3);
+    let mut add_line=|a:[f64;2],b:[f64;2],group:u16| { if !scene.enabled_groups.is_enabled(group){return;} if let Some([a,b])=clip_mean_segment(a,b,scene.domain) {lines.push(MeanSegment{start:project(a).map(|x|x as f32),end:project(b).map(|x|x as f32),color:scene.raw_color_bytes(group),_padding:[0;4]});} };
+    for &(a,b,g) in &prepared.lines { add_line(a,b,g); }
+    for &(a,b,g) in &prepared.intervals {add_line(a,b,g);}
+    for &(a,b,g) in &prepared.intervals { if !scene.enabled_groups.is_enabled(g){continue;} for p in [a,b] { let xy=project(p);if xy.iter().all(|v| (0.0..=1.0).contains(v)) {let half=4.*f64::from(ratio)/f64::from(plot[2]);lines.push(MeanSegment{start:[(xy[0]-half).max(0.) as f32,xy[1] as f32],end:[(xy[0]+half).min(1.) as f32,xy[1] as f32],color:scene.raw_color_bytes(g),_padding:[0;4]});} } }
+    let mut fills=Vec::with_capacity(prepared.fills.len()*6);
+    for &(quad,g) in &prepared.fills {if !scene.enabled_groups.is_enabled(g){continue;}let polygon=clip_polygon(quad.map(project).to_vec());let mut color=scene.raw_color_bytes(g);color[3]=48;
+        for i in 1..polygon.len().saturating_sub(1) {for p in [polygon[0],polygon[i],polygon[i+1]] {fills.push(ColoredVertex{position:p.map(|v|v as f32),color});}} }
+    let bytes=points.len()*40+lines.len()*24+fills.len()*12;
+    if bytes>super::graph_new_layers::MAX_LAYER_BYTES {return Err(AppError::Stats("graph_new_cache_pressure".into()));}
+    Ok((points,lines,fills))
+}
+fn stable_unit(row_id:i64,salt:u64)->f64 { let mut m=(row_id as u64)^salt;m=(m^(m>>30)).wrapping_mul(0xbf58476d1ce4e5b9);m=(m^(m>>27)).wrapping_mul(0x94d049bb133111eb);m^=m>>31;(m>>11) as f64/9007199254740992. }
+fn clip_polygon(mut points:Vec<[f64;2]>)->Vec<[f64;2]> {
+    for edge in 0..4 {let axis=edge/2;let lower=edge%2==0;let boundary=if lower {0.}else{1.};let inside=|p:[f64;2]|if lower {p[axis]>=boundary}else{p[axis]<=boundary};let mut next=Vec::new();
+        if let Some(mut previous)=points.last().copied() { for &current in &points {if inside(previous)!=inside(current) {let t=normalized(boundary,previous[axis],current[axis]);let mut p=[previous[0]*(1.-t)+current[0]*t,previous[1]*(1.-t)+current[1]*t];p[axis]=boundary;if p.iter().all(|v|v.is_finite()){next.push(p);}}if inside(current){next.push(current);}previous=current;} }points=next; }
+    points
 }
 
 fn mean_camera(basis: PointBasis, scene: &GraphNewScene) -> Option<[f32; 4]> {
@@ -967,6 +1080,12 @@ struct Output {
     output.local = vec2(0.0); output.color = color;
     output.kind_glyph = vec2(3.0, 0.0); return output;
 }
+@vertex fn vs_layer(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> Output {
+    let pixel = camera.plot.xy + vec2(position.x, 1.0 - position.y) * camera.plot.zw;
+    var output: Output;
+    output.position = vec4(pixel.x / camera.viewport.x * 2.0 - 1.0, 1.0 - pixel.y / camera.viewport.y * 2.0, 0.0, 1.0);
+    output.local = vec2(0.0); output.color = color; output.kind_glyph = vec2(3.0, 0.0); return output;
+}
 @vertex fn vs_main(@builtin(vertex_index) index: u32,
     @location(0) position: vec2<f32>, @location(1) size: vec2<f32>,
     @location(2) color: vec4<f32>, @location(3) kind_glyph: vec2<f32>) -> Output {
@@ -1020,7 +1139,7 @@ struct Output {
     return output;
 }
 @fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
-    if input.kind_glyph.x == 1.0 && length(input.local * 2.0 - 1.0) > 1.0 { discard; }
+    if (input.kind_glyph.x == 1.0 || input.kind_glyph.x == 4.0) && length(input.local * 2.0 - 1.0) > 1.0 { discard; }
     if input.kind_glyph.x == 2.0 {
         let cell = vec2<i32>(min(input.local * vec2(3.0, 5.0), vec2(2.0, 4.0)));
         if textureLoad(atlas, vec2(i32(input.kind_glyph.y) * 4 + cell.x, cell.y), 0).r < 0.5 { discard; }
@@ -1036,6 +1155,61 @@ mod tests {
     use crate::services::graph_new_overlay::{
         EnabledOverlayMask, GroupedLineSegment, GroupedMeanPoint, OverlayCatalog,
     };
+
+    #[test] fn graph_new_layers_renderer_draws_points_lines_intervals_and_fill() {
+        use super::super::graph_new_layers::{prepare_layers,GraphNewLayer};
+        use super::super::graph_new_raw::SourceRecord;
+        let source=vec![SourceRecord{scan_ordinal:0,point:SourcePoint::new(1,0.25,0.4)},SourceRecord{scan_ordinal:1,point:SourcePoint::new(2,0.25,0.6)},SourceRecord{scan_ordinal:2,point:SourcePoint::new(3,0.75,0.4)},SourceRecord{scan_ordinal:3,point:SourcePoint::new(4,0.75,0.6)}];
+        let layers:Vec<GraphNewLayer>=serde_json::from_value(serde_json::json!([{ "id":"p","kind":"points","options":{"summaryStat":"mean","errorInterval":"stdDev"}},{"id":"l","kind":"line","options":{"fill":"toZero"}}])).unwrap();
+        let prepared=prepare_layers(&source,&layers,None,&||Ok(())).unwrap();let mut scene=scene();scene.presentation.show_points=false;scene.presentation.layer_geometry=Some(Arc::new(prepared));
+        let (points,lines,fills)=layer_marks(&scene,scene.presentation.layer_geometry.as_ref().unwrap()).unwrap();assert_eq!(points.len(),2);assert!(lines.len()>=7);assert!(!fills.is_empty());
+        let mut renderer=pollster::block_on(SyntheticFrameRenderer::new()).unwrap();let frame=pollster::block_on(renderer.render_scene(&scene)).unwrap();assert!(frame.rgba.chunks_exact(4).any(|p|p==[31,111,235,255]));assert!(frame.rgba.chunks_exact(4).any(|p|p[0]>100&&p[0]<240&&p[2]>p[0]));
+    }
+    #[test]
+    fn graph_new_stacked_jitter_keeps_data_positions_across_zoom() {
+        use super::super::graph_new_layers::{PreparedLayers, LayerPoint};
+        let mut scene = scene(); scene.points.clear();
+        let mut prepared = PreparedLayers { jitter_domain: Some(scene.domain), ..Default::default() };
+        prepared.points = (0..8).map(|i| LayerPoint { point: SourcePoint::new(i+1, 0.5, if i<4 {0.5} else {0.502}), layer_index:0, jitter:1, limit:0.5 }).collect();
+        let positions = |scene: &GraphNewScene| {
+            let plot = scene.plot();
+            layer_marks(scene, &prepared).unwrap().0.iter().map(|mark|
+                scene.domain.x_min + (f64::from(mark.position[0]) + 3.*scene.device_pixel_ratio - f64::from(plot[0])) / f64::from(plot[2]) * (scene.domain.x_max-scene.domain.x_min)
+            ).collect::<Vec<_>>()
+        };
+        let before = positions(&scene);
+        scene.domain = GraphDomain { x_min:0.25, x_max:0.75, y_min:0.49, y_max:0.51 };
+        let after = positions(&scene);
+        assert_eq!(before.len(), after.len());
+        for (a,b) in before.iter().zip(after) { assert!((a-b).abs()<1e-6, "stacked jitter moved in data space: {a} -> {b}"); }
+    }
+
+    #[test] fn graph_new_layers_renderer_jitter_is_deterministic_and_horizontal() {
+        use super::super::graph_new_layers::{PreparedLayers,LayerPoint};
+        let mut scene=scene();scene.points.clear();
+        for mode in [1,2,3] {let mut p=PreparedLayers::default();p.points=(0..5).map(|i|LayerPoint{point:SourcePoint::new(i+1,0.5,0.5),layer_index:0,jitter:mode,limit:0.5}).collect();let (a,_,_)=layer_marks(&scene,&p).unwrap();let (b,_,_)=layer_marks(&scene,&p).unwrap();assert_eq!(a.iter().map(|m|m.position).collect::<Vec<_>>(),b.iter().map(|m|m.position).collect::<Vec<_>>());assert!(a.windows(2).any(|v|v[0].position[0]!=v[1].position[0]));assert!(a.iter().all(|m|m.position[1]==a[0].position[1]));for point in &mut p.points{point.limit=0.;}let (none,_,_)=layer_marks(&scene,&p).unwrap();assert!(none.iter().all(|m|m.position==none[0].position));}
+    }
+
+    #[test] fn graph_new_layers_review_category_jitter_spacing() {
+      use super::super::graph_new_layers::{PreparedLayers,LayerPoint};
+      let mut scene=scene();scene.points.clear();scene.domain.x_min=-0.5;scene.domain.x_max=99.5;
+      scene.presentation.x_axis=Some(crate::models::graph_new::GraphNewAxis{kind:crate::models::graph_new::GraphNewXMode::Category,utc:false,ticks:vec![],origin:None});
+      let mut p=PreparedLayers::default();p.points=(0..5).map(|i|LayerPoint{point:SourcePoint::new(i+1,50.,0.5),layer_index:0,jitter:2,limit:1.}).collect();
+      let (marks,_,_)=layer_marks(&scene,&p).unwrap();let positions:Vec<_>=marks.iter().map(|m|m.position[0]).collect();let span=positions.iter().copied().fold(f32::NEG_INFINITY,f32::max)-positions.iter().copied().fold(f32::INFINITY,f32::min);assert!(span <= scene.plot()[2] / 100. + 0.01);
+    }
+
+    #[test]
+    fn graph_new_layers_plot_margin_fits_labels_without_fixed_gutter() {
+        let mut input = scene();
+        input.presentation.layer_geometry = Some(std::sync::Arc::new(super::super::graph_new_layers::PreparedLayers::default()));
+        let compact = input.plot_rect();
+        assert!(compact.x <= 40, "short numeric ticks must not reserve 64px");
+        input.domain.y_min = -12345678.; input.domain.y_max = 12345678.;
+        let wide = input.plot_rect();
+        assert!(wide.x > compact.x, "long numeric ticks need more space");
+        input.device_pixel_ratio = 2.;
+        assert_eq!(input.plot_rect().x, wide.x * 2);
+    }
 
     fn scene() -> GraphNewScene {
         GraphNewScene {
@@ -1124,6 +1298,7 @@ mod tests {
             EnabledOverlayMask::from_hidden(&overlay, &["blue".to_string()]).expect("enabled");
         GraphNewScene {
             presentation: ScenePresentation {
+                layer_geometry: None,
                 raw_line: Some(Arc::new(vec![
                     GroupedLineSegment {
                         indices: [0, 2],

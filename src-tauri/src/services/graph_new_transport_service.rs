@@ -530,7 +530,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             else { u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height) };
         let upload_bytes = scene.map_or(0, |scene| scene.point_upload_bytes() + 1024 * 40 + 64
             + scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16)
-            + scene.raw_upload_bytes()
+            + scene.raw_upload_bytes() + scene.layer_upload_bytes()
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
         let replacement_bytes = scene.map_or(0, |scene| self.scene_pipeline.as_ref()
             .map_or(upload_bytes + 96, |pipeline| pipeline.replacement_bytes(scene)));
@@ -1097,7 +1097,7 @@ mod tests {
             }).collect::<Vec<_>>());
             let (overlay, enabled_groups) = all_rows_overlay();
             let mut scene = GraphNewScene {
-                presentation: super::super::graph_new_renderer::ScenePresentation { raw_line: Some(indices.clone()), show_points, x_axis: None },
+                presentation: super::super::graph_new_renderer::ScenePresentation { layer_geometry: None, raw_line: Some(indices.clone()), show_points, x_axis: None },
                 width: 1920, height: 1080, device_pixel_ratio: 1.0,
                 domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
                 points: (0..2_000_000).map(|index| SourcePoint::new(index + 1, index as f64 / 1_999_999.0, 0.5)).collect(),
@@ -1149,7 +1149,7 @@ mod tests {
         let (overlay, enabled_groups) = grouped_overlay(2_000_000);
         let scene = GraphNewScene {
             presentation: super::super::graph_new_renderer::ScenePresentation {
-                raw_line: Some(indices),
+                layer_geometry: None,                raw_line: Some(indices),
                 show_points: false,
                 x_axis: None,
             },

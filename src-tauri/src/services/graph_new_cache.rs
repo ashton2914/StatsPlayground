@@ -154,6 +154,8 @@ impl GraphNewCacheCoordinator {
         }
     }
 
+    pub(crate) fn scratch_disk_available(&self) -> u64 { self.disk_limit.saturating_sub(self.live_file_bytes()).saturating_sub(self.disk_bytes) }
+
     pub fn get(&self, key: &str) -> Option<&GraphNewBuildResult> {
         self.entries.get(key).map(|entry| &entry.built)
     }
@@ -270,7 +272,7 @@ impl GraphNewCacheCoordinator {
     }
 
     pub fn prepare_admission(&mut self, built: &GraphNewBuildResult) -> Result<(), AppError> {
-        if built.pyramid.raw_store.is_some() != (built.key.retention_policy == super::graph_new_key::RetentionPolicy::Lossless) {
+        if built.pyramid.raw_store.is_some() != (built.key.retention_policy != super::graph_new_key::RetentionPolicy::Bounded) {
             return Err(AppError::Stats("graph_new_cache_mode_mismatch".into()));
         }
         if self
@@ -570,10 +572,14 @@ impl GraphNewCacheCoordinator {
             pyramid,
             summary,
         };
+        if key.retention_policy == super::graph_new_key::RetentionPolicy::Layers { drop(validation);
+            if self.insert(built).is_err() {return Ok(false);}
+        } else {
         if self.insert(built).is_err() {
             return Ok(false);
         }
         drop(validation);
+        }
         self.disk_hits += 1;
         if let Some(entry) = self.disk.get_mut(&key.hash_hex) {
             entry.touched = self.clock;
@@ -869,10 +875,10 @@ pub(super) fn construction_disk_requirement(
         + std::mem::size_of::<f64>()
         + std::mem::size_of::<u16>()
         + std::mem::size_of::<u32>()) as u64;
-    let record_bytes = if policy == RetentionPolicy::Lossless {
+    let record_bytes = if policy != RetentionPolicy::Bounded {
         bounded_spool_bytes
             .checked_add(bounded_bucket_bytes)
-            .and_then(|bytes| bytes.checked_add(32))
+            .and_then(|bytes| bytes.checked_add(super::graph_new_raw::RECORD_BYTES))
             .ok_or_else(cache_pressure)?
     } else {
         bounded_spool_bytes
@@ -883,7 +889,7 @@ pub(super) fn construction_disk_requirement(
     for level in 0..levels {
         let tiles = rows.min(1u64 << (2 * u32::from(level)));
         let limit = if level + 1 == levels {
-            max_tile_points.min(if policy == RetentionPolicy::Lossless {
+            max_tile_points.min(if policy != RetentionPolicy::Bounded {
                 128
             } else {
                 4096
@@ -1299,7 +1305,7 @@ pub(super) mod tests {
 
     #[test]
     fn graph_new_cache_construction_bound_covers_both_retention_peaks() {
-        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 624), (RetentionPolicy::Lossless, 688)] {
+        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 624), (RetentionPolicy::Lossless, 704)] {
             assert_eq!(construction_disk_requirement(2, 2, 16, policy).expect("bound"), two_row_bytes);
             assert_eq!(construction_disk_requirement(0, 2, 16, policy).expect("empty"), 0);
             assert!(construction_disk_requirement(u64::MAX, 2, 16, policy).is_err());
@@ -1309,6 +1315,7 @@ pub(super) mod tests {
                     let mut builder = match policy {
                         RetentionPolicy::Bounded => TilePyramidBuilder::new(2, 16, 1.5),
                         RetentionPolicy::Lossless => TilePyramidBuilder::lossless(2, 16, 1.5),
+                        RetentionPolicy::Layers => unreachable!(),
                     }.expect("builder");
                     builder.limit_disk_to(required);
                     for ordinal in 0..rows {
@@ -1424,7 +1431,7 @@ pub(super) mod tests {
         let directory = tempfile::tempdir().expect("directory");
         let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
         cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("directory");
-        cache.disk_limit = 1_000_000;
+        cache.disk_limit = 1_200_000;
         let mut graph = built(0);
         let parts = GraphKeyParts {
             dataset_id: "fixture".into(), dataset_generation: 0,

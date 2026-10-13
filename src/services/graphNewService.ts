@@ -1,5 +1,6 @@
+import { normalizeGraphNewLayers } from "../components/graphBuilderNew/graphNewLayers";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { GraphNewRawMode, GraphNewXMode } from "../types/graphBuilderNew";
+import type { GraphNewLayer, GraphNewRawMode, GraphNewXMode } from "../types/graphBuilderNew";
 
 import { isCameraDomain, normalizedAxisValue, type CameraDomain, type PlotRect } from "../components/graphBuilderNew/graphNewCamera";
 import {
@@ -63,6 +64,8 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   height: number;
   devicePixelRatio: number;
   cameraDomain?: CameraDomain | null;
+  layers?: GraphNewLayer[];
+  layerConfigurationId?: string;
   showMean?: boolean;
   xMode?: GraphNewXMode;
   rawMode?: GraphNewRawMode;
@@ -78,6 +81,8 @@ export interface GraphNewAxis {
 }
 
 export interface GraphNewRenderCompletion {
+  layerConfigurationId?: string | null;
+  layerStates?: { layerId: string; available: boolean; reason: string | null; marks: number }[];
   requestId: string;
   xAxis: GraphNewAxis;
   yAxis: GraphNewAxis;
@@ -126,7 +131,7 @@ export interface GraphNewRenderController extends Omit<GraphNewProbeController, 
 
 function safeReason(error: unknown): string {
   const message = describeError(error);
-  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure|gpu_validation|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
+  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|layer_overflow|cache_pressure|gpu_validation|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
   return match?.[1] ?? "graph_new_render_failed";
 }
 
@@ -140,6 +145,7 @@ function safeDiagnostic(message: string): string {
 }
 
 function validateRenderRequest(request: GraphNewRenderRequest): void {
+  if (request.layers !== undefined) normalizeGraphNewLayers(request.layers);
   if (request.xMode !== undefined && !["auto", "numeric", "time", "duration", "category"].includes(request.xMode)) throw new Error("graph_new_invalid_request");
   if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
@@ -173,6 +179,12 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
 }
 
 function validateCompletion(completion: GraphNewRenderCompletion, request: GraphNewRenderRequest): void {
+  if (request.layers !== undefined && (completion.layerConfigurationId !== request.layerConfigurationId
+    || !Array.isArray(completion.layerStates) || completion.layerStates.length !== request.layers.length
+    || completion.layerStates.some((state, i) => state.layerId !== request.layers![i].id || typeof state.available !== "boolean"
+      || !Number.isSafeInteger(state.marks) || state.marks < 0 || (state.reason !== null && typeof state.reason !== "string")))) {
+    throw new Error("graph_new_completion_layers_invalid");
+  }
   const overlayGroups = completion?.overlayGroups;
   const requestedHidden = request.hiddenOverlayGroupIds ?? [];
   if (typeof completion?.overlayActive !== "boolean"

@@ -67,4 +67,7 @@ assert.equal(settled.length, 2);
 scheduler.change(); scheduler.dispose(); advance(200);
 assert.equal(settled.length, 2, "cancel/unmount clears pending work");
 assert.ok(invalidations >= 32);
-console.log("graphNewCamera math, limits, debounce and invalidation passed");
+console.log("graphNewCamera math, limits, debounce and invalidation passed");const changedLayersFull = { xMin: 0, xMax: 100, yMin: -100, yMax: 200 };
+assert.equal(isRestorableCamera(domain, changedLayersFull, true), true);
+assert.notDeepEqual(panCamera(domain, changedLayersFull, plot, 10, 10, true), domain);
+assert.notDeepEqual(zoomCamera(domain, changedLayersFull, plot, {x:160,y:60}, -100, true), domain);

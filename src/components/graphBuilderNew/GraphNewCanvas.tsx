@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -31,8 +32,9 @@ function enqueue(job: RenderJob) {
   pump();
 }
 
-type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode" | "overlayColumnId"> & {
+type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode" | "overlayColumnId" | "layers"> & {
   transportId: string;
+  controlsHost?: HTMLElement | null;
   showMean: boolean;
   hiddenOverlayGroupIds?: string[];
   onMeanAvailabilityChange?: (available: boolean | null) => void;
@@ -75,7 +77,7 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, showMean, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, layers, showMean, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
@@ -232,7 +234,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     const move = (event: PointerEvent) => {
       if (persistence.current.readOnly || !pointer || pointer.id !== event.pointerId || !current || !full || !plot) return;
       const next = physicalPointer(event);
-      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y);
+      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y, layers !== undefined);
       retained.desired = current;
       retained.gesturePending = true;
       pointer = { id: event.pointerId, ...next };
@@ -249,7 +251,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       if (persistence.current.readOnly || !current || !full || !plot) return;
       event.preventDefault();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1);
-      current = zoomCamera(current, full, plot, physicalPointer(event), delta);
+      current = zoomCamera(current, full, plot, physicalPointer(event), delta, layers !== undefined);
       retained.desired = current;
       retained.gesturePending = true;
       retained.resetPending = resetPending = false;
@@ -285,11 +287,11 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       },
       run: async () => {
         if (cancelled) return;
-        if (!presented) setStatus("Rendering...");
+        if (!presented || layers !== undefined) setStatus(t("graphNew.rendering", {defaultValue:"Rendering..."}));
         setReason(null);
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
-          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
+          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, layers, layerConfigurationId: layers === undefined ? undefined : JSON.stringify(layers), showMean, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -391,7 +393,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           if (cameraDomain === null && retained.restorePending) {
             retained.restorePending = false;
             const saved = persistence.current.savedCamera;
-            if (saved && full && isRestorableCamera(saved, full)) {
+            if (saved && full && isRestorableCamera(saved, full, layers !== undefined)) {
               retained.desired = current = saved;
               launch(saved, scheduler.generation());
             } else if (saved) {
@@ -424,6 +426,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
             }
             const missing = errorCode === "graph_new_missing_cache";
             const unrepresentable = errorCode === "graph_new_x_unrepresentable";
+            const layerOverflow = errorCode === "graph_new_layer_overflow";
             const cachePressure = errorCode === "graph_new_cache_pressure";
             const gpuValidation = errorCode === "graph_new_gpu_validation";
             const overlayTooMany = errorCode === "graph_new_overlay_too_many_groups";
@@ -452,6 +455,8 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
               ? "Camera cache unavailable. Reset view to rebuild."
               : unrepresentable
                 ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." })
+                : layerOverflow
+                  ? t("graphNew.layerOverflow")
                 : cachePressure
                   ? t("graphNew.cachePressure", { defaultValue: "Plot exceeded the render memory budget. Hide layers or reset the view." })
                   : gpuValidation
@@ -493,11 +498,22 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, xMode, rawMode, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, xMode, rawMode, layers, t]);
+
+  const controls = (<>
+        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
+          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
+        </button>
+        <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
+          {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
+            : provisional ? `Axes frozen; previewing zoom while the next frame renders. ${reason ? status : ""}` : status}
+        </span>
+  </>);
 
   return (
     <div className="graph-new-chart">
-      <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
+      {controlsHost ? createPortal(controls, controlsHost) : null}
+      {layers === undefined && <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
         {rawMode !== "line" && <span className="graph-new-legend-item"><span className="graph-new-point-swatch" aria-hidden="true" />{t("graphNew.points")}</span>}
         {rawMode !== "scatter" && <span className="graph-new-legend-item"><span className="graph-new-line-swatch" aria-hidden="true" />{t("graphNew.rawLine", { defaultValue: "Raw line" })}</span>}
         {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable: complete data was not retained." })}</span>}
@@ -507,7 +523,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
         {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
           && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
-      </div>
+      </div>}
       <div className="graph-new-canvas-host" ref={host}>
         <canvas ref={canvas} role="img" aria-label="Point plot frame" style={{ visibility: hasFrame ? "visible" : "hidden" }} />
         <div className="graph-new-axis-ticks graph-new-x-axis-ticks" data-testid="x-axis-ticks">
@@ -521,13 +537,8 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
-        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
-          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
-        </button>
-        <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
-          {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
-            : provisional ? `Axes frozen; previewing zoom while the next frame renders. ${reason ? status : ""}` : status}
-        </span>
+        {controlsHost === undefined ? controls : null}
+
       </div>
     </div>
   );

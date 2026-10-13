@@ -1467,3 +1467,52 @@ Measured stage values:
 Artifact:
 
 - [task-1-benchmark.json](../.superpowers/sdd/2026-09-17-10m-row-table-random-navigation/task-1-benchmark.json)
+
+## Graph Builder-new independent Layers (2026-10-10)
+
+Debug test sample on this machine: building a 1,000,000-row source pyramid,
+computing four exact medians from the complete source, and performing 20
+cached camera preparations took **7.703 seconds**. This is one end-to-end
+unit-test sample, not a release benchmark or percentile. Derived geometry
+was below 4 KiB; all 20 camera preparations reused the same prepared object.
+The native service test separately verifies one initial source projection
+query and zero projection queries on the subsequent camera render.
+
+A distinct-X regression uses 2,000,000 source rows and default Scatter plus
+Line, then Scatter plus Time Series. In one debug run, preparation plus 20
+cached camera preparations took 12.580 seconds and 11.118 seconds respectively;
+native GPU rendering and RGBA readback took 1.616 seconds and 0.978 seconds.
+Both configurations produced 1,999,999 line segments and a visible native
+frame. These timings include concurrent compilation on this machine and are
+not release latency targets. The service regression also bounds database
+generation checks to eight per render: cancellation inside source/statistic
+loops checks in-memory request/epoch state, with database generation checked
+before rendering and again under the publication lock. Geometry allocation
+grows geometrically within the existing memory budget.
+
+Raw Scatter retains the bounded LOD path. Summary statistics use the full
+source; above the resident source limit they use exact external sorting
+with owned temporary files and a checked disk budget. Derived geometry is
+limited to 128 MiB, with 640 MiB reserved for its preparation. Raw Line above
+2.1 million source rows, or a configuration exceeding geometry/disk limits,
+returns the existing cache-pressure diagnostic while retaining the previous
+frame. These limits do not imply that statistics are computed from LOD.
+
+### Layers scatter detail and stacked jitter (2026-10-12)
+
+Layers raw queries retain all visible observations up to a minimum exact budget
+of 50,000 points, independent of viewport area. Larger visible populations retain
+the existing bounded LOD fallback; no persisted cache format change is required.
+
+Stacked jitter uses 128 fixed Y bins over the cached source domain and stable row
+ordering inside each layer/overlay/X/bin group. Offsets are measured in data
+coordinates (category bandwidth is one unit), then projected through the camera.
+Changing zoom therefore does not rebuild screen-pixel bins. This is a display
+layout, not a density estimate. Changes to the selected observations, including
+LOD sampling and clipping at bin boundaries, can still change group membership.
+
+### Time-ordered Layers LOD representatives (2026-10-12)
+
+Layers pyramid retention now uses deterministic bottom-k row-ID hash sampling within each tile and overlay quota, instead of keeping the smallest row IDs. Keeping an early prefix caused a default time-axis view to show only the beginning of a large series. Sampling remains bounded by the existing tile quota and heap memory accounting. Representatives are sorted by row ID before serialization. The Layers key version is advanced so existing prefix-biased caches are rebuilt. Other retention policies preserve their prior ordering.
+
+The regression uses 100,000 time-ordered observations and verifies that a coarse default selection covers every tenth of the time range. This is representative sampling, not a guarantee that every rare outlier survives LOD; exact rendering remains available when the visible population fits the Layers exact budget.

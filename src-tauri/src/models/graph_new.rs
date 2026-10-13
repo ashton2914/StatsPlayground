@@ -111,6 +111,10 @@ pub struct GraphNewRenderRequest {
     #[serde(default)]
     pub show_mean: bool,
     #[serde(default)]
+    pub layers: Option<Vec<crate::services::graph_new_layers::GraphNewLayer>>,
+    #[serde(default)]
+    pub layer_configuration_id: Option<String>,
+    #[serde(default)]
     pub x_mode: GraphNewXMode,
     #[serde(default)]
     pub raw_mode: GraphNewRawMode,
@@ -123,6 +127,8 @@ pub struct GraphNewRenderRequest {
 impl GraphNewRenderRequest {
     pub fn validate(&self) -> Result<(), AppError> {
     if let Some(domain) = self.camera_domain { domain.validate()?; }
+    if let Some(layers) = &self.layers { crate::services::graph_new_layers::validate_layers(layers)?; }
+    if self.layer_configuration_id.as_ref().is_some_and(|s| s.len() > 65536) { return Err(AppError::InvalidParam("graph_new_invalid_layers".into())); }
         let valid_ids = [&self.request_id, &self.session_id, &self.dataset_id, &self.x_column_id, &self.y_column_id]
             .iter().all(|id| !id.trim().is_empty() && id.len() <= 256 && id.trim() == id.as_str());
     let valid_overlay = self
@@ -176,7 +182,13 @@ pub struct GraphNewGpuCacheStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GraphNewLayerState { pub layer_id: String, pub available: bool, pub reason: Option<String>, pub marks: usize }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphNewRenderCompletion {
+    pub layer_configuration_id: Option<String>,
+    pub layer_states: Vec<GraphNewLayerState>,
     pub request_id: String,
     pub x_axis: GraphNewAxis,
     pub y_axis: GraphNewAxis,

@@ -71,6 +71,10 @@ const validStorage = createMemoryStorage(
     sizes: {
       "workspace.sidebar": 320,
       "history.stack": 60,
+      "graphBuilderNew.leftRail": 260,
+      "graphBuilderNew.rightRail": 240,
+      "graphBuilderNew.leftStack": 58,
+      "graphBuilderNew.rightStack": 35,
     },
   }),
 );
@@ -78,6 +82,10 @@ const validStorage = createMemoryStorage(
 assert.deepEqual(readLayoutPreferences(validStorage.storage), {
   "workspace.sidebar": 320,
   "history.stack": 60,
+  "graphBuilderNew.leftRail": 260,
+  "graphBuilderNew.rightRail": 240,
+  "graphBuilderNew.leftStack": 58,
+  "graphBuilderNew.rightStack": 35,
 });
 
 assert.deepEqual(

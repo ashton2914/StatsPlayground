@@ -55,6 +55,35 @@
 
 .graph-builder-new-toolbar {
   min-height: 44px;
+  height: auto;
+  flex-wrap: wrap;
+}
+
+.graph-builder-new-toolbar .gb-toolbar-left { flex-wrap: wrap; }
+
+.graph-builder-new-toolbar-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+  width: 420px;
+  min-height: 28px;
+  flex: 0 1 420px;
+  min-width: 0;
+  max-width: 100%;
+}
+.graph-builder-new-toolbar-status .graph-new-frame-status {
+  position: static;
+  max-width: 420px;
+  padding: 0;
+  background: transparent;
+  pointer-events: auto;
+}
+.graph-builder-new-toolbar-status .graph-new-reset {
+  position: static;
+  order: 1;
+  flex: 0 0 28px;
 }
 
 .graph-builder-new-source {
@@ -253,7 +282,7 @@
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 8px;
+  padding: 8px 8px 8px 2px;
   overflow: hidden;
   border: 1px solid var(--border-main);
   background: var(--bg-panel);
@@ -330,6 +359,7 @@
 .graph-new-frame-status {
   position: absolute;
   z-index: 2;
+  background: var(--gbn-bg);
   top: 4px;
   right: 38px;
   max-width: min(48%, 420px);
@@ -414,7 +444,7 @@
 .graph-new-mean-reason { color: var(--gbn-muted); font-size: 11px; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
-  .graph-builder-new-stage { padding: 8px; }
+  .graph-builder-new-stage { padding: 8px 8px 8px 2px; }
 }
 
 .graph-builder-new-status {
@@ -465,4 +495,62 @@
   .graph-builder-new-inspector {
     display: none;
   }
+}
+
+.graph-builder-new .gb-layer-body { padding: 10px; }
+.graph-builder-new .gb-layer-mode { margin-left: auto; border: 1px solid var(--border-main); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+.graph-builder-new-add-layer { width: 100%; min-height: 32px; border: 1px dashed var(--border-main); background: var(--bg-panel); color: var(--fg-main); font-size: 24px; }
+.graph-builder-new .gb-opt-label { white-space: normal; overflow: visible; text-overflow: clip; }
+.graph-builder-new .gb-opt-row { gap: 6px; }
+.graph-builder-new .gb-opt-ctrl { min-width: 0; }
+.graph-builder-new .gb-opt-select { width: 100%; }
+.graph-builder-new-body { grid-template-columns: 270px minmax(0, 1fr) 180px; }
+@media (max-width: 980px) {
+  .graph-builder-new-body { grid-template-columns: 270px minmax(0, 1fr); }
+  .graph-builder-new-inspector { display: none; }
+}
+@media (max-width: 720px) {
+  .graph-builder-new-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(160px, 35%) minmax(0, 1fr); }
+  .graph-builder-new-left { position: static; width: auto; height: auto; opacity: 1; pointer-events: auto; }
+  .graph-builder-new-left > .gb-shared-column-pane { display: none; }
+}
+
+.graph-builder-new-layer-list { display: flex; flex-direction: column; gap: 8px; }
+.graph-builder-new .gb-shared-layer-card > header { text-transform: none; font-size: 12px; gap: 8px; }
+
+/* Reuse the legacy splitter interactions while sizing each rail independently. */
+.graph-builder-new-left,
+.graph-builder-new-inspector {
+  display: grid;
+  overflow: hidden;
+}
+.graph-builder-new-left > section,
+.graph-builder-new-inspector > section {
+  min-height: 0;
+  overflow: auto;
+}
+.graph-builder-new-splitter {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  color: var(--border-main);
+  z-index: 2;
+  background: var(--gbn-bg);
+}
+.graph-builder-new-splitter-vertical { width: 6px; }
+.graph-builder-new-splitter-horizontal { height: 6px; }
+.graph-builder-new-splitter-horizontal > .panel-splitter { height: 6px; width: 100%; }
+.graph-builder-new-splitter-vertical > .panel-splitter { width: 6px; height: 100%; }
+.graph-builder-new-splitter:hover { color: var(--fg-accent); }
+
+@media (max-width: 980px) {
+  .graph-builder-new-body { grid-template-columns: var(--graph-new-left-width) 6px minmax(0, 1fr) !important; }
+  .graph-builder-new-inspector,
+  .graph-builder-new-stage + .graph-builder-new-splitter-vertical { display: none; }
+}
+@media (max-width: 720px) {
+  .graph-builder-new-body { grid-template-columns: minmax(0, 1fr) !important; }
+  .graph-builder-new-body > .graph-builder-new-splitter-vertical { display: none; }
+  .graph-builder-new-left { grid-template-rows: minmax(0, 1fr) !important; }
+  .graph-builder-new-left > .graph-builder-new-splitter-horizontal { display: none; }
 }
