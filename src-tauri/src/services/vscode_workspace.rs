@@ -107,12 +107,18 @@ fn merge_for_format(
         .object_value_or_create(format.server_key())
         .ok_or_else(|| failure("MCP servers must be an object."))?;
     unique_keys(&servers)?;
-    let old = servers
-        .get("StatsPlayground")
+    let current = servers.get("sp-mcp");
+    let legacy = servers.get("StatsPlayground");
+    if current.is_some() && legacy.is_some() {
+        return Err(failure("Both sp-mcp and StatsPlayground entries exist; resolve the conflicting server aliases before launching."));
+    }
+    let property = current.or(legacy.clone());
+    let old = property
+        .clone()
         .and_then(|p| p.value())
         .and_then(|v| v.to_serde_value());
     let intended = managed(settings);
-    if old.as_ref() == Some(&intended) {
+    if legacy.is_none() && old.as_ref() == Some(&intended) {
         return Ok(ConfigEdit {
             bytes: source.unwrap_or_default().to_owned(),
             action: "unchanged",
@@ -122,17 +128,22 @@ fn merge_for_format(
     }
     // Arbitrary URLs may contain passwords, query tokens or private file paths.
     let current_endpoint = old.as_ref().map(|_| "Different endpoint".to_owned());
-    if let Some(property) = servers.get("StatsPlayground") {
+    if let Some(property) = property {
+        let name = property
+            .name()
+            .and_then(|name| name.as_string_lit())
+            .ok_or_else(|| failure("Invalid managed server property name."))?;
+        name.set_raw_value("\"sp-mcp\"".to_owned());
         property.set_value(input(&intended));
     } else {
-        servers.append("StatsPlayground", input(&intended));
+        servers.append("sp-mcp", input(&intended));
     }
     let bytes = cst.to_string();
     let verified = parse(&bytes)?
         .value()
         .and_then(|v| v.to_serde_value())
         .ok_or_else(|| failure("Cannot verify MCP configuration."))?;
-    if verified[format.server_key()]["StatsPlayground"] != intended {
+    if verified[format.server_key()]["sp-mcp"] != intended {
         return Err(failure("MCP configuration verification failed."));
     }
     Ok(ConfigEdit {
@@ -189,7 +200,10 @@ fn has_managed_entry(source: &str, format: ConfigFormat) -> Result<bool, AppErro
         let servers = servers
             .as_object()
             .ok_or_else(|| failure("MCP servers must be an object."))?;
-        Ok(servers.contains_key("StatsPlayground"))
+        if servers.contains_key("sp-mcp") && servers.contains_key("StatsPlayground") {
+            return Err(failure("Both sp-mcp and StatsPlayground entries exist; resolve the conflicting server aliases before launching."));
+        }
+        Ok(servers.contains_key("sp-mcp") || servers.contains_key("StatsPlayground"))
     } else {
         Ok(false)
     }
@@ -326,7 +340,7 @@ impl Workspace {
         if let (Some(root), Some(old)) = (&portable, &legacy) {
             has_managed_entry(root, ConfigFormat::Portable)?;
             if has_managed_entry(old, ConfigFormat::Legacy)? {
-                return Err(failure("A legacy StatsPlayground entry remains alongside .mcp.json. Complete its migration or resolve the duplicate configuration before launching."));
+                return Err(failure("A legacy sp-mcp or StatsPlayground entry remains alongside .mcp.json. Complete its migration or resolve the duplicate configuration before launching."));
             }
         }
         let (format, source, alternate_source) = if portable.is_some() || legacy.is_none() {
@@ -589,7 +603,7 @@ mod portable_tests {
             .unwrap()
             .to_serde_value()
             .unwrap();
-        assert_eq!(value["mcpServers"]["StatsPlayground"], managed(&settings));
+        assert_eq!(value["mcpServers"]["sp-mcp"], managed(&settings));
         assert!(value.get("servers").is_none());
         workspace.write(edit.bytes.as_bytes()).unwrap();
         let again = Workspace::inspect(root.path())
@@ -1021,6 +1035,57 @@ mod linked_git_tests {
 mod contract_tests {
     use super::*;
     #[test]
+    fn old_server_alias_migrates_with_confirmation_and_preserves_jsonc() {
+        let settings = McpSettings {
+            port: 48123,
+            token: "a".repeat(32),
+        };
+        for format in [ConfigFormat::Portable, ConfigFormat::Legacy] {
+            let source = format!("{{\n // keep comment\n \"{}\": {{\n // managed alias\n \"StatsPlayground\": {{}}, \"Other\": {{\"command\":\"keep\"}},}},\n \"inputs\": [],\n}}", format.server_key());
+            let edit = merge_for_format(Some(&source), &settings, format).unwrap();
+            assert!(edit.confirmation_required);
+            assert_eq!(edit.action, "replaceManagedEntry");
+            assert!(edit.bytes.contains("// keep comment"));
+            assert!(edit.bytes.contains("// managed alias"));
+            assert!(edit.bytes.contains("\"Other\": {\"command\":\"keep\"}"));
+            let value = parse(&edit.bytes)
+                .unwrap()
+                .value()
+                .unwrap()
+                .to_serde_value()
+                .unwrap();
+            assert!(value[format.server_key()].get("StatsPlayground").is_none());
+            assert_eq!(value[format.server_key()]["sp-mcp"], managed(&settings));
+            assert_eq!(value["inputs"], json!([]));
+        }
+    }
+
+    #[test]
+    fn both_server_aliases_are_rejected_even_when_values_match() {
+        let settings = McpSettings {
+            port: 48123,
+            token: "a".repeat(32),
+        };
+        for format in [ConfigFormat::Portable, ConfigFormat::Legacy] {
+            let source = json!({format.server_key(): {"StatsPlayground": managed(&settings), "sp-mcp": managed(&settings)}}).to_string();
+            assert!(merge_for_format(Some(&source), &settings, format).is_err());
+        }
+    }
+
+    #[test]
+    fn new_alias_in_legacy_file_blocks_duplicate_root_configuration() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::create_dir(root.path().join(".vscode")).unwrap();
+        fs::write(
+            root.path().join(".vscode/mcp.json"),
+            r#"{"servers":{"sp-mcp":{}}}"#,
+        )
+        .unwrap();
+        fs::write(root.path().join(".mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        assert!(Workspace::inspect(root.path()).is_err());
+    }
+
+    #[test]
     fn new_config_matches_vscode_http_contract() {
         let settings = McpSettings {
             port: 48123,
@@ -1028,13 +1093,13 @@ mod contract_tests {
         };
         let value: Value =
             serde_json::from_str(&merge_config(None, &settings).unwrap().bytes).unwrap();
-        assert_eq!(value["servers"]["StatsPlayground"]["type"], "http");
+        assert_eq!(value["servers"]["sp-mcp"]["type"], "http");
         assert_eq!(
-            value["servers"]["StatsPlayground"]["url"],
+            value["servers"]["sp-mcp"]["url"],
             "http://127.0.0.1:48123/mcp"
         );
         assert_eq!(
-            value["servers"]["StatsPlayground"]["headers"]["Authorization"],
+            value["servers"]["sp-mcp"]["headers"]["Authorization"],
             "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
     }

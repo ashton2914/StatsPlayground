@@ -1,0 +1,12 @@
+.ai-panel-skills { height: 100%; min-height: 0; overflow: hidden; }
+.skills-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px; }
+.skill-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.skill-card .ai-section-header, .skill-instructions .ai-section-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; width: 100%; }
+.skill-card p { margin: 0; color: var(--fg-secondary); line-height: 1.6; }
+.skill-card code { font-size: 12px; overflow-wrap: anywhere; }
+.skill-card button { margin-top: auto; }
+.skill-instructions { overflow-wrap: anywhere; line-height: 1.6; }
+.skill-instructions pre { overflow: auto; max-width: 100%; padding: 12px; border-radius: 6px; background: var(--bg-header); white-space: pre-wrap; }
+.skill-instructions table { display: block; overflow: auto; max-width: 100%; border-collapse: collapse; }
+.skill-instructions th, .skill-instructions td { padding: 6px 8px; border: 1px solid var(--border-main); }
+.skill-instructions .ai-inline-actions { margin: 12px 0; }

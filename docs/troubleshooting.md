@@ -429,4 +429,11 @@ Select-String -Path src/graphCore/*.ts,src/components/**/*.tsx `
 - 端点应在重启后保持一致。若应用提示运行设置与保存设置不同，先停止 MCP 服务，再按已保存的设置重启；不要直接覆盖正在使用的凭据。
 - 调试构建默认也使用保存设置。如果出现旧的固定端口 `48188` 和 `Active MCP settings are invalid`，更新后完整退出并重启应用，清除旧进程的开发配置。显式设置的 `STATSPLAYGROUND_MCP_BIND`/`STATSPLAYGROUND_MCP_TOKEN` 仍会覆盖调试配置；验收保存设置的流程时请取消这两个环境变量。
 
-- VS Code 的 MCP 迁移提示将工作区配置转为根目录 `.mcp.json`/`mcpServers`。新目录由本功能直接生成此格式；旧配置可继续使用。已迁移后再次启动会使用根目录配置，不会重建旧配置。若旧文件仍包含 `StatsPlayground`，先完成迁移或解决重复定义；本功能不会自动删除文件。确认期间发生迁移时，重新选择目录生成计划。根目录凭据文件同样需要 Git 本地排除保护；VS Code 自己创建的文件不由本功能提前保护。
+- VS Code 的 MCP 迁移提示将工作区配置转为根目录 `.mcp.json`/`mcpServers`。新目录由本功能直接生成此格式；旧配置可继续使用。已迁移后再次启动会使用根目录配置，不会重建旧配置。若旧文件仍包含 `sp-mcp` 或 `StatsPlayground`，先完成迁移或解决重复定义；本功能不会自动删除文件。单个旧 `StatsPlayground` 服务器经确认后改名为 `sp-mcp`；同一文件中两种名称并存时先手动解决冲突。确认期间发生迁移时，重新选择目录生成计划。根目录凭据文件同样需要 Git 本地排除保护；VS Code 自己创建的文件不由本功能提前保护。
+
+### Built-in Skill synchronization
+
+- Launch VS Code places `sp-mcp-guide` and `sp-distribution-analyze` in `.github/skills/`. Open the selected folder in VS Code and start a new chat to discover the workspace skills.
+- A built-in skill conflict means the existing target differs from the app's last published version. Back up or move that target and retry; unrelated skills are retained.
+- If files or directories change after preview, select the folder again. Symbolic-link or reparse-point skill paths are rejected.
+- If interrupted synchronization reports a `.sp-skill-*.backup` or `.rollback` file, inspect the preserved content before retrying. Do not remove it without checking for user edits.

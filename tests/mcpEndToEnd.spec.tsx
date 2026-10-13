@@ -56,5 +56,7 @@ test("runs MCP command-layer end-to-end scenario with correlation and lifecycle 
 
   await page.setViewportSize({ width: 390, height: 844 });
   await component.getByRole("button", { name: "Skills..." }).click();
-  await expect(component.getByText("Skills are not available in Phase 1.")).toBeVisible();
+  await expect(component.getByRole("heading", { name: "Build-in" })).toBeVisible();
+  await component.getByRole("button", { name: "View Distribution Analyze" }).click();
+  await expect(component.getByRole("region", { name: "Distribution Analyze instructions" })).toContainText("user data");
 });

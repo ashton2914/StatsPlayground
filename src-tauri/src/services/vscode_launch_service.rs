@@ -8,6 +8,7 @@ use crate::{
     },
     models::mcp::{McpServerStatus, McpSettings},
     services::{
+        built_in_skills::{SkillInstallPlan, SkillSyncSummary},
         mcp_settings_service::McpSettingsService,
         vscode_workspace::{failure, Workspace},
     },
@@ -25,6 +26,7 @@ use std::{
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VsCodeLaunchPlan {
+    pub skills: SkillSyncSummary,
     pub configuration_path: String,
     pub plan_id: String,
     pub workspace_display_name: String,
@@ -45,6 +47,7 @@ pub struct VsCodeLaunchRequest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VsCodeLaunchResult {
+    pub skills: SkillSyncSummary,
     pub configuration_path: String,
     pub workspace_display_name: String,
     pub configuration_result: String,
@@ -54,6 +57,7 @@ pub struct VsCodeLaunchResult {
     pub warnings: Vec<String>,
 }
 struct PlanRecord {
+    skills: SkillInstallPlan,
     created: Instant,
     workspace: Workspace,
     saved: Option<McpSettings>,
@@ -177,6 +181,7 @@ impl VsCodeLaunchService {
         runtime: &McpServerRuntime,
     ) -> Result<VsCodeLaunchPlan, AppError> {
         let workspace = Workspace::inspect(path)?;
+        let skills = SkillInstallPlan::inspect(&workspace.canonical)?;
         let saved = load(home)?;
         let fingerprint = Fingerprint::from(runtime.status()?);
         let settings_action = readiness(&saved, &fingerprint)?;
@@ -194,6 +199,7 @@ impl VsCodeLaunchService {
             warnings.push("initializePersistent".into());
         }
         let preview = VsCodeLaunchPlan {
+            skills: skills.summary.clone(),
             configuration_path: workspace.configuration_path().into(),
             plan_id: uuid::Uuid::new_v4().to_string(),
             workspace_display_name: workspace
@@ -226,6 +232,7 @@ impl VsCodeLaunchService {
         plans.insert(
             preview.plan_id.clone(),
             PlanRecord {
+                skills,
                 created: Instant::now(),
                 workspace,
                 saved,
@@ -269,28 +276,31 @@ impl VsCodeLaunchService {
             return Err(failure("Launch plan is stale. Select the folder again."));
         }
         plan.workspace.validate()?;
+        plan.skills.validate()?;
         if plan.preview.confirmation_required && !request.approve_conflict {
             return Err(failure(
-                "Explicit approval is required to replace the existing StatsPlayground entry.",
+                "Explicit approval is required to replace the existing sp-mcp or StatsPlayground entry.",
             ));
         }
         plan.workspace.protect_git()?;
         let active = ensure_persistent(home, runtime, broker, plan.saved).await?;
         let edit = plan.workspace.merge_config(&active)?;
-        runtime.with_active_configuration(&active, || {
+        let skills = runtime.with_active_configuration(&active, || {
             if load(home)?.as_ref() != Some(&active) {
                 return Err(failure(
                     "Persistent MCP settings changed. Create a new plan.",
                 ));
             }
             plan.workspace.validate()?;
+            let summary = plan.skills.install()?;
             if edit.action != "unchanged" {
                 plan.workspace.write(edit.bytes.as_bytes())?;
             }
-            Ok(())
+            Ok(summary)
         })?;
         let launch_result = launch(&plan.workspace.canonical);
         Ok(VsCodeLaunchResult {
+            skills,
             configuration_path: plan.preview.configuration_path,
             workspace_display_name: plan.preview.workspace_display_name,
             configuration_result: edit.action.into(),
@@ -448,6 +458,8 @@ mod tests {
             .unwrap();
         assert_eq!(result.launch_result, "configuredVsCodeNotFound");
         assert_eq!(result.configuration_path, ".mcp.json");
+        assert!(workspace.path().join(".github/skills/sp-mcp-guide/SKILL.md").is_file());
+        assert!(workspace.path().join(".github/skills/sp-distribution-analyze/SKILL.md").is_file());
         let saved = McpSettingsService::new(home.path().to_owned())
             .load()
             .unwrap()
@@ -458,7 +470,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config["mcpServers"]["StatsPlayground"]["headers"]["Authorization"],
+            config["mcpServers"]["sp-mcp"]["headers"]["Authorization"],
             format!("Bearer {}", saved.token)
         );
         assert!(config.get("servers").is_none());

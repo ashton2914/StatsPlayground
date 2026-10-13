@@ -343,10 +343,16 @@ npm run test:mcp
 
 MCP Server 面板提供“启动 VS Code”：选择一个已有本地目录，检查配置预览，确认后配置并打开 Stable Visual Studio Code。首次启动会先绑定可用的 loopback 端口，再将实际端口和令牌保存到用户设置；以后重启应用并启动 MCP 服务时复用该端点。
 
-新工作区默认写入根目录 `.mcp.json`，使用可移植格式 `mcpServers`。已有 `.mcp.json` 时优先使用；只有 `.vscode/mcp.json` 时继续使用原文件的 `servers` 格式，避免自动迁移或重复创建。根目录配置与旧文件中的 `StatsPlayground` 并存时先拒绝配置，请通过 VS Code 完成迁移或解决重复定义。预览和结果显示实际使用的相对文件路径。两种格式都仅插入或经确认替换 `StatsPlayground`。其他服务器、`inputs`、未知属性和无关注释保留。文件包含本地 Bearer 凭据，请勿分享或提交。Git 已跟踪该文件时拒绝写入；未跟踪文件通过 Git 解析的本地 `info/exclude` 保护，不修改仓库 `.gitignore`。在 Git linked worktree 中，Git 的 `info/exclude` 可能位于共享 Git 元数据目录，排除规则以仓库根为基准。
+新工作区默认写入根目录 `.mcp.json`，使用可移植格式 `mcpServers`。已有 `.mcp.json` 时优先使用；只有 `.vscode/mcp.json` 时继续使用原文件的 `servers` 格式，避免自动迁移或重复创建。根目录配置与旧文件中的 `sp-mcp` 或 `StatsPlayground` 并存时先拒绝配置，请通过 VS Code 完成迁移或解决重复定义。预览和结果显示实际使用的相对文件路径。两种格式都仅插入或经确认替换 `sp-mcp`；单个旧 `StatsPlayground` 条目经确认后原位改名为 `sp-mcp`。同一文件中两个名称并存时拒绝配置，需先解决冲突。MCP 握手名称同样为 `sp-mcp`，现有 `statsplayground_*` 工具名称保持兼容。其他服务器、`inputs`、未知属性和无关注释保留。文件包含本地 Bearer 凭据，请勿分享或提交。Git 已跟踪该文件时拒绝写入；未跟踪文件通过 Git 解析的本地 `info/exclude` 保护，不修改仓库 `.gitignore`。在 Git linked worktree 中，Git 的 `info/exclude` 可能位于共享 Git 元数据目录，排除规则以仓库根为基准。
 
 后端计划仅在内存中保留五分钟，使用一次后失效；文件、目录、Git 跟踪状态或 MCP 设置发生变化后需要重新选择目录。配置成功但编辑器缺失或启动失败时，配置保留，并提示在 Stable VS Code 中手动打开所选目录。此操作不安装 VS Code，不支持 Insiders、远程目录、WSL、Dev Containers，也不创建 VS Code Chat 会话。
 
 平台发现规则：macOS 检查系统和用户 Applications 下的 Stable 应用；Windows 检查用户和 Program Files 安装目录及 PATH 中的可执行文件；Linux 检查 PATH 中的 Stable `code` 可执行文件。命令参数直接传给进程，不经过 shell。
 
 配置格式依据：[VS Code MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)、[Migrate Copilot customizations](https://code.visualstudio.com/docs/agent-customization/migrate-customizations)。
+
+## Built-in AI skills
+
+The Skills page lists SP MCP Guide and Distribution Analyze under Build-in. Their source files live in `built-in-skills/` and are bundled into the app; the page and Launch VS Code publish the same content. The guide documents all current MCP tools with contract-checked examples. Distribution Analyze uses user-provided data and writes interpretations from returned statistical evidence.
+
+Launch VS Code synchronizes these skill folders into the selected workspace's `.github/skills/` before opening the editor. `.github/skills/.sp-built-in.json` records the hashes of files published by the app. Subsequent launches update unmodified managed files and preserve unrelated skills. If a managed file contains user edits, launching stops with its relative path so the user can back it up or move it. The preview lists the skill files that will be synchronized. Skill files contain no MCP credentials; the generated MCP configuration retains its separate credential protection.
