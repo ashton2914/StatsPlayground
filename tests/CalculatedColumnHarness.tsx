@@ -53,6 +53,8 @@ type HarnessController = {
   renameWidthAndRefresh: () => void;
   setLanguage: (value: string) => void;
   stageHistoryRefresh: (mode: "undo" | "redo") => void;
+  failHistoryReplay: () => Promise<void>;
+  setTableVisible: (visible: boolean) => void;
 };
 
 declare global {
@@ -299,6 +301,7 @@ export function CalculatedColumnHarness({
   width?: number;
 }) {
   const [ready, setReady] = useState(false);
+  const [tableVisible, setTableVisible] = useState(true);
 
   useEffect(() => {
     const previousDataState = useDataStore.getState();
@@ -645,6 +648,23 @@ export function CalculatedColumnHarness({
       stageHistoryRefresh: (mode: "undo" | "redo") => {
         stagedHistoryRefresh = mode;
       },
+      setTableVisible,
+      failHistoryReplay: async () => {
+        const previousApply = dataService.applyTableChangeSet;
+        dataService.applyTableChangeSet = async () => {
+          throw new Error("history replay failed for this table");
+        };
+        try {
+          previousHistoryState.recordTable("Failed edit", {
+            kind: "changeSet",
+            datasetId: DATASET.id,
+            changeSetId: "failed-edit",
+          });
+          await previousHistoryState.undo();
+        } finally {
+          dataService.applyTableChangeSet = previousApply;
+        }
+      },
     };
 
     if (scenario === "stale") {
@@ -691,7 +711,7 @@ export function CalculatedColumnHarness({
 
   return (
     <div style={{ width, height: 760 }}>
-      <DataTableView datasetId={DATASET.id} />
+      {tableVisible && <DataTableView datasetId={DATASET.id} />}
     </div>
   );
 }
