@@ -99,6 +99,35 @@ test("localizes validation exceptions without exposing raw backend payloads", as
   await expect(page.getByText(/backend parser crashed/)).toHaveCount(0);
 });
 
+for (const language of ["en", "zh-CN"] as const) {
+  test(`shows one validation failure message across the dialog in ${language}`, async ({ mount, page }) => {
+    await mount(<CalculatedColumnHarness scenario="matrix" />);
+    await page.getByRole("button", { name: "Calculated Column" }).click();
+    await setLanguage(page, language);
+    await page.evaluate(() => {
+      window.__calculatedColumnHarness?.setNextValidationFailure("backend parser crashed");
+    });
+    const formulaLabel = language === "en" ? "Formula" : "公式";
+    await page.getByRole("textbox", { name: formulaLabel, exact: true }).fill("[SN][SN][SN]");
+    const diagnostic = page.locator(".sp-calculated-column-diagnostic");
+    await expect(diagnostic).toHaveCount(1);
+    const prefix = language === "en" ? "Validation failed" : "验证失败";
+    await expect.poll(async () => (await diagnostic.innerText()).split(prefix).length - 1).toBe(1);
+    await expect.poll(async () => (await page.getByRole("dialog").innerText()).split(prefix).length - 1).toBe(1);
+    await expect(page.getByRole("alert")).toHaveCount(1);
+    await expect(page.getByRole("alert")).toContainText(prefix);
+    await expect(diagnostic).not.toContainText("backend parser crashed");
+  });
+}
+
+test("shows a structured validation failure context once in Diagnostics", async ({ mount, page }) => {
+  await mount(<CalculatedColumnHarness scenario="matrix" />);
+  await page.getByRole("button", { name: "Calculated Column" }).click();
+  await formulaTextbox(page).fill("FORCE_VALIDATION_THROW()");
+  await expect(page.locator(".sp-calculated-column-diagnostic")).toHaveText('Validation failed: Unexpected token near ")"');
+  await expect(page.getByText('Validation failed: Unexpected token near ")"', { exact: true })).toHaveCount(1);
+});
+
 test("announces calculated-column dialogs by mode-correct accessible role and name", async ({ mount, page }) => {
   await mount(<CalculatedColumnHarness scenario="matrix" />);
 
