@@ -338,6 +338,11 @@
     }
   },
   "postgresDataLink": {
+    "validation": {
+      "required": "请填写{{field}}。",
+      "portRange": "请输入 1 至 65535 之间的整数。",
+      "timeoutRange": "请输入 1 至 300 秒之间的整数。"
+    },
     "title": "PostgreSQL 数据链接",
     "sessionOnly": "凭据仅保留在此对话框中",
     "connection": "连接",

@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { dataLinkService } from "@/services/dataLinkService";
 import { createServerConnectionDefinition } from "@/utils/serverConnectionDefaults";
+import { validateServerConnection, type ServerConnectionField } from "@/utils/serverConnectionValidation";
 import { createServerImportItems, hasServerImportNameConflict, runServerImportBatch, type ServerImportItem } from "@/utils/serverImportBatch";
 import type {
   ConnectionCredentials,
@@ -67,6 +68,21 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
   };
   const [busy, setBusy] = useState<"connection" | "objects" | "preview" | "import" | null>(null);
   const [error, setError] = useState<DataLinkError | null>(null);
+  const formId = useId();
+  const fieldErrors = validateServerConnection(definition, credentials);
+  const hasFieldErrors = Object.keys(fieldErrors).length > 0;
+  const fieldProps = (field: ServerConnectionField) => ({
+    "aria-labelledby": `${formId}-${field}-label`,
+    "aria-invalid": Boolean(fieldErrors[field]),
+    "aria-describedby": fieldErrors[field] ? `${formId}-${field}-error` : undefined,
+  });
+  const fieldHint = (field: ServerConnectionField) => {
+    const code = fieldErrors[field];
+    if (!code) return null;
+    return <span className="postgres-field-error" id={`${formId}-${field}-error`}>
+      {t(`postgresDataLink.validation.${code}`, { field: t(`postgresDataLink.${field}`) })}
+    </span>;
+  };
 
   const setConnector = (connector: "postgresql" | "mysql") => {
     if (definition.connector === connector || busy !== null) return;
@@ -113,6 +129,7 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
   };
 
   const testConnection = async () => {
+    if (isBusy || hasFieldErrors) return;
     setBusy("connection");
     setError(null);
     try {
@@ -227,28 +244,34 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
             </div>
             <div className="postgres-connection-grid">
               <label>
-                <span>{t("postgresDataLink.host", { defaultValue: "Host" })}</span>
-                <input value={definition.host} onChange={(event) => setDefinitionField("host", event.target.value)} disabled={isBusy} />
+                <span id={`${formId}-host-label`}>{t("postgresDataLink.host", { defaultValue: "Host" })}</span>
+                <input {...fieldProps("host")} value={definition.host} onChange={(event) => setDefinitionField("host", event.target.value)} disabled={isBusy} />
+                {fieldHint("host")}
               </label>
               <label>
-                <span>{t("postgresDataLink.port", { defaultValue: "Port" })}</span>
-                <input type="number" min={1} max={65535} value={definition.port} onChange={(event) => setDefinitionField("port", Number(event.target.value))} disabled={isBusy} />
+                <span id={`${formId}-port-label`}>{t("postgresDataLink.port", { defaultValue: "Port" })}</span>
+                <input {...fieldProps("port")} type="number" min={1} max={65535} step={1} value={definition.port} onChange={(event) => setDefinitionField("port", Number(event.target.value))} disabled={isBusy} />
+                {fieldHint("port")}
               </label>
               <label>
-                <span>{t("postgresDataLink.database", { defaultValue: "Database" })}</span>
-                <input value={definition.database} onChange={(event) => setDefinitionField("database", event.target.value)} disabled={isBusy} />
+                <span id={`${formId}-database-label`}>{t("postgresDataLink.database", { defaultValue: "Database" })}</span>
+                <input {...fieldProps("database")} value={definition.database} onChange={(event) => setDefinitionField("database", event.target.value)} disabled={isBusy} />
+                {fieldHint("database")}
               </label>
               <label>
-                <span>{t("postgresDataLink.username", { defaultValue: "Username" })}</span>
-                <input value={credentials.username} autoComplete="username" onChange={(event) => setCredentialField("username", event.target.value)} disabled={isBusy} />
+                <span id={`${formId}-username-label`}>{t("postgresDataLink.username", { defaultValue: "Username" })}</span>
+                <input {...fieldProps("username")} value={credentials.username} autoComplete="username" onChange={(event) => setCredentialField("username", event.target.value)} disabled={isBusy} />
+                {fieldHint("username")}
               </label>
               <label className="postgres-password-field">
-                <span>{t("postgresDataLink.password", { defaultValue: "Password" })}</span>
-                <input type="password" value={credentials.password} autoComplete="current-password" onChange={(event) => setCredentialField("password", event.target.value)} disabled={isBusy} />
+                <span id={`${formId}-password-label`}>{t("postgresDataLink.password", { defaultValue: "Password" })}</span>
+                <input {...fieldProps("password")} type="password" value={credentials.password} autoComplete="current-password" onChange={(event) => setCredentialField("password", event.target.value)} disabled={isBusy} />
+                {fieldHint("password")}
               </label>
               <label>
-                <span>{t("postgresDataLink.timeout", { defaultValue: "Timeout (seconds)" })}</span>
-                <input type="number" min={1} max={300} value={definition.connectTimeoutSeconds} onChange={(event) => setDefinitionField("connectTimeoutSeconds", Number(event.target.value))} disabled={isBusy} />
+                <span id={`${formId}-connectTimeoutSeconds-label`}>{t("postgresDataLink.timeout", { defaultValue: "Timeout (seconds)" })}</span>
+                <input {...fieldProps("connectTimeoutSeconds")} type="number" min={1} max={300} step={1} value={definition.connectTimeoutSeconds} onChange={(event) => setDefinitionField("connectTimeoutSeconds", Number(event.target.value))} disabled={isBusy} />
+                {fieldHint("connectTimeoutSeconds")}
               </label>
               <label>
                 <span>{t("postgresDataLink.tlsMode", { defaultValue: "TLS mode" })}</span>
@@ -276,7 +299,7 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
             </div>
             <div className="postgres-connection-actions">
               <span><i className="fa-solid fa-shield-halved" aria-hidden="true" /> {t("postgresDataLink.credentialsNote", { defaultValue: "Password is discarded when this dialog closes" })}</span>
-              <button className="btn-text" onClick={() => void testConnection()} disabled={isBusy || !credentials.password}>
+              <button className="btn-text" onClick={() => void testConnection()} disabled={isBusy || hasFieldErrors}>
                 {busy === "connection"
                   ? t("postgresDataLink.testing", { defaultValue: "Testing..." })
                   : t("postgresDataLink.test", { defaultValue: "Test connection" })}
