@@ -46,6 +46,12 @@ export interface PendingHistoryAction {
   action: TableHistoryAction;
 }
 
+export interface HistoryErrorNotification {
+  id: number;
+  datasetId: string | null;
+  message: string;
+}
+
 /** A single history entry — stores the dataset state AFTER this operation */
 export interface HistoryEntry {
   id: string;

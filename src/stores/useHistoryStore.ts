@@ -3,6 +3,7 @@ import { dataService } from "@/services/dataService";
 import { historyService } from "@/services/historyService";
 import type {
   HistoryEntry,
+  HistoryErrorNotification,
   NamedSnapshot,
   PendingHistoryAction,
   TableHistoryAction,
@@ -24,6 +25,11 @@ import { assertProjectMutable } from "@/utils/saveReadOnly";
 
 const MAX_HISTORY = 100;
 let historyEpoch = 0;
+let historyErrorSequence = 0;
+
+function createHistoryErrorNotification(error: unknown, datasetId: string | null): HistoryErrorNotification {
+  return { id: ++historyErrorSequence, datasetId, message: String(error) };
+}
 
 let _idCounter = 0;
 function nextId(): string {
@@ -35,9 +41,19 @@ function nowISO(): string {
 }
 
 function dropDiscardedChangeSets(previous: HistoryEntry[], next: HistoryEntry[]): void {
+  const requestEpoch = historyEpoch;
   for (const changeSetId of discardedChangeSetIds(previous, next)) {
+    const datasetId = previous.find((entry) => entry.action?.kind === "changeSet"
+      && entry.action.changeSetId === changeSetId)?.action?.datasetId ?? null;
     void dataService.dropTableChangeSet(changeSetId).catch((error) => {
-      useHistoryStore.setState({ historyError: String(error) });
+      if (historyEpoch !== requestEpoch) {
+        console.error("History cleanup failed after project transition", changeSetId, error);
+        return;
+      }
+      useHistoryStore.setState({
+        historyError: String(error),
+        historyErrorNotification: createHistoryErrorNotification(error, datasetId),
+      });
     });
   }
 }
@@ -64,6 +80,8 @@ interface HistoryStore {
   historyRevision: number;
   dataRevision: number;
   historyError: string | null;
+  historyErrorNotification: HistoryErrorNotification | null;
+  consumeHistoryError: (id: number, datasetId: string) => string | null;
   tableMutationDepth: number;
 
   /** Record a new action with optional afterState for undo/redo */
@@ -107,7 +125,15 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   historyRevision: 0,
   dataRevision: 0,
   historyError: null,
+  historyErrorNotification: null,
   tableMutationDepth: 0,
+
+  consumeHistoryError: (id, datasetId) => {
+    const notification = get().historyErrorNotification;
+    if (!notification || notification.id !== id || notification.datasetId !== datasetId) return null;
+    set({ historyErrorNotification: null });
+    return notification.message;
+  },
 
   record: (description: string, afterState?: unknown) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
@@ -173,7 +199,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     if (transition) {
       const request = transition.request;
       const requestEpoch = historyEpoch;
-      set({ ...transition.state, pendingAction: request, historyError: null });
+      set({ ...transition.state, pendingAction: request, historyError: null, historyErrorNotification: null });
       try {
         let nextGeneration: number | null = null;
         if (request.action.kind === "cells") {
@@ -223,6 +249,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
               currentIdx: Math.max(0, state.currentIdx - 1),
               pendingAction: null,
               historyError: String(error),
+              historyErrorNotification: createHistoryErrorNotification(error, request.action.datasetId),
             }
           : state);
       }
@@ -243,7 +270,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     if (transition) {
       const request = transition.request;
       const requestEpoch = historyEpoch;
-      set({ ...transition.state, pendingAction: request, historyError: null });
+      set({ ...transition.state, pendingAction: request, historyError: null, historyErrorNotification: null });
       try {
         let nextGeneration: number | null = null;
         if (request.action.kind === "cells") {
@@ -293,6 +320,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
               currentIdx: Math.min(state.history.length, state.currentIdx + 1),
               pendingAction: null,
               historyError: String(error),
+              historyErrorNotification: createHistoryErrorNotification(error, request.action.datasetId),
             }
           : state);
       }
@@ -370,9 +398,9 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   },
 
   reset: () => {
-    historyEpoch += 1;
     dropDiscardedChangeSets(get().history, []);
-    set({ history: [], snapshots: [], currentIdx: -1, pendingRestore: null, pendingAction: null, historyError: null, tableMutationDepth: 0 });
+    historyEpoch += 1;
+    set({ history: [], snapshots: [], currentIdx: -1, pendingRestore: null, pendingAction: null, historyError: null, historyErrorNotification: null, tableMutationDepth: 0 });
   },
 
   loadFromProject: (
@@ -385,6 +413,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       ? -1
       : Math.max(0, Math.min(storedHistory.length, currentIdx));
     dropDiscardedChangeSets(get().history, []);
-    set({ history: storedHistory, snapshots, currentIdx: restoredCurrentIdx });
+    historyEpoch += 1;
+    set({ history: storedHistory, snapshots, currentIdx: restoredCurrentIdx, pendingAction: null, pendingRestore: null, tableMutationDepth: 0, historyError: null, historyErrorNotification: null });
   },
 }));

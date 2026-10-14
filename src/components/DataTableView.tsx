@@ -1084,7 +1084,8 @@ export function DataTableView({
     redo: historyRedo,
     pendingRestore,
     historyRevision,
-    historyError,
+    historyErrorNotification,
+    consumeHistoryError,
     pendingAction,
     tryBeginTableMutation: tryBeginHistoryTableMutation,
     endTableMutation: endHistoryTableMutation,
@@ -2354,8 +2355,10 @@ export function DataTableView({
   }, [pendingRestore, clearPendingRestore]);
 
   useEffect(() => {
-    if (historyError) setErrorMsg(historyError);
-  }, [historyError]);
+    if (!historyErrorNotification) return;
+    const message = consumeHistoryError(historyErrorNotification.id, datasetId);
+    if (message) setErrorMsg(message);
+  }, [historyErrorNotification, datasetId, consumeHistoryError]);
 
   useEffect(() => {
     if (historyRevision === 0) return;
