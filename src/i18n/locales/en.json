@@ -342,6 +342,11 @@
     }
   },
   "postgresDataLink": {
+    "validation": {
+      "required": "{{field}} is required.",
+      "portRange": "Enter a whole number from 1 to 65535.",
+      "timeoutRange": "Enter a whole number from 1 to 300 seconds."
+    },
     "title": "PostgreSQL DataLink",
     "sessionOnly": "Credentials remain in this dialog only",
     "connection": "Connection",

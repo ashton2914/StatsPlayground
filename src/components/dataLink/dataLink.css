@@ -488,6 +488,20 @@
   grid-column: span 2;
 }
 
+.postgres-connection-grid input[aria-invalid="true"] {
+  border-color: var(--fg-error, #ef4444);
+}
+
+.postgres-field-error {
+  color: var(--fg-error, #ef4444);
+  line-height: 1.4;
+}
+
+.postgres-connection-actions button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
 .postgres-ca-field {
   grid-column: 1 / -1;
 }

@@ -4,8 +4,9 @@ import i18n from "../src/i18n";
 import { PostgresDataLinkDialog } from "../src/components/dataLink/PostgresDataLinkDialog";
 import { dataLinkService } from "../src/services/dataLinkService";
 
-export function DataLinkHarness() {
+export function DataLinkHarness({ language = "en" }: { language?: string }) {
   const [ready, setReady] = useState(false);
+  const [connectionCalls, setConnectionCalls] = useState(0);
 
   useEffect(() => {
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
@@ -15,7 +16,7 @@ export function DataLinkHarness() {
     const previousPreviewObject = dataLinkService.previewServerObject;
     let active = true;
 
-    dataLinkService.testServerConnection = async () => {};
+    dataLinkService.testServerConnection = async () => { setConnectionCalls((count) => count + 1); };
     dataLinkService.listServerObjects = async () => [{
       catalog: "sales",
       schema: "public",
@@ -44,7 +45,7 @@ export function DataLinkHarness() {
       truncated: false,
     });
 
-    void i18n.changeLanguage("en").then(() => {
+    void i18n.changeLanguage(language).then(() => {
       if (active) setReady(true);
     });
 
@@ -56,15 +57,18 @@ export function DataLinkHarness() {
       dataLinkService.previewServerObject = previousPreviewObject;
       void i18n.changeLanguage(previousLanguage);
     };
-  }, []);
+  }, [language]);
 
   if (!ready) return null;
 
   return (
+    <>
+    <output aria-label="Connection test calls">{connectionCalls}</output>
     <PostgresDataLinkDialog
       existingDatasetNames={[]}
       onClose={() => {}}
       onImported={async () => {}}
     />
+    </>
   );
 }
