@@ -165,14 +165,6 @@ function formatDiagnosticMessage(
   return t(`dataTable.calculatedColumn.diagnostics.${code}.message`, params);
 }
 
-function formatValidationErrorMessage(
-  t: ReturnType<typeof useTranslation>["t"],
-  error: unknown,
-): string {
-  const safeContext = extractSafeContext(error);
-  return formatDiagnosticMessage(t, "validationFailed", {}, safeContext);
-}
-
 function diagnosticDetail(
   t: ReturnType<typeof useTranslation>["t"],
   diagnostic: CalculatedColumnDiagnostic,
@@ -253,7 +245,6 @@ export function CalculatedColumnDialog({
   const [outputName, setOutputName] = useState(initialOutputName);
   const [searchText, setSearchText] = useState("");
   const [validatedKey, setValidatedKey] = useState<string | null>(null);
-  const [validationError, setValidationError] = useState<string | null>(null);
   const [validationRevision, setValidationRevision] = useState(0);
   const [requiresRevalidation, setRequiresRevalidation] = useState(false);
   const [validating, setValidating] = useState(false);
@@ -329,7 +320,6 @@ export function CalculatedColumnDialog({
   useEffect(() => {
     if (!outputName.trim() || !editorState.draftText.trim()) {
       setValidatedKey(null);
-      setValidationError(null);
       setDiagnostics([]);
       setDefinitionDependencyIds([]);
       setWarningCount({ total: 0, expression: 0, dependencyGraph: 0, validation: 0 });
@@ -373,14 +363,12 @@ export function CalculatedColumnDialog({
         setWarningCount(result.warningCount);
         setLastStatus(result.status);
         setInferredOutputType(result.definition.inferredOutputType);
-        setValidationError(null);
         if (isExplicitRevalidation) {
           requiresRevalidationRef.current = false;
           setRequiresRevalidation(false);
         }
       }).catch((error) => {
         if (requestSeqRef.current !== seq) return;
-        const renderedValidationError = formatValidationErrorMessage(t, error);
         const diagnosticPayload = serializeDiagnosticPayload(error);
         setValidating(false);
         dispatch({
@@ -400,7 +388,6 @@ export function CalculatedColumnDialog({
         setWarningCount({ total: 0, expression: 0, dependencyGraph: 0, validation: 0 });
         setLastStatus("broken");
         setInferredOutputType("unknown");
-        setValidationError(renderedValidationError);
       });
     }, 150);
 
@@ -427,7 +414,6 @@ export function CalculatedColumnDialog({
   const handleRevalidate = () => {
     if (!outputName.trim() || !editorState.draftText.trim()) return;
     setValidatedKey(null);
-    setValidationError(null);
     setLastStatus("pending");
     explicitRevalidationRef.current = true;
     setValidationRevision((value) => value + 1);
@@ -554,12 +540,6 @@ export function CalculatedColumnDialog({
                 </button>
               </div>
             )}
-            {validationError && (
-              <div className="sp-calculated-column-banner is-error" role="alert">
-                <i className="fa-solid fa-triangle-exclamation" aria-hidden="true" />
-                <span>{validationError}</span>
-              </div>
-            )}
           </div>
           <div className="sp-calculated-column-side">
             <label className="sp-dialog-label" htmlFor="calculated-column-search">
@@ -603,12 +583,12 @@ export function CalculatedColumnDialog({
                   ))}
                 </div>
               </div>
-              <div>
+              <div role={hasBlockingDiagnostics(diagnostics) ? "alert" : undefined}>
                 <div className="sp-calculated-column-meta-title">{t("dataTable.calculatedColumn.fields.diagnostics")}</div>
                 <ul className="sp-calculated-column-diagnostics">
                   {diagnostics.length === 0 ? <li className="sp-calculated-column-empty">{t("common.empty")}</li> : diagnostics.map((diagnostic, index) => (
                     <li key={`${diagnostic.code}:${index}`} className={`sp-calculated-column-diagnostic is-${diagnostic.level}`}>
-                      <span>{diagnosticLabel(t, diagnostic)}</span>
+                      {diagnostic.code !== "validationFailed" && <span>{diagnosticLabel(t, diagnostic)}</span>}
                       <span>{diagnosticDetail(t, diagnostic, descriptorNameById)}</span>
                     </li>
                   ))}
