@@ -331,7 +331,9 @@
 }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
 .graph-new-reset {
-  position: absolute;
+  position: static;
+  margin-left: auto;
+  flex: 0 0 auto;
   top: 2px;
   right: 2px;
   width: 28px;
@@ -469,3 +471,11 @@
     display: none;
   }
 }
+.graph-builder-new-radius-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2ch;
+  gap: 4px;
+  font-size: 12px;
+}
+.graph-builder-new-radius-control input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-width: 0; }
+.graph-builder-new-radius-control output { grid-column: 2; grid-row: 1; text-align: right; }

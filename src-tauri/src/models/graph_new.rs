@@ -54,6 +54,19 @@ mod camera_tests {
     use super::GraphNewCameraDomain;
 
     #[test]
+    fn graph_new_camera_json_preserves_every_coordinate_bit() {
+        let raw = r#"{"xMin":-1.6819029443326245,"xMax":1.1548438281313633,"yMin":-3.8412504185124092,"yMax":1.1548438281313633}"#;
+        let camera: GraphNewCameraDomain = serde_json::from_str(raw).unwrap();
+        for (actual, decimal) in [(camera.x_min, "-1.6819029443326245"),
+            (camera.x_max, "1.1548438281313633"), (camera.y_min, "-3.8412504185124092"),
+            (camera.y_max, "1.1548438281313633")] {
+            assert_eq!(actual.to_bits(), decimal.parse::<f64>().unwrap().to_bits());
+        }
+        let roundtrip: GraphNewCameraDomain = serde_json::from_str(&serde_json::to_string(&camera).unwrap()).unwrap();
+        assert_eq!(camera, roundtrip);
+    }
+
+    #[test]
     fn graph_new_camera_domain_checks_extreme_and_tiny_spans() {
         for (min, max) in [(1e-280, 2e-280), (1e300, 1.01e300)] {
             GraphNewCameraDomain { x_min: min, x_max: max, y_min: min, y_max: max }.validate().expect("finite ordered");
@@ -111,6 +124,8 @@ pub struct GraphNewRenderRequest {
     #[serde(default)]
     pub show_mean: bool,
     #[serde(default)]
+    pub point_radius: Option<u32>,
+    #[serde(default)]
     pub x_mode: GraphNewXMode,
     #[serde(default)]
     pub raw_mode: GraphNewRawMode,
@@ -122,6 +137,7 @@ pub struct GraphNewRenderRequest {
 
 impl GraphNewRenderRequest {
     pub fn validate(&self) -> Result<(), AppError> {
+    if self.point_radius.is_some_and(|radius| radius > 8) { return Err(AppError::InvalidParam("graph_new_invalid_request".into())); }
     if let Some(domain) = self.camera_domain { domain.validate()?; }
         let valid_ids = [&self.request_id, &self.session_id, &self.dataset_id, &self.x_column_id, &self.y_column_id]
             .iter().all(|id| !id.trim().is_empty() && id.len() <= 256 && id.trim() == id.as_str());
@@ -189,6 +205,8 @@ pub struct GraphNewRenderCompletion {
     pub finite_rows: u64,
     pub excluded_non_finite_rows: u64,
     pub selected_marks: usize,
+    #[serde(default)]
+    pub pixel_aggregated: bool,
     pub mean_available: bool,
     pub mean_groups: Option<usize>,
     pub mean_visible: bool,

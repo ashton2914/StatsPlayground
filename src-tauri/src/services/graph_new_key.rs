@@ -6,7 +6,7 @@ use crate::models::graph_new_data::{
     GRAPH_NEW_DEFAULT_DOMAIN_POLICY, GRAPH_NEW_MAX_LEVELS, GRAPH_NEW_MAX_TILE_POINTS,
 };
 
-pub const GRAPH_NEW_RENDERER_CONTRACT_VERSION: u16 = 2;
+pub const GRAPH_NEW_RENDERER_CONTRACT_VERSION: u16 = 3;
 pub const GRAPH_NEW_TILE_FORMAT_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

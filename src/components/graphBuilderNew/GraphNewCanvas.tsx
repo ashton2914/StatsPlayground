@@ -36,6 +36,7 @@ type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xC
   xTitle: string;
   yTitle: string;
   showMean: boolean;
+  pointRadius?: number;
   hiddenOverlayGroupIds?: string[];
   onMeanAvailabilityChange?: (available: boolean | null) => void;
   onOverlayStateChange?: (state: { active: boolean; groups: GraphNewOverlayGroup[] }) => void;
@@ -76,7 +77,7 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, pointRadius, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
@@ -141,7 +142,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     const element = host.current;
     const plotElement = plotHost.current;
     if (!element || !plotElement) return;
-    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode]);
+    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode, rawMode === "line"]);
     if (cameraState.current?.identity !== identity) {
       cameraState.current = { identity, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
       setCameraRestoreRejected(false);
@@ -272,7 +273,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         setReason(null);
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
-          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
+          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, pointRadius, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -344,7 +345,9 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           const visibleStatus = completion.visibleRows === null
             ? `${completion.selectedMarks.toLocaleString()} submitted; visible count unknown`
             : `${completion.visibleRows.toLocaleString()} visible; ${completion.selectedMarks.toLocaleString()} submitted`;
-          setStatus(`${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
+          setStatus(completion.pixelAggregated
+            ? `Full data: ${completion.visibleRows?.toLocaleString()} visible points; ${completion.selectedMarks.toLocaleString()} colored pixels; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`
+            : `${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
           if (cameraDomain === null && retained.restorePending) {
             retained.restorePending = false;
             const saved = persistence.current.savedCamera;
@@ -412,20 +415,23 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, xMode, rawMode, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, t]);
 
   return (
     <div className="graph-new-chart">
       <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
         {rawMode !== "line" && <span className="graph-new-legend-item"><span className="graph-new-point-swatch" aria-hidden="true" />{t("graphNew.points")}</span>}
         {rawMode !== "scatter" && <span className="graph-new-legend-item"><span className="graph-new-line-swatch" aria-hidden="true" />{t("graphNew.rawLine", { defaultValue: "Raw line" })}</span>}
-        {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable: complete data was not retained." })}</span>}
+        {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable for this view." })}</span>}
         {meanFrame?.visible && <span className="graph-new-legend-item" data-testid="mean-legend">
           <span className="graph-new-mean-swatch" aria-hidden="true" />{t("graphNew.mean")}
         </span>}
         {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
         {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
           && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
+        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
+          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
+        </button>
       </div>
       <span className="graph-new-y-title" data-testid="y-axis-title">{yTitle}</span>
       <div className="graph-new-canvas-host" ref={host}>
@@ -437,9 +443,6 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
-        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
-          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
-        </button>
       </div>
       <span className="graph-new-x-title" data-testid="x-axis-title">{xTitle}</span>
       <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>

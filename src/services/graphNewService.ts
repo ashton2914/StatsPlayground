@@ -63,6 +63,7 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   devicePixelRatio: number;
   cameraDomain?: CameraDomain | null;
   showMean?: boolean;
+  pointRadius?: number;
   xMode?: GraphNewXMode;
   rawMode?: GraphNewRawMode;
   overlayColumnId?: string | null;
@@ -89,6 +90,7 @@ export interface GraphNewRenderCompletion {
   finiteRows: number;
   excludedNonFiniteRows: number;
   selectedMarks: number;
+  pixelAggregated?: boolean;
   meanAvailable?: boolean;
   meanGroups?: number | null;
   meanVisible?: boolean;
@@ -131,6 +133,7 @@ function safeReason(error: unknown): string {
 function validateRenderRequest(request: GraphNewRenderRequest): void {
   if (request.xMode !== undefined && !["auto", "numeric", "time", "duration", "category"].includes(request.xMode)) throw new Error("graph_new_invalid_request");
   if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
+  if (request.pointRadius !== undefined && (!Number.isInteger(request.pointRadius) || request.pointRadius < 0 || request.pointRadius > 8)) throw new Error("graph_new_invalid_request");
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
   if (request.cameraDomain != null && !isCameraDomain(request.cameraDomain)) throw new Error("graph_new_invalid_request");
   if (request.overlayColumnId != null && (typeof request.overlayColumnId !== "string"
@@ -228,6 +231,7 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
   }
   const submitsWholeGeometry = completion?.exactVisible === true
     && completion.selectedMarks === completion.finiteRows;
+  const pixelAggregated = completion?.pixelAggregated === true;
   if (!completion || completion.requestId !== request.requestId
     || completion.width !== Math.ceil(request.width * request.devicePixelRatio)
     || completion.height !== Math.ceil(request.height * request.devicePixelRatio)
@@ -238,12 +242,13 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
     || typeof completion.exactVisible !== "boolean"
     || (completion.visibleRows !== null && (!Number.isSafeInteger(completion.visibleRows)
       || completion.visibleRows < 0 || completion.visibleRows > completion.finiteRows
-      || (!submitsWholeGeometry && completion.selectedMarks > completion.visibleRows)))
+      || (!pixelAggregated && !submitsWholeGeometry && completion.selectedMarks > completion.visibleRows)))
     || (completion.exactVisible && (completion.visibleRows === null
-      || (!submitsWholeGeometry && completion.selectedMarks !== completion.visibleRows)))
+      || (!pixelAggregated && !submitsWholeGeometry && completion.selectedMarks !== completion.visibleRows)))
     || completion.rawBlocksInspected > completion.rawIndexEntriesInspected
     || completion.rawPointsInspected > completion.finiteRows
-    || completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 2_100_000
+    || (completion.pixelAggregated !== undefined && typeof completion.pixelAggregated !== "boolean")
+    || (!pixelAggregated && (completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 2_100_000))
     || [completion.buildMs, completion.renderMs, completion.readbackMs].some((value) => !Number.isFinite(value) || value < 0)
     || !completion.cameraDomain || !completion.plotRect
     || [completion.cameraDomain.xMin, completion.cameraDomain.xMax, completion.cameraDomain.yMin, completion.cameraDomain.yMax].some((value) => !Number.isFinite(value))
@@ -253,6 +258,7 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
     || completion.plotRect.width === 0 || completion.plotRect.height === 0
     || completion.plotRect.x + completion.plotRect.width > completion.width
     || completion.plotRect.y + completion.plotRect.height > completion.height
+    || (pixelAggregated && (!completion.exactVisible || completion.selectedMarks > completion.plotRect.width * completion.plotRect.height))
     || (request.cameraDomain != null && (completion.sourceProjectionQueryCount !== 0
       || (Object.keys(request.cameraDomain) as (keyof CameraDomain)[]).some((key) => request.cameraDomain![key] !== completion.cameraDomain[key])))) {
     throw new Error("graph_new_render_failed");

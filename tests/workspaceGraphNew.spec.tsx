@@ -349,3 +349,21 @@ for (const width of [1280, 600]) {
     expect(graph!.x + graph!.width).toBeLessThanOrEqual(width + 1);
   });
 }
+
+test("pixel radius requests and line policy changes rebuild before restoring camera", async ({ mount, page }) => {
+  const component = await mount(<WorkspaceGraphNewHarness />);
+  const requests = () => page.evaluate(() => (window as any).__workspacePersistence.snapshot().renderRequests);
+  await component.getByTestId("graph-new-document-native-one").click();
+  await expect.poll(async () => (await requests()).at(-1)?.cameraDomain).toEqual({ xMin: 25, xMax: 75, yMin: 25, yMax: 75 });
+  const reset = await component.getByRole("button", { name: "Reset view", exact: true }).boundingBox();
+  const plot = await component.getByTestId("camera-plot").boundingBox();
+  expect(reset!.y + reset!.height).toBeLessThanOrEqual(plot!.y);
+  const before = (await requests()).length;
+  await component.getByLabel("Raw series").selectOption("scatter");
+  await expect.poll(async () => (await requests()).length).toBeGreaterThan(before + 1);
+  const changed = (await requests()).slice(before);
+  expect(changed[0].cameraDomain).toBeNull();
+  expect(changed.at(-1).cameraDomain).toEqual({ xMin: 25, xMax: 75, yMin: 25, yMax: 75 });
+  await component.getByLabel("Point radius (px)").fill("4");
+  await expect.poll(async () => (await requests()).at(-1)?.pointRadius).toBe(4);
+});

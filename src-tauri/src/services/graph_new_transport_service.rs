@@ -528,7 +528,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn planned_gpu_bytes(&self, width: u32, height: u32, scene: Option<&GraphNewScene>) -> Result<u64, AppError> {
         let target_bytes = if self.target.as_ref().is_some_and(|target| target.width == width && target.height == height) { 0 }
             else { u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height) };
-        let upload_bytes = scene.map_or(0, |scene| scene.point_upload_bytes() + 1024 * 40 + 64
+        let upload_bytes = scene.map_or(0, |scene| scene.presentation.raster.as_ref().map_or(0, |r| r.rgba.len() as u64 * 2) + scene.point_upload_bytes() + 1024 * 40 + 64
             + scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16)
             + scene.raw_upload_bytes()
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
@@ -549,6 +549,9 @@ fn fs_main() -> @location(0) vec4<f32> {
         }
         if let Some(failure) = self.failure() { return Err(failure.error()); }
         let render_started = Instant::now();
+        if scene.is_some_and(|s| s.presentation.raster.is_none()) {
+            if let Some(pipeline) = self.scene_pipeline.as_mut() { pipeline.reclaim_inactive_raster(); }
+        }
         let mut planned = self.planned_gpu_bytes(width, height, scene)?;
         if self.failure().is_none() && planned > super::graph_new_cache::DEFAULT_GPU_BYTES && scene.is_some_and(|scene| scene.mean.is_none()) {
             if let Some(pipeline) = self.scene_pipeline.as_mut() {
@@ -1097,7 +1100,7 @@ mod tests {
             }).collect::<Vec<_>>());
             let (overlay, enabled_groups) = all_rows_overlay();
             let mut scene = GraphNewScene {
-                presentation: super::super::graph_new_renderer::ScenePresentation { raw_line: Some(indices.clone()), show_points, x_axis: None },
+                presentation: super::super::graph_new_renderer::ScenePresentation { raw_line: Some(indices.clone()), show_points, x_axis: None, ..Default::default() },
                 width: 1920, height: 1080, device_pixel_ratio: 1.0,
                 domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
                 points: (0..2_000_000).map(|index| SourcePoint::new(index + 1, index as f64 / 1_999_999.0, 0.5)).collect(),
@@ -1152,6 +1155,7 @@ mod tests {
                 raw_line: Some(indices),
                 show_points: false,
                 x_axis: None,
+                ..Default::default()
             },
             width: 1920,
             height: 1080,

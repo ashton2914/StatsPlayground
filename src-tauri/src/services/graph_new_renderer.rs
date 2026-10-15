@@ -34,13 +34,15 @@ pub(crate) struct GraphNewScene {
 
 #[derive(Clone)]
 pub(crate) struct ScenePresentation {
+    pub(crate) raster: Option<Arc<super::graph_new_pixels::PixelRaster>>,
+    pub(crate) point_radius: Option<u32>,
     pub(crate) raw_line: Option<Arc<Vec<GroupedLineSegment>>>,
     pub(crate) show_points: bool,
     pub(crate) x_axis: Option<crate::models::graph_new::GraphNewAxis>,
 }
 
 impl Default for ScenePresentation {
-    fn default() -> Self { Self { raw_line: None, show_points: true, x_axis: None } }
+    fn default() -> Self { Self { raster: None, point_radius: None, raw_line: None, show_points: true, x_axis: None } }
 }
 
 impl GraphNewScene {
@@ -154,18 +156,15 @@ impl GraphNewScene {
     }
 
     fn plot(&self) -> [f32; 4] {
-        let ratio = self.device_pixel_ratio;
-        let left = (64.0 * ratio).ceil();
-        let top = (16.0 * ratio).ceil();
-        let right = ((self.width as f64 - 16.0) * ratio).floor();
-        let bottom = ((self.height as f64 - 32.0) * ratio).floor();
-        [
-            left as f32,
-            top as f32,
-            (right - left) as f32,
-            (bottom - top) as f32,
-        ]
+        pixel_plot(self.width, self.height, self.device_pixel_ratio).map(|v| v as f32)
     }
+
+}
+
+pub(crate) fn pixel_plot(width:u32,height:u32,ratio:f64)->[u32;4] {
+    let left=(64.*ratio).ceil() as u32;let top=(16.*ratio).ceil() as u32;
+    let right=((width as f64-16.)*ratio).floor() as u32;let bottom=((height as f64-32.)*ratio).floor() as u32;
+    [left,top,right-left,bottom-top]
 }
 
 pub(crate) struct GraphNewRenderer;
@@ -287,6 +286,7 @@ impl PointBasis {
 }
 
 pub(crate) struct ScenePipeline {
+    raster: super::graph_new_pixel_texture::PixelTexture,
     raw_pipeline: wgpu::RenderPipeline,
     raw_clipped_pipeline: wgpu::RenderPipeline,
     grouped_raw_pipeline: wgpu::RenderPipeline,
@@ -463,6 +463,7 @@ impl ScenePipeline {
             multiview_mask: None, cache: None,
         });
         Self {
+            raster: super::graph_new_pixel_texture::PixelTexture::new(device),
             pipeline,
             raw_pipeline,
             raw_clipped_pipeline,
@@ -526,6 +527,7 @@ impl ScenePipeline {
         scene: &GraphNewScene,
     ) -> Result<(), AppError> {
         let (width, height) = scene.physical_size()?;
+        self.raster.prepare(device, queue, scene.presentation.raster.as_deref().filter(|_| scene.presentation.show_points));
         let mut digest = Sha256::new();
         digest.update((scene.points.len() as u64).to_le_bytes());
         for point in &scene.points {
@@ -732,7 +734,7 @@ impl ScenePipeline {
                 width as f32,
                 height as f32,
                 ratio,
-                if scene.points.len() > 50_000 { 1.0 } else { 3.0 },
+                scene.presentation.point_radius.map_or(if scene.points.len() > 50_000 { 1.0 } else { 3.0 }, |r| r as f32 / ratio),
                 camera[0],
                 camera[1],
                 camera[2],
@@ -744,7 +746,7 @@ impl ScenePipeline {
     }
 
     pub(crate) fn cache_stats(&self) -> GraphNewGpuCacheStats {
-        GraphNewGpuCacheStats { allocated_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + 64 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
+        GraphNewGpuCacheStats { allocated_bytes: self.raster.bytes() + self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + 64 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
             geometry_capacity_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity,
             geometry_uploads: self.uploads, geometry_hits: self.hits,
             mean_geometry_uploads: self.mean_uploads, mean_geometry_hits: self.mean_hits }
@@ -762,6 +764,8 @@ impl ScenePipeline {
             + (if mean > self.mean_capacity { mean } else { 0 })
             + (if 1024 * 40 > self.decoration_capacity { 1024 * 40 } else { 0 })
     }
+
+    pub(crate) fn reclaim_inactive_raster(&mut self) { self.raster.clear(); }
 
     pub(crate) fn reclaim_inactive_mean(&mut self, device: &wgpu::Device) {
         if self.mean_capacity <= 24 { return; }
@@ -868,6 +872,9 @@ impl ScenePipeline {
         pass.set_vertex_buffer(0, self.decoration_instances.slice(..));
         pass.draw(0..6, 0..self.decorations);
         pass.set_scissor_rect(self.plot[0], self.plot[1], self.plot[2], self.plot[3]);
+        self.raster.draw(pass);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bindings, &[]);
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.draw(0..6, 0..self.total);
         if self.raw_count > 0 {
@@ -1197,6 +1204,7 @@ mod tests {
                 ])),
                 show_points: true,
                 x_axis: None,
+                ..Default::default()
             },
             width: 240,
             height: 160,

@@ -13,7 +13,7 @@ use crate::error::AppError;
 
 pub const DEFAULT_PROCESS_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_GPU_BYTES: u64 = 256 * 1024 * 1024;
-pub const DEFAULT_DISK_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_DISK_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 struct MemoryPool {
     used: AtomicU64,
@@ -445,6 +445,7 @@ impl GraphNewCacheCoordinator {
     }
 
     pub fn persist(&mut self, key: &str) -> Result<(), AppError> {
+        if self.entries.get(key).is_some_and(|g| g.built.pyramid.pixel_store.is_some()) { return Ok(()); }
         if self.directory.is_none() {
             return Ok(());
         }

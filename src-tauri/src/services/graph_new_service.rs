@@ -209,13 +209,19 @@ impl<'a> GraphNewService<'a> {
                 self.ensure_render_current(request)
             };
             ensure_current()?;
+            let pixel_mode = request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line && {
+                let db = self.state.db.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
+                let rows: u64 = db.conn().query_row("SELECT row_count FROM _meta_datasets WHERE id=$1",
+                    params![request.dataset_id], |row| row.get(0))?;
+                rows > super::graph_new_renderer::MAX_SCENE_POINTS as u64
+            };
             let key = GraphKey::canonical(&GraphKeyParts {
                 dataset_id: request.dataset_id.clone(), dataset_generation: request.dataset_generation,
                 x_column_id: request.x_column_id.clone(), y_column_id: request.y_column_id.clone(),
                 overlay_column_id: request.overlay_column_id.clone(),
                 filter_identity: None, renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
                 tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
-                domain_policy: axis_policy(request.x_mode), levels: build_request.levels,
+                domain_policy: format!("{}{}", axis_policy(request.x_mode), if pixel_mode { "-pixel-v1" } else { "" }), levels: build_request.levels,
                 max_tile_points: build_request.max_tile_points,
             })?;
             let mut build_ms = 0.0;
@@ -235,7 +241,7 @@ impl<'a> GraphNewService<'a> {
                         build_request.construction_memory_limit_bytes,
                         required_disk,
                     )?;
-                    let built = self.build_with_disk_limit(&build_request, &mut |_| {}, &is_current, disk_limit, request.x_mode)?;
+                    let built = self.build_with_disk_limit_pixels(&build_request, &mut |_| {}, &is_current, disk_limit, request.x_mode, pixel_mode)?;
                     source_projection_query_count = built.query_count;
                     build_ms = started.elapsed().as_secs_f64() * 1000.0;
                     construction.retain_completed_build(&built)?;
@@ -260,13 +266,26 @@ impl<'a> GraphNewService<'a> {
             let mean = if request.show_mean { built.pyramid.mean_line(&|| {
                 if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) }
             })? } else { None };
-            let selection = built.pyramid.select_with_control(&GraphCamera {
+            let raster = if let Some(source) = &built.pyramid.pixel_store {
+                let frame = [(request.width as f64 * request.device_pixel_ratio).ceil() as u32,
+                    (request.height as f64 * request.device_pixel_ratio).ceil() as u32];
+                Some(std::sync::Arc::new(source.raster(domain, frame,
+                    super::graph_new_renderer::pixel_plot(request.width, request.height, request.device_pixel_ratio),
+                    request.point_radius.unwrap_or(1), &built.pyramid.overlay, enabled_groups,
+                    &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?))
+            } else { None };
+            let selection = if let Some(raster) = &raster {
+                Ok(super::graph_new_lod::TileSelection { exact: true, visible_rows: Some(raster.visible),
+                    query_work: raster.work, level: 0, selected_mark_count: raster.occupied,
+                    total_source_count: raster.visible, visible_tiles: 0, tiles: Vec::new() })
+            } else { built.pyramid.select_with_control(&GraphCamera {
                 x_min: domain.x_min, x_max: domain.x_max, y_min: domain.y_min, y_max: domain.y_max,
                 viewport_width: request.width, viewport_height: request.height,
                 device_pixel_ratio: request.device_pixel_ratio,
             }, &|| {
                 if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) }
-            });
+            })
+            };
             let selection = match selection {
                 Ok(selection) => selection,
                 Err(error @ AppError::Cancelled(_)) => return Err(error),
@@ -276,7 +295,7 @@ impl<'a> GraphNewService<'a> {
                 }
             };
             let selected_marks = selection.selected_mark_count;
-            let mut points = Vec::with_capacity(selected_marks);
+            let mut points = Vec::with_capacity(if raster.is_some() { 0 } else { selected_marks });
             for selected in selection.tiles {
                 if !is_current() { return Err(AppError::Cancelled("graph_new_cancelled".into())); }
                 for (((row_id, x), y), group_code) in selected
@@ -294,7 +313,7 @@ impl<'a> GraphNewService<'a> {
                 built.pyramid.raw_line(&points, &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?
             } else { None };
             let overlay_active = built.pyramid.overlay.active;
-            let enabled_selected_marks = if overlay_active {
+            let enabled_selected_marks = if let Some(raster) = &raster { raster.occupied } else if overlay_active {
                 points
                     .iter()
                     .filter(|point| enabled_groups.is_enabled(point.group_code))
@@ -302,7 +321,7 @@ impl<'a> GraphNewService<'a> {
             } else {
                 selected_marks
             };
-            let enabled_visible_rows = if overlay_active {
+            let enabled_visible_rows = if let Some(raster) = &raster { Some(raster.visible) } else if overlay_active {
                 selection.visible_rows.map(|_| enabled_selected_marks as u64)
             } else {
                 selection.visible_rows
@@ -358,6 +377,7 @@ impl<'a> GraphNewService<'a> {
                 device_pixel_ratio: request.device_pixel_ratio, domain, points,
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
+                    raster, point_radius: request.point_radius,
                     raw_line: raw_line.clone(), show_points: request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line,
                     x_axis: (x_axis.kind != GraphNewXMode::Numeric).then_some(x_axis.clone()),
                 } };
@@ -397,6 +417,7 @@ impl<'a> GraphNewService<'a> {
                     .map_err(|_| AppError::Stats("graph_new_render_failed".into()))?.as_micros() as u64,
             };
             let mut completion = GraphNewRenderCompletion { request_id: request.request_id.clone(),
+                pixel_aggregated: scene.presentation.raster.is_some(),
                 x_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
                 raw_line_segments: enabled_raw_segments,
@@ -513,6 +534,13 @@ impl<'a> GraphNewService<'a> {
         &self, request: &GraphNewBuildRequest, progress_sink: &mut dyn FnMut(GraphBuildProgress),
         is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode,
     ) -> Result<GraphNewBuildResult, AppError> {
+        self.build_with_disk_limit_pixels(request, progress_sink, is_current, disk_limit, x_mode, false)
+    }
+
+    fn build_with_disk_limit_pixels(
+        &self, request: &GraphNewBuildRequest, progress_sink: &mut dyn FnMut(GraphBuildProgress),
+        is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode, pixels: bool,
+    ) -> Result<GraphNewBuildResult, AppError> {
         request.validate()?;
         self.ensure_current(request, is_current, "before scan")?;
 
@@ -575,7 +603,7 @@ impl<'a> GraphNewService<'a> {
             filter_identity: None,
             renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
             tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
-            domain_policy: axis_policy(x_mode),
+            domain_policy: format!("{}{}", axis_policy(x_mode), if pixels { "-pixel-v1" } else { "" }),
             levels: request.levels,
             max_tile_points: request.max_tile_points,
         })?;
@@ -625,6 +653,7 @@ impl<'a> GraphNewService<'a> {
             request.overdraw_factor,
             request.construction_memory_limit_bytes,
         )?;
+        if pixels { builder.enable_pixel_mode(); }
         builder.limit_disk_to(disk_limit);
         builder.account_input_capacity(request.batch_rows)?;
         let mut batch = Vec::new();
@@ -2211,7 +2240,7 @@ mod tests {
     #[test]
     fn graph_new_render_ownership_fences_switch_cancel_close_and_old_requests() {
         let runtime = super::GraphNewRuntime::default();
-        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest {
+        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { point_radius: None,
             request_id: format!("request-{generation}"), session_id: session.into(),
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
@@ -2314,7 +2343,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "render-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { request_id: "r1".into(), session_id: "s1".into(),
+        let mut request = GraphNewRenderRequest { point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2359,7 +2388,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "error-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { request_id: "error-1".into(), session_id: "error-session".into(),
+        let mut request = GraphNewRenderRequest { point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2401,7 +2430,7 @@ mod tests {
         use crate::error::AppError;
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "concurrent-fixture");
-        let request = GraphNewRenderRequest { request_id: "first".into(), session_id: "session".into(),
+        let request = GraphNewRenderRequest { point_radius: None, request_id: "first".into(), session_id: "session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2585,6 +2614,41 @@ mod tests {
         drop(db);
 
         (columns[0].clone(), columns[1].clone(), columns[2].clone())
+    }
+
+    #[test]
+    fn graph_new_pixels_massive_service_uses_all_source_and_native_texture() {
+        let state = AppState::new().expect("state");
+        let count=super::super::graph_new_renderer::MAX_SCENE_POINTS as u64+1;
+        let (x,y)=seed_dense_dataset(&state,"pixelnative",count);
+        state.db.lock().unwrap().conn().execute(
+            "UPDATE dataset_pixelnative SET x_value=CASE WHEN _row_id=$1 THEN 0.93 ELSE 0.25 END, y_value=CASE WHEN _row_id=$1 THEN 0.88 ELSE 0.25 END",params![count]).unwrap();
+        let mut request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({
+            "requestId":"pixel-native-1","sessionId":"pixel-native","datasetId":"pixelnative","datasetGeneration":0,
+            "xColumnId":x,"yColumnId":y,"width":360,"height":240,"devicePixelRatio":2,
+            "rendererGeneration":1,"cameraGeneration":0,"pointRadius":0,"showMean":false
+        })).unwrap();
+        let service=GraphNewService::new(&state);
+        let first=service.render_with(&request,|scene|{
+            assert!(scene.points.is_empty(),"no representative-point GPU geometry");
+            let raster=scene.presentation.raster.as_ref().expect("complete-source raster");
+            assert_eq!(raster.visible,count);assert_eq!(raster.occupied,2);
+            let frame=super::GraphNewRenderer::render(scene)?;
+            let p=scene.plot_rect();
+            let u=(((0.93-scene.domain.x_min)/(scene.domain.x_max-scene.domain.x_min)*p.width as f64).floor()as u32).min(p.width-1);
+            let v=(((0.88-scene.domain.y_min)/(scene.domain.y_max-scene.domain.y_min)*p.height as f64).floor()as u32).min(p.height-1);
+            let offset=((p.y+p.height-1-v)*720+p.x+u)as usize*4;
+            assert_eq!(&frame.rgba[offset..offset+4],&[31,111,235,255],"outlier reaches native GPU readback");
+            Ok(frame)
+        },&mut|_,_|Ok(())).expect("first complete-source frame");
+        assert_eq!(first.visible_rows,Some(count));assert!(first.exact_visible);
+        request.renderer_generation=2;request.request_id="pixel-native-2".into();request.point_radius=Some(3);
+        let second=service.render_with(&request,|scene|{
+            assert!(scene.presentation.raster.as_ref().unwrap().occupied>2);
+            super::GraphNewRenderer::render(scene)
+        },&mut|_,_|Ok(())).expect("radius edit");
+        assert!(second.cpu_cache_hit);assert_eq!(second.raw_points_inspected,0,"reuse centers on radius edit");
+        assert_eq!(second.source_projection_query_count,0);
     }
 
     fn seed_dense_dataset(state: &AppState, dataset_id: &str, rows: u64) -> (String, String) {

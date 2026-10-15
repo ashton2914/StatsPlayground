@@ -64,6 +64,7 @@ export function GraphBuilderNewView({
     descriptors: ColumnDescriptor[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pointRadius, setPointRadius] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [meanAvailable, setMeanAvailable] = useState<boolean | null>(null);
   const [overlayState, setOverlayState] = useState<{
@@ -247,6 +248,14 @@ export function GraphBuilderNewView({
                   removeDisabled={controlsDisabled || activeLayers.length === 1}
                   removeAriaLabel={t("graphNewUi.removeLayer", { layer: layer.label })}
                 >
+                  {layer.kind === "points" && (
+                    <label className="graph-builder-new-radius-control">
+                      <span>{t("graphNew.pointRadius", { defaultValue: "Point radius (px)" })}</span>
+                      <input aria-label="Point radius (px)" type="range" min="1" max="8" step="1" value={pointRadius}
+                        disabled={controlsDisabled} onChange={(event) => setPointRadius(Number(event.target.value))} />
+                      <output>{pointRadius}</output>
+                    </label>
+                  )}
                   {index === 0 && (
                     <label className="graph-builder-new-mean-control">
                       <input
@@ -362,6 +371,7 @@ export function GraphBuilderNewView({
               overlayColumnId={session.overlayColumnId ?? null}
               hiddenOverlayGroupIds={session.hiddenOverlayGroupIds}
               showMean={session.showMean ?? true}
+              pointRadius={pointRadius}
               xMode={session.xMode ?? "auto"}
               rawMode={session.rawMode ?? "scatter"}
               savedCamera={session.camera ?? null}

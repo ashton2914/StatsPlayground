@@ -125,6 +125,7 @@ pub struct TileSelection {
 
 #[derive(Clone)]
 pub struct TilePyramid {
+    pub(crate) pixel_store: Option<Arc<super::graph_new_pixels::PixelStore>>,
     pub x_axis: crate::models::graph_new::GraphNewAxisData,
     pub overlay: OverlayCatalog,
     pub domain: GraphDomain,
@@ -270,7 +271,7 @@ impl TilePyramid {
     }
 
     pub fn encoded_bytes(&self) -> u64 {
-        self.levels.iter().map(|level| level.tile_bytes).sum::<u64>() + self.raw_store.as_ref().map_or(0, |raw| raw.disk_bytes())
+        self.levels.iter().map(|level| level.tile_bytes).sum::<u64>() + self.raw_store.as_ref().map_or(0, |raw| raw.disk_bytes()) + self.pixel_store.as_ref().map_or(0, |p| p.disk_bytes())
     }
 
     pub fn persisted_bytes(&self) -> u64 {
@@ -288,6 +289,7 @@ impl TilePyramid {
 
     pub fn resident_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
+            + self.pixel_store.as_ref().map_or(0, |p| p.resident_bytes())
             + self.x_axis.categories.capacity() as u64 * 24 + self.x_axis.categories.iter().map(|label| label.capacity() as u64).sum::<u64>()
             + self.overlay.resident_bytes()
             + self.mean_bytes()
@@ -300,6 +302,7 @@ impl TilePyramid {
     }
 
     pub fn write_cache(&self, file: &mut File, key: &str) -> Result<(), AppError> {
+        if self.pixel_store.is_some() { return Err(cache_format_error()); }
         if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(cache_format_error());
         }
@@ -453,7 +456,7 @@ impl TilePyramid {
             raw.validate_domain(domain)?;
             Some(raw)
         } else { None };
-        let result = Self { x_axis, overlay, domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
+        let result = Self { pixel_store: None, x_axis, overlay, domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
             total_excluded_non_finite_rows: values[6], max_tile_points: values[7] as u32, overdraw_factor,
             spool_bytes: 0, accounted_memory_bytes: 0, tile_store, raw_store };
         if result.cache_reservation_bytes() > memory_limit { return Err(AppError::Stats("graph_new_cache_pressure".into())); }
@@ -714,6 +717,7 @@ impl TilePyramid {
 }
 
 pub struct TilePyramidBuilder {
+    pixel_mode: bool,
     raw_writer: Option<RawWriter>,
     disk_limit: u64,
     levels: u8,
@@ -782,6 +786,7 @@ impl TilePyramidBuilder {
             return Err(AppError::Busy("graph-new construction memory cap exceeded".into()));
         }
         Ok(Self {
+            pixel_mode: false,
             raw_writer: None,
             disk_limit: super::graph_new_cache::DEFAULT_DISK_BYTES,
             levels,
@@ -798,6 +803,8 @@ impl TilePyramidBuilder {
             peak_accounted_memory_bytes: 0,
         })
     }
+
+    pub(crate) fn enable_pixel_mode(&mut self) { self.pixel_mode = true; }
 
     pub fn total_processed_rows(&self) -> u64 {
         self.total_processed_rows
@@ -885,6 +892,7 @@ impl TilePyramidBuilder {
             Some(domain) => normalized_domain(domain),
             None => {
                 return Ok(TilePyramid {
+            pixel_store: None,
                     x_axis: Default::default(),
                     overlay: self.overlay,
                     domain: GraphDomain {
@@ -906,6 +914,25 @@ impl TilePyramidBuilder {
                 })
             }
         };
+
+        if self.pixel_mode && self.total_finite_rows > super::graph_new_renderer::MAX_SCENE_POINTS as u64 {
+            self.raw_spool.flush()?;
+            let mut file = self.raw_spool.get_ref().try_clone()?;
+            file.seek(SeekFrom::Start(0))?;
+            let pixel = super::graph_new_pixels::PixelStore::from_spool(
+                BufReader::with_capacity(1024 * 1024, file), self.total_finite_rows,
+                self.construction_memory_limit_bytes, control)?;
+            self.check_disk_budget(0, pixel.disk_bytes())?;
+            self.update_peak_memory(pixel.resident_bytes() + 8 * 1024 * 1024)?;
+            return Ok(TilePyramid {
+                pixel_store: Some(Arc::new(pixel)), x_axis: Default::default(), overlay: self.overlay, domain,
+                levels: Vec::new(), total_processed_rows: self.total_processed_rows,
+                total_finite_rows: self.total_finite_rows, total_excluded_non_finite_rows: self.total_excluded_non_finite_rows,
+                max_tile_points: self.max_tile_points, overdraw_factor: self.overdraw_factor,
+                spool_bytes: self.raw_spool_bytes, accounted_memory_bytes: self.peak_accounted_memory_bytes,
+                raw_store: None, tile_store: Arc::new(TileStore::empty()?),
+            });
+        }
 
         let exact_memory = exact_tile_restore_memory(self.total_finite_rows)?;
         let exact_disk = self
@@ -1419,6 +1446,7 @@ impl TilePyramidBuilder {
 
         control()?;
         Ok(TilePyramid {
+            pixel_store: None,
             x_axis: Default::default(),
             overlay: self.overlay,
             domain,
@@ -1488,6 +1516,7 @@ impl TilePyramidBuilder {
         let stored = append_tile(&mut file, &mut index, tile)?;
         control()?;
         Ok(TilePyramid {
+            pixel_store: None,
             x_axis: Default::default(),
             overlay: self.overlay,
             domain, levels: vec![TileLevel { level: 0, tiles: vec![stored.entry],

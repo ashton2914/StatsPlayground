@@ -14,6 +14,8 @@ pub mod graph_new_key;
 pub mod graph_new_overlay;
 pub mod graph_new_lod;
 pub mod graph_new_raw;
+pub(crate) mod graph_new_pixels;
+pub(crate) mod graph_new_pixel_texture;
 pub(crate) mod graph_new_renderer;
 pub mod graph_new_service;
 pub(crate) mod graph_new_text;

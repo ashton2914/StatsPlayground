@@ -83,6 +83,24 @@ async function main() {
     cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4,
     overlayActive: false, overlayGroups: [], hiddenOverlayGroups: 0 };
   const handlers = { activeIdentity: () => cameraRequest, onFrame: () => {}, onError: () => {} };
+  for (const pixelCounts of [{ finiteRows: 100_000_000, visibleRows: 100_000_000, selectedMarks: 2 },
+    { finiteRows: 3, visibleRows: 2, selectedMarks: 32 },
+    { finiteRows: 3, visibleRows: 0, selectedMarks: 4 }]) {
+    const pixel = { ...cameraCompletion, ...pixelCounts, processedRows: pixelCounts.finiteRows,
+      excludedNonFiniteRows: 0, rawPointsInspected: 0, pixelAggregated: true };
+    const rendered = graphNewService.render(cameraRequest, handlers);
+    resolveRender(pixel);
+    assert.deepEqual(await rendered.completion, pixel, "full-source pixels are not point geometry counts");
+    const invalid = graphNewService.render(cameraRequest, handlers);
+    resolveRender({ ...pixel, pixelAggregated: false });
+    await assert.rejects(invalid.completion, /graph_new_render_failed/);
+    for (const invalidPixels of [{ pixelAggregated: "true" }, { exactVisible: false }, { selectedMarks: 257 },
+      { cameraDomain: { ...cameraDomain, xMin: cameraDomain.xMin + Number.EPSILON } }]) {
+      const rejected = graphNewService.render(cameraRequest, handlers);
+      resolveRender({ ...pixel, ...invalidPixels });
+      await assert.rejects(rejected.completion, /graph_new_render_failed/);
+    }
+  }
   for (const invalid of [{ xMode: "guessLocale" }, { rawMode: "mean" }, { rawMode: false }]) {
     assert.throws(() => graphNewService.render({ ...cameraRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
   }
