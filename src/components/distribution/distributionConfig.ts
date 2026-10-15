@@ -31,7 +31,7 @@ export type DistributionRoleValidationError =
   | "invalidNestedSubgroup"
   | "duplicateRole";
 
-export type DistributionAnalysisValidationError = "fitSelectionRequired";
+export type DistributionAnalysisValidationError = "fitSelectionRequired" | "confidenceOutOfRange";
 
 export interface DistributionFieldInfo {
   name: string;
@@ -176,9 +176,14 @@ function hasContinuousFitSelection(
   return fitAll || distributionIds.length > 0;
 }
 
+export function isValidDistributionConfidenceLevel(value: number): boolean {
+  return Number.isFinite(value) && value > 0 && value < 1;
+}
+
 export function validateDistributionAnalysisConfig(
   analysis: DistributionAnalysisConfig,
 ): DistributionAnalysisValidationError | null {
+  if (!isValidDistributionConfidenceLevel(analysis.confidenceLevel)) return "confidenceOutOfRange";
   if (!hasContinuousFitSelection(analysis.fitAll, analysis.fitDistributions)) {
     return "fitSelectionRequired";
   }
@@ -628,8 +633,7 @@ export function validateDistributionConfig(
     }
   });
 
-  if (!Number.isFinite(config.confidenceLevel) ||
-      config.confidenceLevel <= 0 || config.confidenceLevel >= 1) {
+  if (!isValidDistributionConfidenceLevel(config.confidenceLevel)) {
     errors.push(error(
       "distribution.config.confidenceOutOfRange",
       "distribution.errors.confidenceOutOfRange",

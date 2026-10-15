@@ -10,6 +10,8 @@ import {
   type DistributionFieldInfo,
   findResponsesMissingCapabilitySpecs,
   isDistributionFitImplemented,
+  isValidDistributionConfidenceLevel,
+  validateDistributionAnalysisConfig,
   type DistributionRole,
 } from "./distributionConfig";
 import {
@@ -74,6 +76,7 @@ export function DistributionDialog({
     initialItem ? stateFromItem(initialItem) : createDistributionDialogState(defaultName, datasetId),
   );
   const [search, setSearch] = useState("");
+  const [confidenceDraft, setConfidenceDraft] = useState<number | null>(() => state.analysis.confidenceLevel);
   const [submitting, setSubmitting] = useState(false);
   const [pendingMissingFields, setPendingMissingFields] = useState<DistributionFieldInfo[] | null>(null);
 
@@ -82,6 +85,7 @@ export function DistributionDialog({
     setState(initialItem
       ? stateFromItem(initialItem)
       : createDistributionDialogState(defaultName, datasetId));
+    setConfidenceDraft(initialItem?.analysis.confidenceLevel ?? 0.95);
     setSearch("");
     setPendingMissingFields(null);
   }, [datasetId, defaultName, initialItem, open]);
@@ -140,7 +144,9 @@ export function DistributionDialog({
 
   const fieldByName = new Map(columns.map((column) => [column.field.name, column]));
   const filteredColumns = filterDistributionFields(columns, search);
-  const valid = canCreateDistribution(state, columns);
+  const draftAnalysis = { ...state.analysis, confidenceLevel: confidenceDraft ?? NaN };
+  const confidenceInvalid = !isValidDistributionConfidenceLevel(draftAnalysis.confidenceLevel);
+  const valid = canCreateDistribution({ ...state, analysis: draftAnalysis }, columns);
 
   const assign = (role: DistributionRole, fieldName: string) => {
     const field = fieldByName.get(fieldName);
@@ -163,7 +169,7 @@ export function DistributionDialog({
         nestedSubgroup: state.nestedSubgroup,
         columns,
         analysis: {
-          ...state.analysis,
+          ...draftAnalysis,
           specLimits: {},
         },
         createdAt: initialItem?.createdAt ?? new Date().toISOString(),
@@ -197,8 +203,13 @@ export function DistributionDialog({
     });
   };
 
-  const validationMessage = state.validationError
-    ? validationErrorText(t, state.validationError)
+  const analysisValidationError = validateDistributionAnalysisConfig(draftAnalysis);
+  const roleValidationError = state.validationError !== "confidenceOutOfRange"
+    && state.validationError !== "fitSelectionRequired" ? state.validationError : null;
+  const validationError = roleValidationError
+    ?? (analysisValidationError === "fitSelectionRequired" ? analysisValidationError : null);
+  const validationMessage = validationError
+    ? validationErrorText(t, validationError)
     : null;
 
   return (
@@ -302,16 +313,15 @@ export function DistributionDialog({
 
               <NumberField
                 fieldClassName="distribution-option"
-                label={t("distribution.confidenceLevel")}
+                label={t("distribution.confidenceInputLabel")}
+                hint={t("distribution.confidenceInputHint")}
+                error={confidenceInvalid ? t("distribution.confidenceInputError") : undefined}
                 data-testid="distribution-confidence-level"
-                min="0.01"
-                max="0.99"
-                step="0.01"
-                value={state.analysis.confidenceLevel}
-                onValueChange={(value) => setState((current) => ({
-                  ...current,
-                  analysis: { ...current.analysis, confidenceLevel: value ?? 0 },
-                }))}
+                min="0"
+                max="1"
+                step="any"
+                value={confidenceDraft ?? ""}
+                onValueChange={setConfidenceDraft}
               />
             </div>
 
