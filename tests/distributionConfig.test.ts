@@ -115,6 +115,16 @@ assert.deepEqual(normalizeDistributionAnalysisConfig({ ...config, continuousFit:
 assert.equal(defaultVisualDiagnostics.histogram.method, "jmpAuto");
 assert.equal(config.reportPreferences?.["col-y"]?.normalQuantilePlot, false);
 assert.equal(validateDistributionAnalysisConfig(createDefaultDistributionAnalysisConfig()), null);
+for (const confidenceLevel of [0, 1, -0.1, 95, NaN, Infinity, -Infinity]) {
+  assert.equal(validateDistributionAnalysisConfig({
+    ...createDefaultDistributionAnalysisConfig(), confidenceLevel,
+  }), "confidenceOutOfRange", `reject invalid confidence ${confidenceLevel} before saving`);
+}
+for (const confidenceLevel of [0.95, 0.005, 0.9995]) {
+  assert.equal(validateDistributionAnalysisConfig({
+    ...createDefaultDistributionAnalysisConfig(), confidenceLevel,
+  }), null);
+}
 assert.equal(validateDistributionAnalysisConfig({
   confidenceLevel: 0.95,
   specLimits: {},

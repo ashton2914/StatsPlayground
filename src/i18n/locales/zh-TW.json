@@ -567,6 +567,9 @@
   },
   "distribution": {
     "title": "分佈", "searchColumns": "搜尋欄位", "frequencyShort": "頻數", "nestedSubgroupShort": "子組", "confidenceLevel": "信賴水準",
+    "confidenceInputLabel": "信賴水準（0–1）",
+    "confidenceInputHint": "以比例輸入：0.95 = 95%。",
+    "confidenceInputError": "請輸入大於 0 且小於 1 的數值（例如 0.95 = 95%）。",
     "saving": "正在儲存...", "loadFieldsFailed": "載入欄位失敗：{{message}}", "roleLabel": "{{role}} 角色",
     "graph": { "unavailable": "此反應的圖形無法使用。" },
     "roleEmpty": "拖放或指定一個欄位", "removeFromRole": "從 {{role}} 移除 {{column}}",

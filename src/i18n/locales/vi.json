@@ -517,6 +517,9 @@
   },
   "distribution": {
     "title": "Phân phối", "searchColumns": "Tìm cột", "frequencyShort": "Tần số", "nestedSubgroupShort": "Nhóm con", "confidenceLevel": "Mức tin cậy",
+    "confidenceInputLabel": "Mức tin cậy (0–1)",
+    "confidenceInputHint": "Nhập tỷ lệ từ 0 đến 1: 0.95 = 95%.",
+    "confidenceInputError": "Nhập giá trị lớn hơn 0 và nhỏ hơn 1 (ví dụ: 0.95 = 95%).",
     "saving": "Đang lưu...", "loadFieldsFailed": "Không thể tải trường: {{message}}", "roleLabel": "Vai trò {{role}}",
     "graph": { "unavailable": "Biểu đồ không khả dụng cho phản hồi này." },
     "roleEmpty": "Thả hoặc gán một cột", "removeFromRole": "Xóa {{column}} khỏi {{role}}",

@@ -60,6 +60,86 @@ function dialogProps(overrides: Record<string, unknown> = {}): any {
   };
 }
 
+for (const mode of ["create", "edit"] as const) {
+  test(`${mode} blocks invalid confidence drafts and saves only a corrected ratio`, async ({ mount }) => {
+    const initialItem = createDistributionItem({
+      id: "confidence-original", name: "Original", sourceDatasetId: "dataset-1",
+      responses: [{ name: "Value", type: "continuous" }], weight: null, frequency: null, by: [],
+      columns: completeSpecColumns, createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const original = structuredClone(initialItem);
+    let saved: DistributionItem | null = null;
+    const component = await mount(<DistributionDialog {...dialogProps({
+      initialItem: mode === "edit" ? initialItem : undefined,
+      onSubmit: (item: DistributionItem) => { saved = item; },
+    })} />);
+    if (mode === "create") {
+      await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+    }
+    const confidence = component.getByTestId("distribution-confidence-level");
+    const save = component.getByRole("button", { name: "Save", exact: true });
+    await expect(confidence).toHaveValue("0.95");
+    for (const value of ["", "0", "1", "-0.1", "95"]) {
+      await confidence.fill(value);
+      await expect(save).toBeDisabled();
+      await expect(confidence).toHaveValue(value);
+      await expect(confidence).toHaveAttribute("aria-invalid", "true");
+      await expect(confidence).toHaveAccessibleDescription("Enter a value greater than 0 and less than 1 (for example, 0.95 = 95%).");
+      expect(saved).toBeNull();
+      expect(initialItem).toEqual(original);
+    }
+    await confidence.fill("0.9");
+    await expect(save).toBeEnabled();
+    await expect(confidence).not.toHaveAttribute("aria-invalid", "true");
+    await expect(confidence).toHaveAccessibleDescription("Use a proportion from 0 to 1: 0.95 = 95%.");
+    await save.click();
+    expect(saved?.analysis.confidenceLevel).toBe(0.9);
+    expect(initialItem).toEqual(original);
+    if (mode === "edit") expect(saved?.id).toBe(original.id);
+  });
+}
+
+test("canceling an invalid confidence edit reopens the saved valid value", async ({ mount }) => {
+  const initialItem = createDistributionItem({
+    id: "confidence-cancel", name: "Original", sourceDatasetId: "dataset-1",
+    responses: [{ name: "Value", type: "continuous" }], weight: null, frequency: null, by: [],
+    columns: completeSpecColumns, createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  let cancelCalls = 0;
+  let submitCalls = 0;
+  const props = dialogProps({ initialItem, onCancel: () => { cancelCalls++; }, onSubmit: () => { submitCalls++; } });
+  const component = await mount(<DistributionDialog {...props} />);
+  await component.getByTestId("distribution-confidence-level").fill("");
+  await expect(component.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await component.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(cancelCalls).toBe(1);
+  expect(submitCalls).toBe(0);
+  await component.update(<DistributionDialog {...props} open={false} />);
+  await component.update(<DistributionDialog {...props} open />);
+  await expect(component.getByTestId("distribution-confidence-level")).toHaveValue("0.95");
+  await expect(component.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+});
+
+test("repairing saved invalid confidence still explains an empty fit selection", async ({ mount }) => {
+  const initialItem = createDistributionItem({
+    id: "confidence-repair", name: "Original", sourceDatasetId: "dataset-1",
+    responses: [{ name: "Value", type: "continuous" }], weight: null, frequency: null, by: [],
+    columns: completeSpecColumns, createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  initialItem.analysis.confidenceLevel = 0;
+  const component = await mount(<DistributionDialog {...dialogProps({ initialItem })} />);
+  await component.getByTestId("distribution-confidence-level").fill("0.9");
+  await component.getByRole("checkbox", { name: "Fit All", exact: true }).uncheck();
+  await component.getByRole("checkbox", { name: "Normal", exact: true }).uncheck();
+  await expect(component.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(component.getByRole("alert")).toHaveText("Select at least one continuous fit");
+  await component.getByTestId("distribution-confidence-level").fill("0.99");
+  await expect(component.getByRole("alert")).toHaveText("Select at least one continuous fit");
+  await component.getByRole("checkbox", { name: "Fit All", exact: true }).check();
+  await expect(component.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(component.getByRole("alert")).toHaveCount(0);
+});
+
 test("creates one persisted Distribution definition from role assignments", async ({ mount }) => {
   let saved: DistributionItem | null = null;
   const component = await mount(
