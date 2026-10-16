@@ -5,6 +5,103 @@ import { GraphBuilderNewHarness } from "./GraphBuilderNewHarness";
 const OVERLAY_A_ID = `sha256:${"a".repeat(64)}`;
 const OVERLAY_B_ID = `sha256:${"b".repeat(64)}`;
 
+for (const [locale, hint] of [
+  ["en", "Drag a column onto an axis slot to begin"],
+  ["zh-CN", "将列拖至坐标槽以开始作图"],
+] as const) {
+  test(`Issue 261 shows the legacy empty-axis hint until both axes are bound (${locale})`, async ({ mount }) => {
+    const component = await mount(<GraphBuilderNewHarness mode="render" locale={locale} />);
+    const stage = component.getByRole("region", { name: "Point plot" });
+    const emptyHint = stage.getByText(hint, { exact: true });
+    await expect(emptyHint).toBeVisible();
+    await expect(stage.locator(".graph-builder-new-plot-placeholder")).toHaveCount(0);
+    await component.getByTestId("graph-field-column-x").dragTo(component.getByTestId("graph-slot-x"));
+    await expect(emptyHint).toBeVisible();
+    await expect(component.getByTestId("render-metrics")).toContainText('"renders":0');
+    await component.getByTestId("graph-field-column-y").dragTo(component.getByTestId("graph-slot-y"));
+    await expect(emptyHint).toHaveCount(0);
+    await expect(stage.locator(".graph-new-canvas-host > canvas")).toBeVisible();
+    await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+    const clearLabel = (axis: string) => locale === "en" ? `Clear ${axis}` : `清除 ${axis}`;
+    await component.getByRole("button", { name: clearLabel("X"), exact: true }).click();
+    await expect(emptyHint).toBeVisible();
+    await expect(stage.locator("canvas")).toHaveCount(0);
+    await component.getByTestId("graph-field-column-x").dragTo(component.getByTestId("graph-slot-x"));
+    await expect(stage.locator(".graph-new-canvas-host > canvas")).toBeVisible();
+    await component.getByRole("button", { name: clearLabel("Y"), exact: true }).click();
+    await expect(emptyHint).toBeVisible();
+    await expect(stage.locator("canvas")).toHaveCount(0);
+  });
+}
+
+test("new graph rails and stacks resize, remember preferences and reset", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  const left = component.getByRole("separator", { name: "Resize new graph left rail", exact: true });
+  const right = component.getByRole("separator", { name: "Resize new graph right rail", exact: true });
+  const columns = component.getByRole("separator", { name: "Resize new graph columns and layers", exact: true });
+  const legend = component.getByRole("separator", { name: "Resize new graph legend and style", exact: true });
+  for (const separator of [left, right, columns, legend]) await expect(separator).toBeVisible();
+  const initial = Number(await left.getAttribute("aria-valuenow"));
+  const bounds = (await left.boundingBox())!;
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down(); await page.mouse.move(bounds.x + bounds.width / 2 + 40, bounds.y + bounds.height / 2); await page.mouse.up();
+  await expect(left).toHaveAttribute("aria-valuenow", String(initial + 40));
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("sp-layout-preferences-v1")!).sizes["graphBuilderNew.leftRail"])).toBe(initial + 40);
+  await right.focus(); await right.press("ArrowLeft");
+  await expect(right).toHaveAttribute("aria-valuenow", "188");
+  for (const separator of [columns, legend]) {
+    const before = Number(await separator.getAttribute("aria-valuenow"));
+    await separator.focus(); await separator.press("ArrowDown");
+    await expect(separator).toHaveAttribute("aria-valuenow", String(before + 8));
+  }
+  await component.unmount();
+  const restored = await mount(<GraphBuilderNewHarness mode="render" />);
+  const restoredLeft = restored.getByRole("separator", { name: "Resize new graph left rail", exact: true });
+  await expect(restoredLeft).toHaveAttribute("aria-valuenow", String(initial + 40));
+  await restoredLeft.dblclick(); await expect(restoredLeft).toHaveAttribute("aria-valuenow", "270");
+  for (const name of ["Resize new graph right rail", "Resize new graph columns and layers", "Resize new graph legend and style"]) {
+    await restored.getByRole("separator", { name, exact: true }).dblclick();
+  }
+});
+
+test("new graph splitters follow pointer distance and protect narrow layers", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  for (const name of ["Resize new graph columns and layers", "Resize new graph legend and style"]) {
+    const separator = component.getByRole("separator", { name, exact: true });
+    const before = (await separator.boundingBox())!;
+    await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2 + 40);
+    await page.mouse.up();
+    const after = (await separator.boundingBox())!;
+    expect(Math.abs(after.y - before.y - 40)).toBeLessThan(2);
+  }
+  const left = component.getByRole("separator", { name: "Resize new graph left rail", exact: true });
+  await left.focus(); await left.press("Home");
+  expect(Number(await left.getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(270);
+  for (const background of await component.locator(".graph-builder-new-splitter-vertical").evaluateAll(elements => elements.map(element => getComputedStyle(element).backgroundColor))) {
+    expect(background).not.toBe("rgba(0, 0, 0, 0)");
+  }
+});
+
+test("render status and reset belong to the toolbar without covering the plot", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  await component.getByTestId("graph-field-column-x").dragTo(component.getByTestId("graph-slot-x"));
+  await component.getByTestId("graph-field-column-y").dragTo(component.getByTestId("graph-slot-y"));
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  const toolbar = component.locator(".graph-builder-new-toolbar");
+  const plot = component.getByRole("region", { name: "Point plot" });
+  await expect(toolbar.getByRole("button", { name: "Reset view", exact: true })).toBeEnabled();
+  await expect(toolbar.locator(".graph-new-frame-status")).toContainText("visible");
+  await expect(plot.locator(".graph-new-frame-status, .graph-new-reset")).toHaveCount(0);
+  await expect(component.locator(".graph-new-frame-status")).toHaveCount(1);
+  await toolbar.getByRole("button", { name: "Reset view", exact: true }).click();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await component.getByRole("button", { name: "Clear X", exact: true }).click();
+  await expect(toolbar.getByRole("button", { name: "Reset view", exact: true })).toHaveCount(0);
+  await expect(toolbar.locator(".graph-new-frame-status")).toHaveCount(0);
+});
+
 test("Issue 245 axis slots bind supported columns through stable drag identities", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByTestId("graph-field-column-x")
@@ -18,28 +115,24 @@ test("Issue 245 axis slots bind supported columns through stable drag identities
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
 });
 
-test("Issue 245 axis slots persist nonnumeric Y without invoking native render", async ({ mount }) => {
+test("Issue 245 axis slots reject nonnumeric Y without invoking native render", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="overlay" />);
   await component.getByTestId("graph-field-column-x")
     .dragTo(component.getByTestId("graph-slot-x"));
   await component.getByTestId("graph-field-column-label")
     .dragTo(component.getByTestId("graph-slot-y"));
   await expect(component.getByTestId("selected-columns"))
-    .toContainText('"yColumnId":"column-label"');
+    .toContainText('"yColumnId":null');
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":0');
-  await expect(component.getByText(
-    "The native renderer does not support this field combination yet.",
-    { exact: true },
-  )).toBeVisible();
 });
 
-test("Issue 245 localizes the unsupported Y state", async ({ mount }) => {
+test("Issue 245 rejects nonnumeric Y in the localized view", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="overlay" locale="zh-CN" />);
   await component.getByTestId("graph-field-column-x")
     .dragTo(component.getByTestId("graph-slot-x"));
   await component.getByTestId("graph-field-column-label")
     .dragTo(component.getByTestId("graph-slot-y"));
-  await expect(component.getByText("原生渲染器暂不支持此字段组合。", { exact: true })).toBeVisible();
+  await expect(component.getByTestId("selected-columns")).toContainText('"yColumnId":null');
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":0');
 });
 
@@ -56,55 +149,31 @@ test("Issue 245 axis slots replace and clear one binding", async ({ mount }) => 
     .toContainText('"xColumnId":null');
 });
 
-test("Issue 245 layer card maps point, line, combined, and time-series modes", async ({ mount }) => {
-  const component = await mount(<GraphBuilderNewHarness mode="render" />);
-  const addLayer = component.getByTestId("graph-layer-add");
-  await expect(component.getByTestId("graph-layer-points")).toBeVisible();
-  await expect(component.getByRole("button", { name: "Remove Points" })).toBeDisabled();
-  await addLayer.getByRole("button", { name: "Line", exact: true }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"rawMode":"pointsLine"');
-  await component.getByRole("button", { name: "Remove Points" }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"rawMode":"line"');
-  await addLayer.getByRole("button", { name: "Time Series", exact: true }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"time"');
-  await expect(component.getByTestId("selected-columns")).toContainText('"rawMode":"line"');
-  await addLayer.getByRole("button", { name: "Line", exact: true }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"auto"');
-  await addLayer.getByRole("button", { name: "Points", exact: true }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"rawMode":"pointsLine"');
+test("Issue 245 layer cards independently add and remove graph elements", async ({mount})=>{
+ const component=await mount(<GraphBuilderNewHarness mode="render"/>);
+ await expect(component.getByTestId("graph-layer-points")).toBeVisible();
+ await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();
+ await expect(component.getByTestId("graph-layer-line")).toBeVisible();await component.getByRole("button",{name:"Remove Scatter",exact:true}).click();
+ await expect(component.getByTestId("graph-layer-points")).toHaveCount(0);await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Time Series",exact:true}).click();
+ await expect(component.getByTestId("graph-layer-timeSeries")).toBeVisible();await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"time"');
 });
 
-test("Issue 245 treats duration plus line as Time Series without coercing duration", async ({ mount }) => {
-  const component = await mount(<GraphBuilderNewHarness mode="render" />);
-  await component.getByLabel("X axis interpretation").selectOption("duration");
-  await component.getByTestId("graph-layer-add").getByRole("button", { name: "Line", exact: true }).click();
-  await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
-  await expect(component.getByTestId("graph-layer-line")).toContainText("Time Series");
-  await expect(component.getByTestId("graph-layer-add")
-    .getByRole("button", { name: "Time Series", exact: true })).toBeDisabled();
+test("Issue 245 ordinary Line stays Line on a duration axis",async({mount})=>{
+ const component=await mount(<GraphBuilderNewHarness mode="render"/>);await component.getByLabel("X axis interpretation").selectOption("duration");await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();await expect(component.getByTestId("graph-layer-line")).toContainText("Line");await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
 });
 
 for (const mode of ["error", "missing", "deferredFields", "stale"] as const) {
   test(`Issue 245 disables all graph mutations while source state is ${mode}`, async ({ mount }) => {
     const component = await mount(<GraphBuilderNewHarness mode={mode} />);
-    await expect(component.getByTestId("graph-layer-add")
-      .getByRole("button", { name: "Line", exact: true })).toBeDisabled();
-    await expect(component.getByTestId("graph-layer-points").getByLabel("Mean")).toBeDisabled();
+    await expect(component.getByRole("button", {name:"Add layer",exact:true})).toBeDisabled();
+    await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toBeDisabled();
     await expect(component.getByLabel("X axis interpretation")).toBeDisabled();
     await expect(component.getByTestId("project-dirty")).toHaveText("false");
   });
 }
 
-test("Issue 245 places X interpretation in the X slot and Mean in the layer card", async ({ mount }) => {
-  const component = await mount(<GraphBuilderNewHarness mode="render" />);
-  await component.getByTestId("graph-slot-x")
-    .getByLabel("X axis interpretation")
-    .selectOption("duration");
-  await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
-  const mean = component.getByTestId("graph-layer-points").getByLabel("Mean");
-  await expect(mean).toBeChecked();
-  await mean.uncheck();
-  await expect(component.getByTestId("selected-columns")).toContainText('"showMean":false');
+test("Issue 245 X interpretation preserves independent layer options",async({mount})=>{
+ const component=await mount(<GraphBuilderNewHarness mode="render"/>);await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("median");await component.getByTestId("graph-slot-x").getByLabel("X axis interpretation").selectOption("duration");await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toHaveValue("median");await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
 });
 
 test("Issue 245 Legend slot binds Overlay and hosts the existing group legend", async ({ mount }) => {
@@ -123,7 +192,8 @@ test("Issue 245 Legend slot binds Overlay and hosts the existing group legend", 
     .toContainText('"overlayColumnId":null');
 });
 
-test("Issue 245 exposes unavailable controls as disabled explained placeholders", async ({ mount }) => {
+test("Issue 245 exposes unavailable controls as disabled explained placeholders", async ({ mount, page }) => {
+  await page.setViewportSize({width:1280,height:800});
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   for (const label of [
     "Start Over",
@@ -138,14 +208,6 @@ test("Issue 245 exposes unavailable controls as disabled explained placeholders"
     "Group by X",
     "Group by Y",
     "Axis settings",
-    "Bar",
-    "Smoother",
-    "Fit Line",
-    "Box Plot",
-    "Histogram",
-    "Normal Curve",
-    "Surface",
-    "Contour",
   ]) {
     const placeholder = component.getByRole("button", { name: label, exact: true });
     await expect(placeholder).toBeDisabled();
@@ -221,7 +283,7 @@ test("persistence settles camera once and restores a saved document without dirt
   const camera = JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain;
   expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(camera);
   await expect(component.getByTestId("project-dirty")).toHaveText("true");
-  await component.getByRole("button", { name: "Close Graph Builder-new", exact: true }).click();
+  await component.getByRole("button", { name: "Close graph document", exact: true }).click();
   await component.getByRole("button", { name: "Reload documents", exact: true }).click();
   await expect(metrics).toContainText('"presented":4');
   expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
@@ -240,8 +302,7 @@ test("persistence save read-only disables document edits and camera gestures", a
   await expect(component.getByTestId("legacy-x-field")).toBeDisabled();
   await expect(component.getByTestId("legacy-y-field")).toBeDisabled();
   await expect(component.getByTestId("legacy-x-interpretation")).toBeDisabled();
-  await expect(component.getByTestId("legacy-raw-series")).toBeDisabled();
-  await expect(component.getByRole("checkbox", { name: "Mean", exact: true })).toBeDisabled();
+  await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toBeDisabled();
   await expect(component.getByRole("button", { name: "Reset view", exact: true })).toBeDisabled();
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
   await page.waitForTimeout(150);
@@ -280,11 +341,16 @@ for (const [kind, camera] of Object.entries({
   overzoomed: { xMin: 0, xMax: 1e-7, yMin: 0, yMax: 1e-7 },
   distant: { xMin: 1000, xMax: 1100, yMin: 1000, yMax: 1100 },
 })) {
-  test(`persistence preserves incompatible ${kind} camera without sending it`, async ({ mount }) => {
+  test(`persistence restores retained ${kind} layer camera`, async ({ mount }) => {
     const component = await mount(<GraphBuilderNewHarness mode="render" savedCamera={camera} />);
-    await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
-    await expect(component.getByTestId("camera-restore-unavailable")).toContainText("incompatible");
-    expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
+    if (kind === "anisotropic") {
+      await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+      await expect(component.getByTestId("camera-restore-unavailable")).toHaveCount(0);
+      expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
+    } else {
+      await expect(component.getByTestId("camera-restore-unavailable")).toBeVisible();
+      expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
+    }
     expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(camera);
     await expect(component.getByTestId("project-dirty")).toHaveText("false");
   });
@@ -351,13 +417,13 @@ test("persistence retains a pending gesture through a raw-mode effect replacemen
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByTestId("camera-plot").evaluate((element) => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
-    const select = document.querySelector<HTMLSelectElement>('[data-testid="legacy-raw-series"]')!;
-    select.value = "line";
+    const select = document.querySelector<HTMLSelectElement>('[data-testid="graph-layer-points"] select[aria-label="Summary Statistic"]')!;
+    select.value = "mean";
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
   const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(request.rawMode).toBe("line");
+  expect(request.layers[0].options.summaryStat).toBe("mean");
   expect(request.cameraDomain).not.toBeNull();
   expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(request.cameraDomain);
 });
@@ -410,13 +476,13 @@ test("phase1 typed X and raw line controls preserve mode camera and reset interp
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
   await expect(metrics).toContainText('"presented":2');
   const camera = JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain;
-  await component.getByTestId("legacy-raw-series").selectOption("pointsLine");
+  await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("mean");
   await expect(metrics).toContainText('"presented":3');
   expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
   await component.getByTestId("legacy-x-interpretation").selectOption("duration");
   await expect(metrics).toContainText('"presented":4');
   const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(request.xMode).toBe("duration"); expect(request.rawMode).toBe("pointsLine"); expect(request.cameraDomain).toBeNull();
+  expect(request.xMode).toBe("duration"); expect(request.layers[0].options.summaryStat).toBe("mean"); expect(request.cameraDomain).toBeNull();
   await expect(component.getByTestId("x-axis-ticks")).toContainText("25:00:00");
   await expect(metrics).toContainText('"maximumActive":1');
   await component.screenshot({ path: testInfo.outputPath("typed-raw-controls.png") });
@@ -454,44 +520,15 @@ for (const width of [960, 390]) {
   });
 }
 
-test("mean overlay defaults on and toggles without resetting the camera", async ({ mount }, testInfo) => {
-  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
-  await component.getByTestId("legacy-x-field").selectOption("column-x");
-  await component.getByTestId("legacy-y-field").selectOption("column-y");
-  const metrics = component.getByTestId("render-metrics");
-  const toggle = component.getByRole("checkbox", { name: "Mean" });
-  await expect(metrics).toContainText('"presented":1');
-  await expect(toggle).toBeChecked();
-  await expect(component.getByTestId("mean-legend")).toBeVisible();
-  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
-  await expect(metrics).toContainText('"presented":2');
-  const before = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(before.showMean).toBe(true);
-  await toggle.uncheck();
-  await expect(metrics).toContainText('"presented":3');
-  const off = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(off.showMean).toBe(false);
-  expect(off.cameraDomain).toEqual(before.cameraDomain);
-  expect(off.rendererGeneration).toBeGreaterThan(before.rendererGeneration);
-  await expect(component.getByTestId("mean-legend")).toHaveCount(0);
-  await toggle.check();
-  await expect(metrics).toContainText('"presented":4');
-  await expect(component.getByTestId("mean-legend")).toBeVisible();
-  await expect(component.getByTestId("x-axis-title")).toHaveText("Diameter");
-  await component.screenshot({ path: testInfo.outputPath("mean-controls.png") });
+test("layer summary updates without resetting the camera",async({mount})=>{
+ const component=await mount(<GraphBuilderNewHarness mode="largeExact"/>);await component.getByTestId("legacy-x-field").selectOption("column-x");await component.getByTestId("legacy-y-field").selectOption("column-y");const metrics=component.getByTestId("render-metrics");await expect(metrics).toContainText('"presented":1');await component.getByTestId("camera-plot").dispatchEvent("wheel",{deltaY:-200});await expect(metrics).toContainText('"presented":2');const before=JSON.parse((await component.getByTestId("render-request").textContent())!);await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("mean");await expect(metrics).toContainText('"presented":4');const after=JSON.parse((await component.getByTestId("render-request").textContent())!);expect(after.layers[0].options.summaryStat).toBe("mean");expect(after.cameraDomain).toEqual(before.cameraDomain);expect(after.rendererGeneration).toBeGreaterThan(before.rendererGeneration);
 });
 
-test("mean overlay refuses incomplete data without hiding the scatter", async ({ mount }) => {
-  const component = await mount(<GraphBuilderNewHarness mode="unknownCount" />);
-  await component.getByTestId("legacy-x-field").selectOption("column-x");
-  await component.getByTestId("legacy-y-field").selectOption("column-y");
-  await expect(component.getByRole("checkbox", { name: "Mean" })).toBeDisabled();
-  await expect(component.getByTestId("mean-unavailable")).toContainText("complete data");
-  await expect(component.getByTestId("mean-legend")).toHaveCount(0);
-  await expect(component.getByRole("img", { name: "Point plot frame" })).toBeVisible();
+test("layer summary remains configurable while displayed points use LOD",async({mount})=>{
+ const component=await mount(<GraphBuilderNewHarness mode="unknownCount"/>);await component.getByTestId("legacy-x-field").selectOption("column-x");await component.getByTestId("legacy-y-field").selectOption("column-y");await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("median");await expect(component.getByRole("img",{name:"Point plot frame"})).toBeVisible();await expect(component.getByTestId("render-request")).toContainText('"summaryStat":"median"');
 });
 
-test("mean overlay fences stale decode and preserves desired camera", async ({ mount, page }) => {
+test("layer settings fence stale decode and preserves desired camera", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByTestId("legacy-x-field").selectOption("column-x");
   await component.getByTestId("legacy-y-field").selectOption("column-y");
@@ -513,34 +550,21 @@ test("mean overlay fences stale decode and preserves desired camera", async ({ m
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
   await expect.poll(() => page.evaluate(() => typeof (window as any).releaseMeanBitmap)).toBe("function");
   const camera = JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain;
-  await component.getByRole("checkbox", { name: "Mean" }).uncheck();
-  await expect(component.getByTestId("mean-legend")).toBeVisible();
+  await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("mean");
+  await expect(component.getByTestId("graph-layer-points")).toBeVisible();
   await page.evaluate(() => (window as any).releaseMeanBitmap());
-  await expect(metrics).toContainText('"presented":2');
-  await expect(metrics).toContainText('"renders":3');
+  await expect(metrics).toContainText('"presented":3');
+  await expect(metrics).toContainText('"renders":4');
   await expect(metrics).toContainText('"maximumActive":1');
   const current = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(current.showMean).toBe(false);
+  expect(current.layers[0].options.summaryStat).toBe("mean");
   expect(current.cameraDomain).toEqual(camera);
-  await expect(component.getByTestId("mean-legend")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => (window as any).meanBitmapClosed)).toBe(2);
+  await expect(component.getByTestId("graph-layer-points")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).meanBitmapClosed)).toBe(3);
 });
 
-test("mean overlay Chinese unavailable reason fits a narrow viewport", async ({ mount, page }, testInfo) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  const component = await mount(<GraphBuilderNewHarness mode="unknownCount" locale="zh-CN" />);
-  await component.getByTestId("legacy-x-field").selectOption("column-x");
-  await component.getByTestId("legacy-y-field").selectOption("column-y");
-  await expect(component.getByRole("checkbox", { name: "均值" })).toBeDisabled();
-  await expect(component.getByTestId("mean-unavailable")).toHaveText("均值不可用：未保留完整数据。");
-  const layers = component.locator(".graph-new-layers");
-  const bounds = (await layers.boundingBox())!;
-  const reason = (await component.getByTestId("mean-unavailable").boundingBox())!;
-  expect(reason.x + reason.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
-  expect(reason.y + reason.height).toBeLessThanOrEqual(bounds.y + bounds.height + 1);
-  const canvas = (await component.getByRole("img", { name: "Point plot frame" }).boundingBox())!;
-  expect(canvas.y).toBeGreaterThanOrEqual(bounds.y + bounds.height);
-  await component.screenshot({ path: testInfo.outputPath("mean-mobile-zh.png") });
+test("layer settings show full labels in a narrow Chinese viewport",async({mount,page},testInfo)=>{
+ await page.setViewportSize({width:390,height:844});const component=await mount(<GraphBuilderNewHarness mode="unknownCount" locale="zh-CN"/>);const layer=component.getByTestId("graph-layer-points");await expect(layer.locator("select")).toHaveCount(4);for(const row of await layer.locator(".gb-opt-row").all()){await expect(row.locator(".gb-opt-label")).toBeVisible();}await component.screenshot({path:testInfo.outputPath("layers-mobile-zh.png")});
 });
 
 test("bounded LOD status reports unknown visible count without implying completeness", async ({ mount }, testInfo) => {
@@ -710,8 +734,37 @@ test("camera transforms immediately, coalesces wheel and supports keyboard reset
   await reset.focus(); await page.keyboard.press("Enter");
   await expect(metrics).toContainText('"presented":3');
   expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
-  await expect(component.getByTestId("x-axis-title")).toHaveText("Diameter");
   await testInfo.attach("camera-timing", { body: JSON.stringify({ ...timing, settleMs }), contentType: "application/json" });
+});
+
+test("Issue 261 keeps readable axes and a coherent frame while zooming out", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="slow" axisFixture="compactNumeric" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+
+  const xTicks = component.getByTestId("x-axis-ticks");
+  const yTicks = component.getByTestId("y-axis-ticks");
+  await expect(xTicks.locator("span")).toHaveCount(5);
+  await expect(yTicks.locator("span")).toHaveCount(5);
+  await expect(xTicks.locator("span").nth(1)).toHaveText("0.3");
+  await expect(xTicks.locator("span").first()).toHaveCSS("font-family", /.+/);
+  await expect(yTicks.locator("span").first()).toHaveCSS("font-family", /.+/);
+
+  const plot = component.getByTestId("camera-plot");
+  const bounds = (await plot.boundingBox())!;
+  await plot.dispatchEvent("wheel", {
+    deltaY: 100,
+    clientX: bounds.x + bounds.width / 2,
+    clientY: bounds.y + bounds.height / 2,
+  });
+  await page.waitForTimeout(30);
+
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+  await expect(component.locator(".graph-new-canvas-host")).not.toHaveAttribute("data-provisional", "true");
+  await expect(component.getByTestId("camera-preview")).toHaveCSS("transform", "none");
+  await expect(xTicks).toBeVisible();
+  await expect(yTicks).toBeVisible();
 });
 
 test("camera gesture during decode fences snapback and preserves cache on replacement", async ({ mount, page }, testInfo) => {
@@ -761,7 +814,8 @@ test("camera pointer capture cancels cleanly and unmount clears settle", async (
   const bounds = (await plot.boundingBox())!;
   await page.mouse.move(bounds.x + 30, bounds.y + 30); await page.mouse.down();
   await page.mouse.move(bounds.x + 80, bounds.y + 50, { steps: 8 });
-  await expect(component.getByTestId("camera-preview")).not.toHaveCSS("transform", "none");
+  await expect(component.getByTestId("camera-preview")).toHaveCSS("transform", "none");
+  await expect(component.locator(".graph-new-canvas-host")).not.toHaveAttribute("data-provisional", "true");
   await page.waitForTimeout(100);
   await expect(metrics).toContainText('"renders":1');
   await plot.dispatchEvent("pointercancel", { pointerId: 1 });
@@ -804,7 +858,7 @@ test.describe("large high-DPR canvas", () => {
   }
 });
 
-test("presents a deterministic binary frame with frontend axis titles and closes", async ({ mount }) => {
+test("presents a deterministic binary frame without redundant axis titles or toolbar close", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByTestId("legacy-x-field").selectOption("column-x");
   await component.getByTestId("legacy-y-field").selectOption("column-y");
@@ -812,10 +866,108 @@ test("presents a deterministic binary frame with frontend axis titles and closes
   await expect(canvas).toBeVisible();
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   expect(await canvas.evaluate((element: HTMLCanvasElement) => Array.from(element.getContext("2d")!.getImageData(Math.floor(element.width / 2), Math.floor(element.height / 2), 1, 1).data))).toEqual([31, 111, 235, 255]);
-  await expect(component.getByTestId("x-axis-title")).toHaveText("Diameter");
-  await expect(component.getByTestId("y-axis-title")).toHaveText("Height");
-  await component.getByRole("button", { name: "Close Graph Builder-new" }).click();
-  await expect(component.getByTestId("render-metrics")).toContainText('"closes":1');
+  await expect(component.getByTestId("x-axis-title")).toHaveCount(0);
+  await expect(component.getByTestId("y-axis-title")).toHaveCount(0);
+  await expect(component.getByRole("button", { name: "Close Graph Builder-new" })).toHaveCount(0);
+  await expect(component.getByRole("button", { name: "Reset view" })).toBeVisible();
+});
+
+test("Issue 261 prevents chart text selection while dragging and keeps status above the plot", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" axisFixture="compactNumeric" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+
+  const chart = component.locator(".graph-new-chart");
+  const canvas = component.getByRole("img", { name: "Point plot frame" });
+  const status = component.locator(".graph-new-frame-status");
+  const tick = component.getByTestId("x-axis-ticks").locator("span").nth(2);
+  const [canvasBounds, statusBounds, tickBounds] = await Promise.all([
+    canvas.boundingBox(),
+    status.boundingBox(),
+    tick.boundingBox(),
+  ]);
+  expect(canvasBounds).not.toBeNull();
+  expect(statusBounds).not.toBeNull();
+  expect(tickBounds).not.toBeNull();
+  expect(statusBounds!.y + statusBounds!.height).toBeLessThanOrEqual(canvasBounds!.y);
+  const resetBounds = await component.getByRole("button", { name: "Reset view", exact: true }).boundingBox();
+  expect(resetBounds).not.toBeNull();
+  expect(resetBounds!.x).toBeGreaterThanOrEqual(statusBounds!.x + statusBounds!.width);
+  await expect(component.locator(".graph-builder-new-toolbar .graph-new-frame-status")).toBeVisible();
+
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await page.mouse.move(tickBounds!.x + tickBounds!.width / 2, tickBounds!.y + tickBounds!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(tickBounds!.x - 80, tickBounds!.y - 80, { steps: 5 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+  await expect(chart).toHaveCSS("user-select", "none");
+});
+
+test("Issue 261 retries a transient replacement-frame failure without showing a render alert", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="renderTransient" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  const canvas = component.getByRole("img", { name: "Point plot frame" });
+  await expect(metrics).toContainText('"presented":1');
+
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+
+  await expect(metrics).toContainText('"renders":3');
+  await expect(metrics).toContainText('"presented":2');
+  await expect(canvas).toBeVisible();
+  await expect(component.getByRole("alert")).toHaveCount(0);
+  await expect(component.locator(".graph-new-frame-status")).not.toContainText("Plot could not be rendered.");
+});
+
+test("Issue 261 retains the coherent frame when a rapid-pan replacement fails generically", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="renderReplacementError" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  const status = component.locator(".graph-new-frame-status");
+  const canvas = component.getByRole("img", { name: "Point plot frame" });
+  await expect(metrics).toContainText('"presented":1');
+
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+
+  await expect(metrics).toContainText('"renders":3');
+  await expect(metrics).toContainText('"presented":1');
+  await expect(canvas).toBeVisible();
+  await expect(component.getByRole("alert")).toHaveCount(0);
+  await expect(status).toHaveText("Showing the previous frame; the latest view is unavailable.");
+});
+
+test("Issue 261 surfaces a replacement completion contract failure without retrying it", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="renderReplacementContractError" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  const canvas = component.getByRole("img", { name: "Point plot frame" });
+  await expect(metrics).toContainText('"presented":1');
+
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+
+  await expect(metrics).toContainText('"renders":2');
+  await expect(metrics).toContainText('"presented":1');
+  await expect(canvas).toBeVisible();
+  await expect(component.getByRole("alert")).toContainText("Plot could not be rendered.");
+});
+
+test("Issue 261 surfaces a replacement transport contract failure without retrying it", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="renderReplacementTransportError" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+
+  await expect(metrics).toContainText('"renders":2');
+  await expect(metrics).toContainText('"presented":1');
+  await expect(component.getByRole("alert")).toContainText("Plot could not be rendered.");
 });
 
 test("keeps a coherent frame during resize and serializes rapid changes", async ({ mount }) => {
@@ -860,15 +1012,14 @@ test("drops and closes a stale bitmap before replacement", async ({ mount, page 
   await page.evaluate(() => (window as any).releaseBitmap());
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await expect.poll(() => page.evaluate(() => (window as any).bitmapClosed)).toBe(2);
-  await expect(component.getByTestId("y-axis-title")).toHaveText("Diameter");
 });
 
-test("cancels after close and reports safe render failures", async ({ mount }) => {
+test("cancels after unmount and reports safe render failures", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByTestId("legacy-x-field").selectOption("column-x");
   await component.getByTestId("legacy-y-field").selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
-  await component.getByRole("button", { name: "Close Graph Builder-new" }).click();
+  await component.getByRole("button", { name: "Unmount view" }).click();
   await expect(component.getByTestId("render-metrics")).toContainText('"cancels":1');
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":0');
   await component.unmount();
@@ -907,8 +1058,6 @@ test("frames fit desktop and mobile layouts", async ({ mount, page }, testInfo) 
   const bounds = await canvas.boundingBox();
   expect(bounds!.width).toBeGreaterThan(96);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
-  const titleBounds = await component.getByTestId("x-axis-title").boundingBox();
-  expect(titleBounds!.y).toBeGreaterThanOrEqual(bounds!.y + bounds!.height);
   expect(await canvas.evaluate((element: HTMLCanvasElement) => element.getContext("2d")!.getImageData(Math.floor(element.width / 2), Math.floor(element.height / 2), 1, 1).data[2])).toBe(235);
   await component.screenshot({ path: testInfo.outputPath("task6-mobile.png") });
 });
@@ -965,7 +1114,7 @@ test("Overlay field selects a stable column, preserves camera, and persists v2 s
   expect(
     JSON.parse((await component.getByTestId("documents").textContent())!)[0],
   ).toMatchObject({
-    version: 2,
+    version: 3,
     overlayColumnId: "lot-column",
     hiddenOverlayGroupIds: [],
     camera: cameraBefore,
@@ -1047,7 +1196,7 @@ test("Overlay mean visibility changes keep the current frame and avoid render al
   await component.getByTestId("legacy-y-field").selectOption("column-y");
   await component.getByTestId("legacy-overlay-field").selectOption("lot-column");
   await expect(component.getByRole("img", { name: "Point plot frame" })).toBeVisible();
-  await expect(component.getByTestId("mean-legend")).toBeVisible();
+  await expect(component.getByTestId("graph-layer-points")).toBeVisible();
   const legend = component.getByRole("group", { name: "Overlay legend" });
   await legend.getByRole("checkbox", { name: "Show A" }).uncheck();
   await legend.getByRole("checkbox", { name: "Show B" }).uncheck();
@@ -1094,6 +1243,12 @@ for (const locale of ["en", "zh-CN"] as const) {
     const yField = component.getByTestId("legacy-y-field");
     const textSuffix = locale === "en" ? "Text" : "文本";
     const timestampSuffix = locale === "en" ? "Timestamp" : "时间戳";
+    const decimalType = locale === "en" ? "Decimal" : "小数";
+    const integerType = locale === "en" ? "Integer" : "整数";
+    await expect(component.getByTestId("graph-field-text-test-time")).toHaveText(`${textSuffix}TestTime`);
+    await expect(component.getByTestId("graph-field-column-x")).toHaveText(`${decimalType}TestTime`);
+    await expect(component.getByTestId("graph-field-timestamp-dpt")).toHaveText(`${timestampSuffix}DPT`);
+    await expect(component.getByTestId("graph-field-column-y")).toHaveText(`${integerType}Voltage`);
     await expect(xField.locator("option")).toHaveText([
       "Select a field", `TestTime (${textSuffix})`, "TestTime", `DPT (${timestampSuffix})`,
       `StepTime (${textSuffix})`, "Voltage", "TestTime",
@@ -1217,11 +1372,10 @@ test("renders empty and error states", async ({ mount }) => {
   await expect(failed.getByText("descriptor lookup failed")).toHaveCount(0);
 });
 
-test("reports transport capability and closes the session", async ({ mount }) => {
+test("reports transport capability and closes through the document lifecycle", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness />);
 
   await expect(component.getByText("Tauri host not detected; raw-frame transport unavailable")).toBeVisible();
-  await component.getByRole("button", { name: "Close Graph Builder-new" }).click();
-  await expect(component.getByTestId("close-count")).toHaveText("1");
+  await component.getByRole("button", { name: "Close graph document" }).click();
   await expect(component.getByText("This Graph Builder-new session is closed.")).toBeVisible();
 });

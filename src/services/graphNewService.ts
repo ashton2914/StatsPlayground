@@ -1,5 +1,6 @@
+import { normalizeGraphNewLayers } from "../components/graphBuilderNew/graphNewLayers";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { GraphNewRawMode, GraphNewXMode } from "../types/graphBuilderNew";
+import type { GraphNewLayer, GraphNewRawMode, GraphNewXMode } from "../types/graphBuilderNew";
 
 import { isCameraDomain, normalizedAxisValue, type CameraDomain, type PlotRect } from "../components/graphBuilderNew/graphNewCamera";
 import {
@@ -51,6 +52,7 @@ export interface GraphNewProbeController {
   canPresent: (token: GraphNewFrameToken) => boolean;
   markPresented: (token: GraphNewFrameToken, presentedAtMs: number) => void;
   snapshot: () => GraphNewFrameReceiverSnapshot;
+  diagnostic: () => string | null;
 }
 
 export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
@@ -62,7 +64,10 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   height: number;
   devicePixelRatio: number;
   cameraDomain?: CameraDomain | null;
+  layers?: GraphNewLayer[];
+  layerConfigurationId?: string;
   showMean?: boolean;
+  pointRadius?: number;
   xMode?: GraphNewXMode;
   rawMode?: GraphNewRawMode;
   overlayColumnId?: string | null;
@@ -77,8 +82,11 @@ export interface GraphNewAxis {
 }
 
 export interface GraphNewRenderCompletion {
+  layerConfigurationId?: string | null;
+  layerStates?: { layerId: string; available: boolean; reason: string | null; marks: number }[];
   requestId: string;
-  xAxis?: GraphNewAxis;
+  xAxis: GraphNewAxis;
+  yAxis: GraphNewAxis;
   rawMode?: GraphNewRawMode;
   rawLineAvailable?: boolean;
   rawLineSegments?: number;
@@ -89,6 +97,7 @@ export interface GraphNewRenderCompletion {
   finiteRows: number;
   excludedNonFiniteRows: number;
   selectedMarks: number;
+  pixelAggregated?: boolean;
   meanAvailable?: boolean;
   meanGroups?: number | null;
   meanVisible?: boolean;
@@ -124,11 +133,22 @@ export interface GraphNewRenderController extends Omit<GraphNewProbeController, 
 
 function safeReason(error: unknown): string {
   const message = describeError(error);
-  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure|gpu_validation|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
+  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|layer_overflow|cache_pressure|gpu_validation|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
   return match?.[1] ?? "graph_new_render_failed";
 }
 
+function safeDiagnostic(message: string): string {
+  if (message.startsWith("graph-new ")) return "transport_invalid";
+  const reason = safeReason(message);
+  if (reason !== "graph_new_render_failed") return reason;
+  return /^(?:(?:Stats error|Invalid parameter): )?graph_new_render_failed$/.test(message)
+    ? "backend_render_failed"
+    : "backend_invoke_invalid";
+}
+
 function validateRenderRequest(request: GraphNewRenderRequest): void {
+  if (request.pointRadius !== undefined && (!Number.isInteger(request.pointRadius) || request.pointRadius < 0 || request.pointRadius > 8)) throw new Error("graph_new_invalid_request");
+  if (request.layers !== undefined) normalizeGraphNewLayers(request.layers);
   if (request.xMode !== undefined && !["auto", "numeric", "time", "duration", "category"].includes(request.xMode)) throw new Error("graph_new_invalid_request");
   if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
@@ -162,6 +182,12 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
 }
 
 function validateCompletion(completion: GraphNewRenderCompletion, request: GraphNewRenderRequest): void {
+  if (request.layers !== undefined && (completion.layerConfigurationId !== request.layerConfigurationId
+    || !Array.isArray(completion.layerStates) || completion.layerStates.length !== request.layers.length
+    || completion.layerStates.some((state, i) => state.layerId !== request.layers![i].id || typeof state.available !== "boolean"
+      || !Number.isSafeInteger(state.marks) || state.marks < 0 || (state.reason !== null && typeof state.reason !== "string")))) {
+    throw new Error("graph_new_completion_layers_invalid");
+  }
   const overlayGroups = completion?.overlayGroups;
   const requestedHidden = request.hiddenOverlayGroupIds ?? [];
   if (typeof completion?.overlayActive !== "boolean"
@@ -180,19 +206,19 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
       || typeof group.missing !== "boolean")
     || new Set(overlayGroups.map((group) => group.id)).size !== overlayGroups.length
     || new Set(overlayGroups.map((group) => group.code)).size !== overlayGroups.length) {
-    throw new Error("graph_new_render_failed");
+    throw new Error("graph_new_completion_overlay_invalid");
   }
   if (completion.overlayActive) {
     if (request.overlayColumnId == null
       || requestedHidden.length !== completion.hiddenOverlayGroups
       || requestedHidden.some((id) => !overlayGroups.some((group) => group.id === id))
       || overlayGroups.reduce((sum, group) => sum + group.totalRows, 0) !== completion.finiteRows) {
-      throw new Error("graph_new_render_failed");
+      throw new Error("graph_new_completion_overlay_state_invalid");
     }
   } else if (overlayGroups.length !== 0 || completion.hiddenOverlayGroups !== 0) {
-    throw new Error("graph_new_render_failed");
+    throw new Error("graph_new_completion_overlay_state_invalid");
   }
-  if (request.xMode !== undefined || completion?.xAxis !== undefined) {
+  {
     const axis = completion?.xAxis;
     if (!axis || !["numeric", "time", "duration", "category"].includes(axis.kind) || typeof axis.utc !== "boolean"
       || (axis.origin != null && (axis.kind !== "time" || typeof axis.origin.epochNanos !== "string"
@@ -201,9 +227,24 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
       || !Array.isArray(axis.ticks) || axis.ticks.length > 12
       || axis.ticks.some((tick, index) => !tick || !Number.isFinite(tick.value) || !Number.isFinite(tick.position)
         || tick.position < 0 || tick.position > 1 || (index > 0 && tick.position <= axis.ticks[index - 1].position)
-        || (axis.kind === "category" ? typeof tick.label !== "string" || textEncoder.encode(tick.label).length > 512 : tick.label !== null)
+        || (axis.kind === "category" || axis.kind === "numeric"
+          ? typeof tick.label !== "string" || textEncoder.encode(tick.label).length > 512
+          : tick.label !== null)
         || !completion.cameraDomain || !(Math.abs(normalizedAxisValue(tick.value, completion.cameraDomain.xMin, completion.cameraDomain.xMax) - tick.position) <= 1e-6))) {
-      throw new Error("graph_new_render_failed");
+      throw new Error("graph_new_completion_x_axis_invalid");
+    }
+  }
+  {
+    const axis = completion?.yAxis;
+    if (!axis || axis.kind !== "numeric" || axis.utc !== false || axis.origin != null
+      || !Array.isArray(axis.ticks) || axis.ticks.length > 12
+      || axis.ticks.some((tick, index) => !tick || !Number.isFinite(tick.value) || !Number.isFinite(tick.position)
+        || tick.position < 0 || tick.position > 1 || typeof tick.label !== "string"
+        || textEncoder.encode(tick.label).length > 512
+        || (index > 0 && tick.position <= axis.ticks[index - 1].position)
+        || !completion.cameraDomain
+        || !(Math.abs(normalizedAxisValue(tick.value, completion.cameraDomain.yMin, completion.cameraDomain.yMax) - tick.position) <= 1e-6))) {
+      throw new Error("graph_new_completion_y_axis_invalid");
     }
   }
   if (request.rawMode !== undefined || completion?.rawMode !== undefined) {
@@ -211,51 +252,70 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
       || !Number.isSafeInteger(completion.rawLineSegments) || completion.rawLineSegments! < 0
       || completion.rawLineSegments! > Math.max(0, completion.finiteRows - 1)
       || ((!completion.rawLineAvailable || completion.rawMode === "scatter") && completion.rawLineSegments !== 0)
-      || (completion.rawLineAvailable && completion.finiteRows > 0 && !completion.exactVisible)) {
-      throw new Error("graph_new_render_failed");
+      || (completion.rawMode !== "scatter" && completion.rawLineAvailable
+        && completion.finiteRows > 0 && !completion.exactVisible)) {
+      throw new Error("graph_new_completion_raw_invalid");
     }
   }
   if (request.showMean || completion?.meanAvailable !== undefined || completion?.meanGroups !== undefined || completion?.meanVisible !== undefined) {
     const groups = completion?.meanGroups;
     const computed = request.showMean === true && completion?.meanAvailable === true;
     if (typeof completion?.meanAvailable !== "boolean" || typeof completion?.meanVisible !== "boolean"
-      || (completion.meanAvailable && completion.finiteRows > 0 && !completion.exactVisible)
       || (computed ? (typeof groups !== "number" || !Number.isSafeInteger(groups) || groups < 0
         || groups > completion.finiteRows || (completion.finiteRows > 0 && groups === 0)) : groups !== null)
       || completion.meanVisible !== (computed && typeof groups === "number" && groups >= 2)) {
-      throw new Error("graph_new_render_failed");
+      throw new Error("graph_new_completion_mean_invalid");
     }
   }
-  const submitsWholeGeometry = completion?.exactVisible === true
-    && completion.selectedMarks === completion.finiteRows;
   if (!completion || completion.requestId !== request.requestId
     || completion.width !== Math.ceil(request.width * request.devicePixelRatio)
     || completion.height !== Math.ceil(request.height * request.devicePixelRatio)
+    || (request.cameraDomain != null && (completion.sourceProjectionQueryCount !== 0
+      || !completion.cameraDomain
+      || (Object.keys(request.cameraDomain) as (keyof CameraDomain)[]).some((key) => request.cameraDomain![key] !== completion.cameraDomain[key])))) {
+    throw new Error("graph_new_completion_identity_invalid");
+  }
+  const pixelAggregated = completion.pixelAggregated === true;
+  if ((completion.pixelAggregated !== undefined && typeof completion.pixelAggregated !== "boolean")
     || [completion.processedRows, completion.finiteRows, completion.excludedNonFiniteRows, completion.selectedMarks,
       completion.rawIndexEntriesInspected, completion.rawBlocksInspected, completion.rawPointsInspected]
       .some((value) => !Number.isSafeInteger(value) || value < 0)
     || completion.processedRows !== completion.finiteRows + completion.excludedNonFiniteRows
-    || typeof completion.exactVisible !== "boolean"
+    || (!pixelAggregated && (completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 2_100_000))) {
+    throw new Error("graph_new_completion_counts_invalid");
+  }
+  const submitsWholeGeometry = completion.exactVisible === true
+    && completion.selectedMarks === completion.finiteRows;
+  if (typeof completion.exactVisible !== "boolean"
     || (completion.visibleRows !== null && (!Number.isSafeInteger(completion.visibleRows)
       || completion.visibleRows < 0 || completion.visibleRows > completion.finiteRows
-      || (!submitsWholeGeometry && completion.selectedMarks > completion.visibleRows)))
+      || (!pixelAggregated && !submitsWholeGeometry && completion.selectedMarks > completion.visibleRows)))
     || (completion.exactVisible && (completion.visibleRows === null
-      || (!submitsWholeGeometry && completion.selectedMarks !== completion.visibleRows)))
-    || completion.rawBlocksInspected > completion.rawIndexEntriesInspected
+      || (!pixelAggregated && !submitsWholeGeometry && completion.selectedMarks !== completion.visibleRows)))) {
+    throw new Error("graph_new_completion_visibility_invalid");
+  }
+  if (completion.rawBlocksInspected > completion.rawIndexEntriesInspected
     || completion.rawPointsInspected > completion.finiteRows
-    || completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 2_100_000
-    || [completion.buildMs, completion.renderMs, completion.readbackMs].some((value) => !Number.isFinite(value) || value < 0)
-    || !completion.cameraDomain || !completion.plotRect
-    || [completion.cameraDomain.xMin, completion.cameraDomain.xMax, completion.cameraDomain.yMin, completion.cameraDomain.yMax].some((value) => !Number.isFinite(value))
+    || [completion.sourceProjectionQueryCount, completion.renderGenerationCheckCount]
+      .some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error("graph_new_completion_work_invalid");
+  }
+  if ([completion.buildMs, completion.renderMs, completion.readbackMs]
+    .some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error("graph_new_completion_timing_invalid");
+  }
+  if (!completion.cameraDomain || !completion.plotRect
+    || [completion.cameraDomain.xMin, completion.cameraDomain.xMax,
+      completion.cameraDomain.yMin, completion.cameraDomain.yMax]
+      .some((value) => !Number.isFinite(value))
     || completion.cameraDomain.xMin > completion.cameraDomain.xMax || completion.cameraDomain.yMin > completion.cameraDomain.yMax
-    || [completion.plotRect.x, completion.plotRect.y, completion.plotRect.width, completion.plotRect.height,
-      completion.sourceProjectionQueryCount, completion.renderGenerationCheckCount].some((value) => !Number.isSafeInteger(value) || value < 0)
+    || [completion.plotRect.x, completion.plotRect.y, completion.plotRect.width, completion.plotRect.height]
+      .some((value) => !Number.isSafeInteger(value) || value < 0)
     || completion.plotRect.width === 0 || completion.plotRect.height === 0
     || completion.plotRect.x + completion.plotRect.width > completion.width
     || completion.plotRect.y + completion.plotRect.height > completion.height
-    || (request.cameraDomain != null && (completion.sourceProjectionQueryCount !== 0
-      || (Object.keys(request.cameraDomain) as (keyof CameraDomain)[]).some((key) => request.cameraDomain![key] !== completion.cameraDomain[key])))) {
-    throw new Error("graph_new_render_failed");
+    || (pixelAggregated && (!completion.exactVisible || completion.selectedMarks > completion.plotRect.width * completion.plotRect.height))) {
+    throw new Error("graph_new_completion_geometry_invalid");
   }
 }
 
@@ -330,9 +390,11 @@ function startRequest<Completion>(
     let pendingToken: GraphNewFrameToken | null = null;
     let failed = false;
     let cancelled = false;
+    let diagnostic: string | null = null;
     const fail = (message: string): void => {
       if (failed || cancelled) return;
       failed = true;
+      diagnostic ??= safeDiagnostic(message);
       handlers.onError(safe ? safeReason(message) : message);
       if (safe && "sessionId" in request) {
         void invoke<void>("cancel_graph_new", { sessionId: request.sessionId, requestId: request.requestId, rendererGeneration: request.rendererGeneration }).catch(() => {});
@@ -367,7 +429,15 @@ function startRequest<Completion>(
       command,
       { request, onFrame: channel },
     ).then((value) => {
-      validate?.(value);
+      try {
+        validate?.(value);
+      } catch (error) {
+        const message = describeError(error);
+        diagnostic = /^graph_new_completion_[a-z_]+$/.test(message)
+          ? message
+          : "completion_invalid";
+        throw error;
+      }
       if (failed) throw new Error("graph_new_render_failed");
       return value;
     }).catch((error: unknown) => {
@@ -382,6 +452,7 @@ function startRequest<Completion>(
         if (!cancelled && !failed) receiver.markPresented(token, at);
       },
       snapshot: receiver.snapshot,
+      diagnostic: () => diagnostic,
       cancel: () => { cancelled = true; pendingToken = null; },
     };
 }

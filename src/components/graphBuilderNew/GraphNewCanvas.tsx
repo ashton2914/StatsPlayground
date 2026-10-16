@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -31,11 +32,11 @@ function enqueue(job: RenderJob) {
   pump();
 }
 
-type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode" | "overlayColumnId"> & {
+type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode" | "overlayColumnId" | "layers"> & {
   transportId: string;
-  xTitle: string;
-  yTitle: string;
+  controlsHost?: HTMLElement | null;
   showMean: boolean;
+  pointRadius?: number;
   hiddenOverlayGroupIds?: string[];
   onMeanAvailabilityChange?: (available: boolean | null) => void;
   onOverlayStateChange?: (state: { active: boolean; groups: GraphNewOverlayGroup[] }) => void;
@@ -46,6 +47,7 @@ type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xC
 
 export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks"][number]): string {
   if (axis.kind === "category") return tick.label ?? "";
+  if (axis.kind === "numeric") return tick.label ?? String(tick.value);
   const unit = axis.origin?.unitNanos ?? 1_000_000_000;
   const interval = axis.ticks.slice(1).reduce((minimum, current, index) =>
     Math.min(minimum, Math.abs(current.value - axis.ticks[index].value) * unit / 1_000_000_000), Infinity);
@@ -76,18 +78,21 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, layers, showMean, pointRadius, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
   const [rawAvailable, setRawAvailable] = useState(true);
-  const [axisLabels, setAxisLabels] = useState<{ label: string; left: number; top: number; width: number }[]>([]);
+  const [axisLabels, setAxisLabels] = useState<{
+    x: { label: string; left: number; top: number; width: number }[];
+    y: { label: string; left: number; top: number; width: number }[];
+  }>({ x: [], y: [] });
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const plotHost = useRef<HTMLDivElement>(null);
   const preview = useRef<HTMLCanvasElement>(null);
   const resetView = useRef<() => void>(() => {});
-  const cameraState = useRef<{ identity: string; full: CameraDomain | null; desired: CameraDomain | null; presented: CameraDomain | null; resetPending: boolean; restorePending: boolean; gesturePending: boolean } | null>(null);
+  const cameraState = useRef<{ identity: string; sourceIdentity: string; restoreCamera: CameraDomain | null; full: CameraDomain | null; desired: CameraDomain | null; presented: CameraDomain | null; resetPending: boolean; restorePending: boolean; gesturePending: boolean } | null>(null);
   const persistence = useRef({ savedCamera, readOnly, onCameraChange });
   persistence.current = { savedCamera, readOnly, onCameraChange };
   const [cameraRestoreRejected, setCameraRestoreRejected] = useState(false);
@@ -102,6 +107,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
   }, [onOverlayStateChange, overlayState]);
   const [hasFrame, setHasFrame] = useState(false);
   const [status, setStatus] = useState("Rendering...");
+  const [layerWarning, setLayerWarning] = useState<string | null>(null);
   const [reason, setReason] = useState<string | null>(null);
   const [provisional, setProvisional] = useState(false);
   const [cameraAvailable, setCameraAvailable] = useState(false);
@@ -141,9 +147,13 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     const element = host.current;
     const plotElement = plotHost.current;
     if (!element || !plotElement) return;
-    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode]);
+    const sourceIdentity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode]);
+    const sourcePolicy = layers === undefined ? rawMode === "line" : layers.some(layer => layer.kind !== "points" || layer.options.summaryStat !== "none");
+    const identity = JSON.stringify([sourceIdentity, sourcePolicy, layers]);
     if (cameraState.current?.identity !== identity) {
-      cameraState.current = { identity, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
+      const previous = cameraState.current;
+      const restoreCamera = previous?.sourceIdentity === sourceIdentity ? previous.desired ?? previous.restoreCamera : null;
+      cameraState.current = { identity, sourceIdentity, restoreCamera, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
       setCameraRestoreRejected(false);
     }
     const retained = cameraState.current;
@@ -156,6 +166,8 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     let frameWidth = 0;
     let frameHeight = 0;
     let raf: number | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retriedCameraGeneration: number | null = null;
     let pointer: { id: number; x: number; y: number } | null = null;
     let resetPending = retained.resetPending;
     setCameraAvailable(full !== null);
@@ -175,6 +187,21 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       preview.current.style.transform = `translate(${transform.x * scale}px, ${transform.y * scale}px) scale(${transform.scale})`;
     };
     const showPreview = () => {
+      if (!presented || !current || !plot || !preview.current) return;
+      const transform = cameraTransform(presented, current, plot);
+      const scaleY = (presented.yMax - presented.yMin) / (current.yMax - current.yMin);
+      const uniform = Math.abs(transform.scale - scaleY) <= Math.max(transform.scale, scaleY) * 1e-8;
+      const coversPlot = uniform && transform.x <= 0 && transform.y <= 0
+        && transform.x + plot.width * transform.scale >= plot.width
+        && transform.y + plot.height * transform.scale >= plot.height;
+      if (!coversPlot) {
+        if (raf !== null) cancelAnimationFrame(raf);
+        raf = null;
+        preview.current.style.transform = "none";
+        element.removeAttribute("data-provisional");
+        setProvisional(false);
+        return;
+      }
       element.dataset.provisional = "true";
       setProvisional(true);
       if (raf === null) raf = requestAnimationFrame(drawPreview);
@@ -215,7 +242,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     const move = (event: PointerEvent) => {
       if (persistence.current.readOnly || !pointer || pointer.id !== event.pointerId || !current || !full || !plot) return;
       const next = physicalPointer(event);
-      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y);
+      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y, layers !== undefined);
       retained.desired = current;
       retained.gesturePending = true;
       pointer = { id: event.pointerId, ...next };
@@ -232,7 +259,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       if (persistence.current.readOnly || !current || !full || !plot) return;
       event.preventDefault();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1);
-      current = zoomCamera(current, full, plot, physicalPointer(event), delta);
+      current = zoomCamera(current, full, plot, physicalPointer(event), delta, layers !== undefined);
       retained.desired = current;
       retained.gesturePending = true;
       retained.resetPending = resetPending = false;
@@ -268,38 +295,47 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       },
       run: async () => {
         if (cancelled) return;
-        setStatus("Rendering...");
+        if (!presented || layers !== undefined) setStatus(t("graphNew.rendering", {defaultValue:"Rendering..."}));
         setReason(null);
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
-          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
+          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, layers, layerConfigurationId: layers === undefined ? undefined : JSON.stringify(layers), showMean, pointRadius, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let failureReason: string | null = null;
         try {
           controller = graphNewService.render(request, {
             activeIdentity: () => ({ ...request, cameraGeneration: scheduler.generation() }),
             onFrame: (frame) => { if (!cancelled) resolveFrame(frame); },
-            onError: () => { resolveFrame(null); },
+            onError: (error) => { failureReason = error; resolveFrame(null); },
           });
           const completion = await controller.completion;
           if (cancelled) return;
-          timer = setTimeout(() => resolveFrame(null), 5000);
+          timer = setTimeout(() => {
+            failureReason = "graph_new_frame_timeout";
+            resolveFrame(null);
+          }, 5000);
           const frame = await frameReady;
           clearTimeout(timer);
           if (cancelled) return;
-          if (!frame || completion.requestId !== request.requestId
+          if (!frame) throw new Error(failureReason ?? "graph_new_render_failed");
+          if (completion.requestId !== request.requestId
             || frame.header.width !== Math.ceil(size.width * size.devicePixelRatio)
             || frame.header.height !== Math.ceil(size.height * size.devicePixelRatio)
             || completion.width !== frame.header.width || completion.height !== frame.header.height
-            || !controller.canPresent(frame.header)) throw new Error("graph_new_render_failed");
-          bitmap = frame.header.format === "rgba8"
-            ? await createImageBitmap(new ImageData(new Uint8ClampedArray(frame.payload), frame.header.width, frame.header.height))
-            : await createImageBitmap(new Blob([frame.payload], { type: "image/png" }));
+            || !controller.canPresent(frame.header)) throw new Error("graph_new_frame_mismatch");
+          try {
+            bitmap = frame.header.format === "rgba8"
+              ? await createImageBitmap(new ImageData(new Uint8ClampedArray(frame.payload), frame.header.width, frame.header.height))
+              : await createImageBitmap(new Blob([frame.payload], { type: "image/png" }));
+          } catch {
+            throw new Error("graph_new_decode_failed");
+          }
           if (cancelled || !scheduler.isCurrent(cameraGeneration) || !controller.canPresent(frame.header) || !canvas.current || !preview.current) return;
           const context = canvas.current.getContext("2d");
-          if (!context) throw new Error("graph_new_render_failed");
+          if (!context) throw new Error("graph_new_canvas_unavailable");
           canvas.current.width = frame.header.width;
           canvas.current.height = frame.header.height;
           context.drawImage(bitmap, 0, 0);
@@ -313,17 +349,33 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           retained.desired = current;
           retained.presented = presented;
           const { scale, left, top } = geometry();
-          const axis = completion.xAxis;
           context.font = `11px ${getComputedStyle(element).fontFamily}`;
           let previousEnd = -Infinity;
-          setAxisLabels(axis && axis.kind !== "numeric" ? axis.ticks.flatMap((tick) => {
-            const label = formatGraphNewTick(axis, tick);
-            const width = Math.min(axis.kind === "category" ? 170 : Infinity, Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
+          const xLabels = completion.xAxis.ticks.flatMap((tick) => {
+            const label = formatGraphNewTick(completion.xAxis, tick);
+            const width = Math.min(completion.xAxis.kind === "category" ? 170 : Infinity,
+              Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
             const position = Math.max(0, Math.min(element.clientWidth - width, left + (plot!.x + tick.position * plot!.width) * scale - width / 2));
             if (!label || position < previousEnd + 8) return [];
             previousEnd = position + width;
             return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
-          }) : []);
+          });
+          previousEnd = -Infinity;
+          const yLabels = completion.yAxis.ticks.map((tick) => {
+            const label = formatGraphNewTick(completion.yAxis, tick);
+            const width = Math.min(Math.ceil(context.measureText(label).width) + 8, Math.max(0, left + plot!.x * scale - 4));
+            return {
+              label,
+              left: Math.max(0, left + plot!.x * scale - width - 4),
+              top: top + (plot!.y + (1 - tick.position) * plot!.height) * scale - 7,
+              width,
+            };
+          }).sort((a, b) => a.top - b.top).flatMap((tick) => {
+            if (!tick.label || tick.width === 0 || tick.top < previousEnd + 4) return [];
+            previousEnd = tick.top + 14;
+            return [tick];
+          });
+          setAxisLabels({ x: xLabels, y: yLabels });
           setRawAvailable(completion.rawLineAvailable !== false);
           setOverlayState({ active: completion.overlayActive, groups: completion.overlayGroups });
           plotElement.style.left = `${left + plot.x * scale}px`;
@@ -341,28 +393,68 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           controller.markPresented(frame.header, performance.now());
           setHasFrame(true);
           setMeanFrame({ available: completion.meanAvailable === true, visible: completion.meanVisible === true, groups: completion.meanGroups ?? null });
+          setLayerWarning(completion.layerStates?.some(state => state.reason === "graph_new_jitter_budget") ? t("graphNew.jitterBudget") : null);
+          retriedCameraGeneration = null;
           const visibleStatus = completion.visibleRows === null
             ? `${completion.selectedMarks.toLocaleString()} submitted; visible count unknown`
             : `${completion.visibleRows.toLocaleString()} visible; ${completion.selectedMarks.toLocaleString()} submitted`;
-          setStatus(`${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
+          setStatus(completion.pixelAggregated
+            ? `Full data: ${completion.visibleRows?.toLocaleString()} visible points; ${layers?.some(layer => layer.kind !== "points" || layer.options.summaryStat !== "none") ? `${layers.length} layers` : `${completion.selectedMarks.toLocaleString()} colored pixels`}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`
+            : `${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
           if (cameraDomain === null && retained.restorePending) {
             retained.restorePending = false;
-            const saved = persistence.current.savedCamera;
-            if (saved && full && isRestorableCamera(saved, full)) {
+            const modeCamera = retained.restoreCamera;
+            retained.restoreCamera = null;
+            const saved = modeCamera ?? persistence.current.savedCamera;
+            const overlapsNewData = !modeCamera || !full || (
+              modeCamera.xMax > full.xMin && modeCamera.xMin < full.xMax
+              && modeCamera.yMax > full.yMin && modeCamera.yMin < full.yMax);
+            if (saved && full && overlapsNewData && isRestorableCamera(saved, full, layers !== undefined)) {
               retained.desired = current = saved;
+              if (modeCamera && !persistence.current.readOnly) persistence.current.onCameraChange?.(saved);
               launch(saved, scheduler.generation());
+            } else if (modeCamera) {
+              if (!persistence.current.readOnly) persistence.current.onCameraChange?.(null);
             } else if (saved) {
               setCameraRestoreRejected(true);
             }
           }
         } catch (error) {
           if (!cancelled) {
-            const missing = error instanceof Error && error.message === "graph_new_missing_cache";
-            const unrepresentable = error instanceof Error && error.message === "graph_new_x_unrepresentable";
-            const cachePressure = error instanceof Error && error.message === "graph_new_cache_pressure";
-            const gpuValidation = error instanceof Error && error.message === "graph_new_gpu_validation";
-            const overlayTooMany = error instanceof Error && error.message === "graph_new_overlay_too_many_groups";
-            const overlayValueTooLarge = error instanceof Error && error.message === "graph_new_overlay_value_too_large";
+            const errorCode = failureReason ?? (error instanceof Error ? error.message : "graph_new_render_failed");
+            const transient = ["graph_new_cancelled", "graph_new_stale_dataset", "graph_new_busy", "graph_new_channel_closed"].includes(errorCode);
+            const genericReplacementFailure = errorCode === "graph_new_render_failed"
+              && controller?.diagnostic() === "backend_render_failed"
+              && presented !== null && cameraDomain !== null;
+            if (transient || genericReplacementFailure) {
+              console.info("Graph New recoverable replacement failure", errorCode, controller?.snapshot());
+              if (preview.current) preview.current.style.transform = "none";
+              element.removeAttribute("data-provisional");
+              setProvisional(false);
+              setReason(null);
+              if (current && scheduler.isCurrent(cameraGeneration) && retriedCameraGeneration !== cameraGeneration) {
+                retriedCameraGeneration = cameraGeneration;
+                retryTimer = setTimeout(() => {
+                  retryTimer = null;
+                  if (!disposed && current && scheduler.isCurrent(cameraGeneration)) launch(current, cameraGeneration);
+                }, 50);
+              } else if (genericReplacementFailure) {
+                setStatus("Showing the previous frame; the latest view is unavailable.");
+              }
+              return;
+            }
+            const missing = errorCode === "graph_new_missing_cache";
+            const unrepresentable = errorCode === "graph_new_x_unrepresentable";
+            const layerOverflow = errorCode === "graph_new_layer_overflow";
+            const cachePressure = errorCode === "graph_new_cache_pressure";
+            const gpuValidation = errorCode === "graph_new_gpu_validation";
+            const overlayTooMany = errorCode === "graph_new_overlay_too_many_groups";
+            const overlayValueTooLarge = errorCode === "graph_new_overlay_value_too_large";
+            const frameTimeout = errorCode === "graph_new_frame_timeout";
+            const frameMismatch = errorCode === "graph_new_frame_mismatch";
+            const decodeFailed = errorCode === "graph_new_decode_failed";
+            const canvasUnavailable = errorCode === "graph_new_canvas_unavailable";
+            console.error("Graph New render failure", errorCode);
             setReason(missing
               ? "graph_new_missing_cache"
               : unrepresentable
@@ -375,11 +467,15 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
                   ? "graph_new_overlay_too_many_groups"
                   : overlayValueTooLarge
                     ? "graph_new_overlay_value_too_large"
-                    : "graph_new_render_failed");
+                    : frameTimeout || frameMismatch || decodeFailed || canvasUnavailable
+                      ? errorCode
+                      : "graph_new_render_failed");
             setStatus(missing
               ? "Camera cache unavailable. Reset view to rebuild."
               : unrepresentable
                 ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." })
+                : layerOverflow
+                  ? t("graphNew.layerOverflow")
                 : cachePressure
                   ? t("graphNew.cachePressure", { defaultValue: "Plot exceeded the render memory budget. Hide layers or reset the view." })
                   : gpuValidation
@@ -388,7 +484,15 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
                   ? t("graphNew.overlayTooManyGroups")
                   : overlayValueTooLarge
                     ? t("graphNew.overlayValueTooLarge")
-                    : "Plot could not be rendered.");
+                    : frameTimeout
+                      ? "Plot frame timed out."
+                      : frameMismatch
+                        ? "Plot frame did not match the render request."
+                        : decodeFailed
+                          ? "Plot frame could not be decoded."
+                          : canvasUnavailable
+                            ? "Plot canvas is unavailable."
+                            : "Plot could not be rendered.");
           }
         } finally {
           clearTimeout(timer);
@@ -406,46 +510,55 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       scheduler.dispose(); currentJob?.cancel();
       if (pendingJob === currentJob) pendingJob = null;
       if (raf !== null) cancelAnimationFrame(raf);
+      if (retryTimer !== null) clearTimeout(retryTimer);
       if (pointer && plotElement.hasPointerCapture(pointer.id)) plotElement.releasePointerCapture(pointer.id);
       plotElement.removeEventListener("pointerdown", down); plotElement.removeEventListener("pointermove", move);
       plotElement.removeEventListener("pointerup", end); plotElement.removeEventListener("pointercancel", end);
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, xMode, rawMode, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, t]);
+
+  const controls = (<>
+        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
+          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
+        </button>
+        <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
+          {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
+            : provisional ? `Axes frozen; previewing zoom while the next frame renders. ${reason ? status : ""}` : status}
+        </span>
+  </>);
 
   return (
     <div className="graph-new-chart">
-      <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
+      {layers === undefined && <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
         {rawMode !== "line" && <span className="graph-new-legend-item"><span className="graph-new-point-swatch" aria-hidden="true" />{t("graphNew.points")}</span>}
         {rawMode !== "scatter" && <span className="graph-new-legend-item"><span className="graph-new-line-swatch" aria-hidden="true" />{t("graphNew.rawLine", { defaultValue: "Raw line" })}</span>}
-        {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable: complete data was not retained." })}</span>}
+        {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable for this view." })}</span>}
         {meanFrame?.visible && <span className="graph-new-legend-item" data-testid="mean-legend">
           <span className="graph-new-mean-swatch" aria-hidden="true" />{t("graphNew.mean")}
         </span>}
         {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
         {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
           && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
-      </div>
-      <span className="graph-new-y-title" data-testid="y-axis-title">{yTitle}</span>
+      </div>}
       <div className="graph-new-canvas-host" ref={host}>
         <canvas ref={canvas} role="img" aria-label="Point plot frame" style={{ visibility: hasFrame ? "visible" : "hidden" }} />
-        <div className="graph-new-axis-ticks" data-testid="x-axis-ticks" style={{ visibility: provisional ? "hidden" : "visible" }}>
-          {axisLabels.map((tick) => <span key={`${tick.left}:${tick.label}`} title={tick.label}
+        <div className="graph-new-axis-ticks graph-new-x-axis-ticks" data-testid="x-axis-ticks">
+          {axisLabels.x.map((tick) => <span key={`${tick.left}:${tick.label}`} title={tick.label}
+            style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
+        </div>
+        <div className="graph-new-axis-ticks graph-new-y-axis-ticks" data-testid="y-axis-ticks">
+          {axisLabels.y.map((tick) => <span key={`${tick.top}:${tick.label}`} title={tick.label}
             style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
         </div>
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
-        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
-          <i className="fa-solid fa-rotate-left" aria-hidden="true" />
-        </button>
+
       </div>
-      <span className="graph-new-x-title" data-testid="x-axis-title">{xTitle}</span>
-      <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
-        {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
-          : provisional ? `Axes frozen; preview cropped; hatched area awaits frame. ${reason ? status : ""}` : status}
-      </span>
+      {layerWarning && <span role="status" className="graph-new-layer-warning">{layerWarning}</span>}
+      {controlsHost ? createPortal(controls, controlsHost) : controls}
     </div>
   );
 }

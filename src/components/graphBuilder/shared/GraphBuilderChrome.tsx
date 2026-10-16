@@ -283,6 +283,8 @@ export function GraphBuilderRailSection({
 interface GraphLayerCardProps extends GraphSectionProps {
   label: string;
   onRemove?: () => void;
+  icon?: string;
+  modeBadge?: string;
   removeDisabled?: boolean;
   removeAriaLabel?: string;
 }
@@ -291,6 +293,8 @@ export function GraphLayerCard({
   label,
   children,
   onRemove,
+  icon,
+  modeBadge,
   removeDisabled = false,
   removeAriaLabel = `Remove ${label}`,
   className = "",
@@ -299,7 +303,8 @@ export function GraphLayerCard({
   return (
     <section className={`gb-shared-layer-card ${className}`} data-testid={testId}>
       <header>
-        <span>{label}</span>
+        <span>{icon && <span aria-hidden="true" className="gb-layer-icon">{icon} </span>}{label}</span>
+        {modeBadge && <span className="gb-layer-mode">{modeBadge}</span>}
         {onRemove && (
           <button
             type="button"

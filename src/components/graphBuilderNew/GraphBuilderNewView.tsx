@@ -1,23 +1,26 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { PanelSplitter } from "@/components/layout";
+import { useLayoutPreferencesStore, type LayoutPanelId } from "@/stores/useLayoutPreferencesStore";
+
 import { inferFieldType } from "@/graphCore";
 import { dataService } from "@/services/dataService";
 import { graphNewService, type GraphNewOverlayGroup } from "@/services/graphNewService";
 import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type { ColumnDescriptor, DatasetMeta } from "@/types/data";
-import type { GraphNewRawMode, GraphNewXMode } from "@/types/graphBuilderNew";
+import type { GraphNewXMode } from "@/types/graphBuilderNew";
 import {
   GraphBuilderRailSection,
   GraphBuilderToolbarSection,
   GraphDropSlot,
   GraphFieldPalette,
   GraphInspectorSection,
-  GraphLayerCard,
   GraphPlaceholderButton,
   type GraphDropSlotBinding,
 } from "@/components/graphBuilder/shared/GraphBuilderChrome";
+import { GraphBuilderNewLayers } from "./GraphBuilderNewLayers";
 import { GraphNewCanvas } from "./GraphNewCanvas";
 import { GraphNewOverlayLegend } from "./GraphNewOverlayLegend";
 
@@ -34,26 +37,47 @@ const unsubscribeSessionClose = useGraphBuilderNewStore.subscribe((state, previo
 });
 if (import.meta.hot) import.meta.hot.dispose(unsubscribeSessionClose);
 
+// Stack ratios are percentages; measure the available height once when dragging starts.
+function stackPointerScale(separator: HTMLElement) {
+  return 100 / Math.max(1, (separator.parentElement?.parentElement?.clientHeight ?? 0) - 6);
+}
+
+function useRailSize(id: LayoutPanelId, defaultValue: number, min: number, max: number) {
+  const preferred = useLayoutPreferencesStore((state) => state.sizes[id]);
+  const persist = useLayoutPreferencesStore((state) => state.setPanelSize);
+  const reset = useLayoutPreferencesStore((state) => state.resetPanelSize);
+  const clamp = (value: number) => Math.max(min, Math.min(max, value));
+  const [value, setValue] = useState(() => clamp(preferred ?? defaultValue));
+  useEffect(() => { setValue(clamp(preferred ?? defaultValue)); }, [preferred, defaultValue, min, max]);
+  return {
+    value, min, max, defaultValue,
+    onChange: (next: number) => setValue(clamp(next)),
+    onCommit: (next: number) => { setValue(clamp(next)); persist(id, clamp(next)); },
+    onReset: () => { setValue(defaultValue); reset(id); },
+  };
+}
+
 interface GraphBuilderNewViewProps {
   sessionId: string;
   dataset: DatasetMeta | undefined;
-  onClose: () => void;
 }
 
 export function GraphBuilderNewView({
   sessionId,
   dataset,
-  onClose,
 }: GraphBuilderNewViewProps) {
   const { t } = useTranslation();
+  const leftRail = useRailSize("graphBuilderNew.leftRail", 270, 270, 500);
+  const rightRail = useRailSize("graphBuilderNew.rightRail", 180, 160, 500);
+  const leftStack = useRailSize("graphBuilderNew.leftStack", 58, 15, 85);
+  const rightStack = useRailSize("graphBuilderNew.rightStack", 35, 15, 85);
   const session = useGraphBuilderNewStore((state) => (
     state.sessions.find((candidate) => candidate.id === sessionId)
   ));
   const setColumns = useGraphBuilderNewStore((state) => state.setColumns);
   const setOverlay = useGraphBuilderNewStore((state) => state.setOverlay);
   const setHiddenOverlayGroups = useGraphBuilderNewStore((state) => state.setHiddenOverlayGroups);
-  const setMean = useGraphBuilderNewStore((state) => state.setMean);
-  const setModes = useGraphBuilderNewStore((state) => state.setModes);
+  const setXMode = useGraphBuilderNewStore((state) => state.setXMode);
   const setCamera = useGraphBuilderNewStore((state) => state.setCamera);
   const readOnly = useProjectStore((state) => state.readOnly);
   const [columnMetadata, setColumnMetadata] = useState<{
@@ -63,9 +87,10 @@ export function GraphBuilderNewView({
     runtimeEpoch: number | undefined;
     descriptors: ColumnDescriptor[];
   } | null>(null);
+  const [pointRadius, setPointRadius] = useState(1);
+  const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [meanAvailable, setMeanAvailable] = useState<boolean | null>(null);
   const [overlayState, setOverlayState] = useState<{
     active: boolean;
     groups: GraphNewOverlayGroup[];
@@ -94,7 +119,6 @@ export function GraphBuilderNewView({
   const missingOverlay = Boolean(session?.overlayColumnId && !overlayColumnIds.has(session.overlayColumnId));
 
   useEffect(() => {
-    setMeanAvailable(null);
     setOverlayState({ active: false, groups: [] });
   }, [runtimeEpoch, session?.overlayColumnId, session?.xColumnId, session?.yColumnId, transportId]);
 
@@ -152,7 +176,7 @@ export function GraphBuilderNewView({
     setColumns(session.id, xColumnId || null, session.yColumnId);
   };
   const updateY = (yColumnId: string) => {
-    if (useProjectStore.getState().readOnly || (yColumnId && !xColumnIds.has(yColumnId))) return;
+    if (useProjectStore.getState().readOnly || (yColumnId && !numericColumnIds.has(yColumnId))) return;
     setColumns(session.id, session.xColumnId, yColumnId || null);
   };
   const updateOverlay = (overlayColumnId: string) => {
@@ -166,7 +190,7 @@ export function GraphBuilderNewView({
     columnId: column.columnId,
     name: column.name,
     sqlType: column.sqlType,
-    typeLabel: inferFieldType(column.sqlType) === "continuous" ? "#" : "A",
+    typeLabel: t(`dataTable.type.${column.sqlType}`, { defaultValue: column.sqlType }),
   }));
   const bindingFor = (columnId: string | null): GraphDropSlotBinding | null => {
     if (!columnId) return null;
@@ -177,25 +201,9 @@ export function GraphBuilderNewView({
       unavailable: !column,
     };
   };
-  const rawMode = session.rawMode ?? "scatter";
-  const hasPoints = rawMode !== "line";
-  const hasLine = rawMode !== "scatter";
-  const temporalX = session.xMode === "time" || session.xMode === "duration";
-  const activeLayers = [
-    ...(hasPoints ? [{ kind: "points" as const, label: t("graphNewUi.points") }] : []),
-    ...(hasLine ? [{
-      kind: "line" as const,
-      label: temporalX ? t("graphNewUi.timeSeries") : t("graphNewUi.line"),
-    }] : []),
-  ];
-  const setRawMode = (nextRawMode: GraphNewRawMode, nextXMode?: GraphNewXMode) => {
-    if (controlsDisabled) return;
-    const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
-    setModes(session.id, nextXMode ?? current?.xMode ?? "auto", nextRawMode);
-  };
+  const unavailableTitle = (feature: string) => t("graphNewUi.unavailable", { feature });
   const dropText = t("graphNewUi.dropColumn");
   const clearFieldLabel = (field: string) => t("graphNewUi.clearField", { field });
-  const unavailableTitle = (feature: string) => t("graphNewUi.unavailable", { feature });
 
   return (
     <main className="graph-builder-new gb-root">
@@ -212,20 +220,11 @@ export function GraphBuilderNewView({
           <GraphPlaceholderButton label={t("graphNewUi.sample")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.sample") })} className="gb-tb-btn" />
         </div>
         <div className="gb-toolbar-spacer" />
-        <span className="graph-builder-new-source">{dataset?.name ?? t("graphNew.sourceUnavailable")}</span>
-        <button
-          className="graph-builder-new-close"
-          type="button"
-          aria-label="Close Graph Builder-new"
-          title="Close"
-          onClick={onClose}
-        >
-          &times;
-        </button>
+        <div ref={setToolbarHost} className="graph-builder-new-toolbar-status" title={dataset?.name ?? t("graphNew.sourceUnavailable")} />
       </GraphBuilderToolbarSection>
 
-      <div className="gb-body graph-builder-new-body">
-        <aside className="gb-left graph-builder-new-left" aria-label={t("graphNewUi.columns")}>
+      <div className="gb-body graph-builder-new-body" style={{ "--graph-new-left-width": `${leftRail.value}px`, gridTemplateColumns: `${leftRail.value}px 6px minmax(0, 1fr) 6px ${rightRail.value}px` } as React.CSSProperties}>
+        <aside className="gb-left graph-builder-new-left" aria-label={t("graphNewUi.columns")} style={{ gridTemplateRows: `minmax(0, ${leftStack.value}fr) 6px minmax(0, ${100 - leftStack.value}fr)` }}>
           <GraphBuilderRailSection title={t("graphNewUi.columns")} className="graph-builder-new-columns">
             <GraphFieldPalette
               items={paletteItems}
@@ -234,79 +233,17 @@ export function GraphBuilderNewView({
               getItemAriaLabel={(item) => t("graphNewUi.dragField", { field: item.name })}
             />
           </GraphBuilderRailSection>
+          <div className="graph-builder-new-splitter graph-builder-new-splitter-horizontal">
+            <PanelSplitter {...leftStack} orientation="horizontal" unit="%" pointerScale={stackPointerScale} label="Resize new graph columns and layers" />
+          </div>
           <GraphBuilderRailSection title={t("graphNewUi.layers")} className="graph-builder-new-layers">
-            <div className="graph-builder-new-layer-list">
-              {activeLayers.map((layer, index) => (
-                <GraphLayerCard
-                  key={layer.kind}
-                  label={layer.label}
-                  testId={`graph-layer-${layer.kind}`}
-                  onRemove={() => setRawMode(
-                    layer.kind === "points" ? "line" : "scatter",
-                  )}
-                  removeDisabled={controlsDisabled || activeLayers.length === 1}
-                  removeAriaLabel={t("graphNewUi.removeLayer", { layer: layer.label })}
-                >
-                  {index === 0 && (
-                    <label className="graph-builder-new-mean-control">
-                      <input
-                        type="checkbox"
-                        checked={session.showMean ?? true}
-                        disabled={controlsDisabled || meanAvailable === false}
-                        onChange={(event) => setMean(session.id, event.target.checked)}
-                      />
-                      {t("graphNew.mean")}
-                    </label>
-                  )}
-                  <div className="graph-builder-new-layer-placeholders">
-                    <GraphPlaceholderButton
-                      label={layer.kind === "points" ? t("graphNewUi.pointSettings") : t("graphNewUi.lineSettings")}
-                      unavailableTitle={unavailableTitle(
-                        layer.kind === "points" ? t("graphNewUi.pointSettings") : t("graphNewUi.lineSettings"),
-                      )}
-                    />
-                  </div>
-                </GraphLayerCard>
-              ))}
-              <GraphLayerCard label={t("graphNewUi.addGraphElement")} testId="graph-layer-add">
-                <div className="graph-builder-new-add-options">
-                  <button type="button" disabled={controlsDisabled || hasPoints}
-                    onClick={() => setRawMode(hasLine ? "pointsLine" : "scatter")}>
-                    {t("graphNewUi.points")}
-                  </button>
-                  <button type="button" disabled={controlsDisabled || (hasLine && !temporalX)}
-                    onClick={() => {
-                      const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
-                      const currentXMode = current?.xMode ?? "auto";
-                      const currentTemporal = currentXMode === "time" || currentXMode === "duration";
-                      setRawMode(
-                        hasPoints ? "pointsLine" : "line",
-                        hasLine && currentTemporal ? "auto" : currentXMode,
-                      );
-                    }}>
-                    {t("graphNewUi.line")}
-                  </button>
-                  <button type="button" disabled={controlsDisabled || (hasLine && temporalX)}
-                    onClick={() => {
-                      const currentXMode = useGraphBuilderNewStore.getState().sessions
-                        .find(({ id }) => id === session.id)?.xMode ?? "auto";
-                      setRawMode(
-                        "line",
-                        currentXMode === "time" || currentXMode === "duration" ? currentXMode : "time",
-                      );
-                    }}>
-                    {t("graphNewUi.timeSeries")}
-                  </button>
-                  {(["bar", "smoother", "fitLine", "boxPlot", "histogram", "normalCurve", "surface", "contour"] as const).map((kind) => {
-                    const label = t(`graphNewUi.${kind}`);
-                    return <GraphPlaceholderButton key={kind} label={label} unavailableTitle={unavailableTitle(label)} />;
-                  })}
-                </div>
-              </GraphLayerCard>
-            </div>
+            <GraphBuilderNewLayers pointRadius={pointRadius} onPointRadiusChange={setPointRadius} documentId={session.id} layers={session.layers} disabled={controlsDisabled} />
           </GraphBuilderRailSection>
         </aside>
 
+        <div className="graph-builder-new-splitter graph-builder-new-splitter-vertical">
+          <PanelSplitter {...leftRail} orientation="vertical" unit="px" label="Resize new graph left rail" />
+        </div>
         <section className="graph-builder-new-workspace">
           <GraphDropSlot
             slot="y"
@@ -350,10 +287,13 @@ export function GraphBuilderNewView({
             <p role="status">{t("graphNewUi.unsupportedCombination")}</p>
           ) : numericColumns.length === 0 ? (
             <p role="status">This table has no numeric columns.</p>
+          ) : session.layers.length === 0 && session.xColumnId && session.yColumnId ? (
+            <p role="status">{t("graphNewUi.addLayerHint")}</p>
           ) : transportAvailable && session.xColumnId && session.yColumnId
             && xColumnIds.has(session.xColumnId) && numericColumnIds.has(session.yColumnId) ? (
             <GraphNewCanvas
               key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.overlayColumnId, session.xMode ?? "auto"])}
+              controlsHost={toolbarHost}
               transportId={session.transportId}
               datasetId={session.datasetId}
               datasetGeneration={session.datasetGeneration}
@@ -361,12 +301,13 @@ export function GraphBuilderNewView({
               yColumnId={session.yColumnId}
               overlayColumnId={session.overlayColumnId ?? null}
               hiddenOverlayGroupIds={session.hiddenOverlayGroupIds}
-              showMean={session.showMean ?? true}
+              layers={session.layers}
+              showMean={false}
+              pointRadius={pointRadius}
               xMode={session.xMode ?? "auto"}
-              rawMode={session.rawMode ?? "scatter"}
+              rawMode="scatter"
               savedCamera={session.camera ?? null}
               readOnly={readOnly}
-              onMeanAvailabilityChange={setMeanAvailable}
               onOverlayStateChange={setOverlayState}
               onCameraChange={(camera) => {
                 const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
@@ -378,11 +319,9 @@ export function GraphBuilderNewView({
                   && current.overlayColumnId === session.overlayColumnId
                   && current.xMode === session.xMode) setCamera(session.id, camera);
               }}
-              xTitle={columns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
-              yTitle={columns.find((column) => column.columnId === session.yColumnId)?.name ?? ""}
             />
           ) : (
-            <div className="graph-builder-new-plot-placeholder" aria-hidden="true" />
+            <div className="gb-empty" role="status">{t("graph.dragHint")}</div>
           )}
           </section>
           <GraphDropSlot
@@ -403,11 +342,7 @@ export function GraphBuilderNewView({
                   aria-label="X axis interpretation"
                   value={session.xMode ?? "auto"}
                   disabled={controlsDisabled}
-                  onChange={(event) => setModes(
-                    session.id,
-                    event.target.value as GraphNewXMode,
-                    session.rawMode ?? "scatter",
-                  )}
+                  onChange={(event) => setXMode(session.id, event.target.value as GraphNewXMode)}
                 >
                   {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) => (
                     <option key={mode} value={mode}>
@@ -428,7 +363,10 @@ export function GraphBuilderNewView({
           />
         </section>
 
-        <aside className="graph-builder-new-inspector" aria-label="Graph options">
+        <div className="graph-builder-new-splitter graph-builder-new-splitter-vertical">
+          <PanelSplitter {...rightRail} orientation="vertical" direction={-1} unit="px" label="Resize new graph right rail" />
+        </div>
+        <aside className="graph-builder-new-inspector" aria-label="Graph options" style={{ gridTemplateRows: `minmax(0, ${rightStack.value}fr) 6px minmax(0, ${100 - rightStack.value}fr)` }}>
           <GraphInspectorSection title={t("graphNewUi.legend")}>
             <div className="graph-builder-new-legend">
               <GraphDropSlot
@@ -452,6 +390,9 @@ export function GraphBuilderNewView({
               )}
             </div>
           </GraphInspectorSection>
+          <div className="graph-builder-new-splitter graph-builder-new-splitter-horizontal">
+            <PanelSplitter {...rightStack} orientation="horizontal" unit="%" pointerScale={stackPointerScale} label="Resize new graph legend and style" />
+          </div>
           <GraphInspectorSection title={t("graphNewUi.style")}>
             <GraphPlaceholderButton label={t("graphNewUi.styleOptions")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.styleOptions") })} />
             <GraphPlaceholderButton label={t("graphNewUi.groupByX")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.groupByX") })} />
@@ -482,7 +423,7 @@ export function GraphBuilderNewView({
           </label>
           <label>
             <span>Y field</span>
-            <select data-testid="legacy-y-field" tabIndex={-1} value={session.yColumnId ?? ""} disabled={controlsDisabled || numericColumns.length === 0}
+            <select aria-label="Y field" data-testid="legacy-y-field" tabIndex={-1} value={session.yColumnId ?? ""} disabled={controlsDisabled || numericColumns.length === 0}
               onChange={(event) => updateY(event.target.value)}>
               <option value="">Select a field</option>
               {!loading && !stale && !missingDataset && missingY && <option value={session.yColumnId!} disabled>{t("graphNew.fieldUnavailable", { field: session.yColumnId })}</option>}
@@ -502,20 +443,12 @@ export function GraphBuilderNewView({
             <span>{t("graphNew.xInterpretation", { defaultValue: "X interpretation" })}</span>
             <select data-testid="legacy-x-interpretation" tabIndex={-1} value={session.xMode ?? "auto"}
               disabled={controlsDisabled}
-              onChange={(event) => setModes(session.id, event.target.value as GraphNewXMode, session.rawMode ?? "scatter")}>
+              onChange={(event) => setXMode(session.id, event.target.value as GraphNewXMode)}>
               {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) =>
                 <option key={mode} value={mode}>{t(`graphNew.xMode.${mode}`, { defaultValue: mode })}</option>)}
             </select>
           </label>
-          <label>
-            <span>{t("graphNew.rawSeries", { defaultValue: "Raw series" })}</span>
-            <select data-testid="legacy-raw-series" tabIndex={-1} value={session.rawMode ?? "scatter"}
-              disabled={controlsDisabled}
-              onChange={(event) => setModes(session.id, session.xMode ?? "auto", event.target.value as GraphNewRawMode)}>
-              {(["scatter", "line", "pointsLine"] as const).map((mode) =>
-                <option key={mode} value={mode}>{t(`graphNew.rawMode.${mode}`, { defaultValue: mode })}</option>)}
-            </select>
-          </label>
+
         </div>
       </div>
 

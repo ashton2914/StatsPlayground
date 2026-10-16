@@ -1,5 +1,8 @@
 {
+  "graphNew": {
+    "jitterBudget": "抖動計算超出資源預算；目前顯示完整原始散點。", "pointRadius": "點半徑（像素）" },
   "graphNewUi": {
+    "addLayerHint": "新增圖形元素以開始繪圖",
     "columns": "欄",
     "layers": "圖層",
     "legend": "圖例",

@@ -1,5 +1,6 @@
 {
   "graphNewUi": {
+    "addLayerHint": "添加图形元素以开始绘图",
     "columns": "列",
     "layers": "图层",
     "legend": "图例",
@@ -41,6 +42,8 @@
     "unavailable": "{{feature}} 尚未实现。"
   },
   "graphNew": {
+    "jitterBudget": "抖动计算超出资源预算；当前显示完整原始散点。",
+    "pointRadius": "点半径（像素）",
     "sourceUnavailable": "源数据表已不可用。",
     "sourceChanged": "源数据表已更改。请关闭此视图并重新打开。",
     "fieldUnavailable": "{{field}}（不可用）",
@@ -58,14 +61,14 @@
     "xMode": { "auto": "自动", "numeric": "数值", "time": "时间", "duration": "时长", "category": "类别" },
     "rawMode": { "scatter": "散点", "line": "折线", "pointsLine": "散点 + 折线" },
     "rawLine": "原始折线",
-    "rawUnavailable": "原始折线不可用：未保留完整数据。",
+    "rawUnavailable": "当前视图暂不支持原始折线。",
     "xUnrepresentable": "此 X 字段超出坐标轴可表示范围。",
     "cachePressure": "图表超出了渲染内存预算。请隐藏图层或重置视图。",
     "gpuValidation": "图表渲染未通过 GPU 校验。请隐藏图层或重置视图。",
     "layers": "图层",
     "mean": "均值",
     "points": "散点",
-    "meanUnavailable": "均值不可用：未保留完整数据。",
+    "meanUnavailable": "当前视图暂不支持均值。",
     "meanNeedsGroups": "均值线需要至少两个不同的 X 值。",
     "textFieldType": "文本",
     "timestampFieldType": "时间戳",

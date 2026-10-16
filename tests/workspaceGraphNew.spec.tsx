@@ -20,12 +20,12 @@ test("two configured documents survive Workspace save close reset open and indep
   const state = () => page.evaluate(() => (window as any).__workspacePersistence.snapshot());
   await component.getByTestId("graph-new-document-native-one").click();
   await expect(component.getByLabel("X field")).toHaveValue("x");
-  await expect(component.getByLabel("Raw series")).toHaveValue("line");
-  await expect(component.getByRole("checkbox", { name: "Mean", exact: true })).not.toBeChecked();
-  await component.getByRole("button", { name: "Close Graph Builder-new", exact: true }).click();
+  await expect(component.getByTestId("graph-layer-line").first().getByLabel("Summary Statistic")).toHaveValue("none");
+  await expect(component.getByTestId("graph-layer-points")).toHaveCount(0);
+  await component.getByText("Measurements.sptb", {exact:true}).click();
   await component.getByTestId("graph-new-document-native-two").click();
-  await component.getByLabel("Raw series").selectOption("scatter");
-  await component.getByRole("button", { name: "Close Graph Builder-new", exact: true }).click();
+  await component.getByTestId("graph-layer-line").first().getByLabel("Connection").selectOption("step");
+  await component.getByText("Measurements.sptb", {exact:true}).click();
   const before = (await state()).documents;
   await component.locator(".menu-bar-save").click();
   await expect.poll(async () => (await state()).saveCount).toBe(1);
@@ -41,13 +41,13 @@ test("two configured documents survive Workspace save close reset open and indep
   expect((await state()).sessions).toEqual([]);
   expect((await state()).dirty).toBe(false);
   await component.getByTestId("graph-new-document-native-one").click();
-  await expect(component.getByLabel("Raw series")).toHaveValue("line");
+  await expect(component.getByTestId("graph-layer-line").first().getByLabel("Summary Statistic")).toHaveValue("none");
   await expect.poll(async () => (await state()).renderRequests.at(-1)?.cameraDomain).toEqual(before[0].camera);
   expect((await state()).sessions[0].datasetGeneration).toBe(23);
   await component.getByTestId("graph-new-document-native-two").click();
   await expect(component.getByLabel("X field")).toHaveValue("y");
   await expect(component.getByLabel("X interpretation")).toHaveValue("duration");
-  await expect(component.getByLabel("Raw series")).toHaveValue("scatter");
+  await expect(component.getByTestId("graph-layer-line").first().getByLabel("Connection")).toHaveValue("step");
   await component.getByText("Legacy.spgh", { exact: true }).click();
   await expect(component.locator(".graph-builder-new")).toHaveCount(0);
   expect((await state()).legacy).toHaveLength(1);
@@ -69,7 +69,7 @@ for (const dirty of [false, true]) {
     await expect(component.getByLabel("X field")).toHaveValue("x");
     await component.locator(".menu-bar-save").click();
     await expect.poll(async () => (await state()).saveCount).toBe(1);
-    if (dirty) await component.getByLabel("Raw series").selectOption("scatter");
+    if (dirty) await component.getByTestId("graph-layer-line").first().getByLabel("Connection").selectOption("step");
     const before = await state();
     await page.evaluate(() => (window as any).__workspacePersistence.failOpen("unsupported future native graph version"));
     const dialogs: string[] = [];
@@ -98,7 +98,7 @@ test("dirty project open cancellation preserves selection and never calls open",
   const state = () => page.evaluate(() => (window as any).__workspacePersistence.snapshot());
   const first = component.getByTestId("graph-new-document-native-one");
   await first.click();
-  await component.getByLabel("Raw series").selectOption("scatter");
+  await component.getByTestId("graph-layer-line").first().getByLabel("Connection").selectOption("step");
   const before = await state();
   page.once("dialog", (dialog) => dialog.dismiss());
   await component.getByRole("button", { name: "File", exact: true }).click();
@@ -200,18 +200,17 @@ test("actual create action clears table selection and saves two independently ed
   for (const [xMode, rawMode] of [["numeric", "scatter"], ["duration", "pointsLine"]]) {
     await component.getByText("Measurements.sptb", { exact: true }).click();
     await component.getByRole("button", { name: "Graph", exact: true }).click();
-    await component.getByRole("menuitem", { name: "Graph Builder-new", exact: true }).click();
-    await component.getByLabel("X field").selectOption("x");
-    await component.getByLabel("Y field", { exact: true }).selectOption("y");
-    await component.getByLabel("X interpretation").selectOption(xMode);
-    await component.getByLabel("Raw series").selectOption(rawMode);
-    await component.getByRole("checkbox", { name: "Mean", exact: true }).uncheck();
-    await component.getByRole("button", { name: "Close Graph Builder-new", exact: true }).click();
+    await component.getByRole("menuitem", { name: "Graph Builder for massive data", exact: true }).click();
+    await component.getByTestId("graph-field-x").dragTo(component.getByTestId("graph-slot-x"));
+    await component.getByTestId("graph-field-y").dragTo(component.getByTestId("graph-slot-y"));
+    await component.getByLabel("X axis interpretation").selectOption(xMode);
+    if(rawMode === "pointsLine"){await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();}
+    await component.getByText("Measurements.sptb", {exact:true}).click();
   }
   await component.locator(".menu-bar-save").click();
   await expect.poll(() => page.evaluate(() => (window as any).__workspacePersistence.snapshot().saveCount)).toBe(1);
   const state = await page.evaluate(() => (window as any).__workspacePersistence.snapshot());
-  expect(state.saved.graphBuildersNew.slice(2).map((item: any) => [item.xMode, item.rawMode, item.showMean])).toEqual([["numeric", "scatter", false], ["duration", "pointsLine", false]]);
+  expect(state.saved.graphBuildersNew.slice(2).map((item: any) => [item.xMode, item.layers.map((l:any)=>l.kind)])).toEqual([["numeric", ["points"]], ["duration", ["points","line"]]]);
   expect(state.sessions).toEqual([]);
 });
 
@@ -219,7 +218,7 @@ test("save lock blocks edits and project replacement while failure retains dirty
   const component = await mount(<WorkspaceGraphNewHarness />);
   const state = () => page.evaluate(() => (window as any).__workspacePersistence.snapshot());
   await component.getByTestId("graph-new-document-native-one").click();
-  await component.getByLabel("Raw series").selectOption("scatter");
+  await component.getByTestId("graph-layer-line").first().getByLabel("Connection").selectOption("step");
   await page.evaluate(() => { (window as any).__workspacePersistence.holdSave(); (window as any).__workspacePersistence.failSave(true); });
   await component.locator(".menu-bar-save").click();
   await expect.poll(async () => (await state()).readOnly).toBe(true);
@@ -232,13 +231,13 @@ test("save lock blocks edits and project replacement while failure retains dirty
   await page.evaluate(() => (window as any).__workspacePersistence.releaseSave());
   await expect.poll(async () => (await state()).readOnly).toBe(false);
   expect((await state()).dirty).toBe(true);
-  expect((await state()).documents[0].rawMode).toBe("scatter");
+  expect((await state()).documents[0].layers[0].options.connection).toBe("step");
 });
 
 test("dirty project close can be cancelled without losing native documents", async ({ mount, page }) => {
   const component = await mount(<WorkspaceGraphNewHarness />);
   await component.getByTestId("graph-new-document-native-one").click();
-  await component.getByLabel("Raw series").selectOption("scatter");
+  await component.getByTestId("graph-layer-line").first().getByLabel("Connection").selectOption("step");
   let prompted = false;
   page.once("dialog", async (dialog) => { prompted = true; await dialog.dismiss(); });
   await component.getByRole("button", { name: "File", exact: true }).click();
@@ -337,7 +336,7 @@ for (const width of [1280, 600]) {
     await page.setViewportSize({ width, height: 800 });
     const component = await mount(<WorkspaceGraphNewHarness />);
     await component.getByTestId("graph-new-document-native-one").click();
-    await expect(component.getByRole("checkbox", { name: "Mean", exact: true })).toBeVisible();
+    await expect(component.getByTestId("graph-layer-line").first().getByLabel("Summary Statistic")).toBeVisible();
     await expect.poll(() => component.locator(".graph-builder-new canvas").first().evaluate((element) => {
       const canvas = element as HTMLCanvasElement;
       const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;

@@ -8,11 +8,11 @@ use tempfile::tempfile;
 use super::graph_new_lod::{GraphCamera, SourcePoint};
 use crate::error::AppError;
 
-const RECORD_BYTES: u64 = 32;
+pub(crate) const RECORD_BYTES: u64 = 40;
 const BLOCK_BYTES: u64 = 80;
 const PAGE_POINTS: usize = 128;
 const BUFFER_POINTS: usize = 4096;
-const MAGIC: &[u8; 8] = b"GNRAW002";
+const MAGIC: &[u8; 8] = b"GNRAW003";
 pub const QUERY_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(PartialEq)]
@@ -362,18 +362,24 @@ fn read_block(file: &mut File, start: u64, block: &Block) -> Result<Vec<SourceRe
     Ok(records)
 }
 
-fn encode(record: SourceRecord) -> [u8; 32] {
-    let mut bytes = [0; 32];
+pub(crate) fn encode(record: SourceRecord) -> [u8; 40] {
+    let mut bytes = [0; 40];
     bytes[..8].copy_from_slice(&record.scan_ordinal.to_le_bytes());
     bytes[8..16].copy_from_slice(&record.point.row_id.to_le_bytes());
     bytes[16..24].copy_from_slice(&record.point.x.to_le_bytes());
-    bytes[24..].copy_from_slice(&record.point.y.to_le_bytes());
+    bytes[24..32].copy_from_slice(&record.point.y.to_le_bytes());
+    bytes[32..].copy_from_slice(&u64::from(record.point.group_code).to_le_bytes());
     bytes
 }
 
-fn read_record(reader: &mut impl Read) -> Result<SourceRecord, AppError> {
-    Ok(SourceRecord { scan_ordinal: read_u64(reader)?, point: SourcePoint::new(
-        read_u64(reader)? as i64, f64::from_bits(read_u64(reader)?), f64::from_bits(read_u64(reader)?)) })
+pub(crate) fn read_record(reader: &mut impl Read) -> Result<SourceRecord, AppError> {
+    let scan_ordinal = read_u64(reader)?;
+    let row_id = read_u64(reader)? as i64;
+    let x = f64::from_bits(read_u64(reader)?);
+    let y = f64::from_bits(read_u64(reader)?);
+    let group = read_u64(reader)?;
+    if group > u16::MAX as u64 { return Err(invalid()); }
+    Ok(SourceRecord { scan_ordinal, point: SourcePoint::with_group(row_id, x, y, group as u16) })
 }
 
 fn read_u64(reader: &mut impl Read) -> Result<u64, AppError> {
@@ -442,7 +448,7 @@ mod tests {
         let mut output = CountedFile { file: tempfile().expect("file"), writes: 0 };
         store.write_cache(&mut output).expect("write cache");
         let length = output.file.stream_position().expect("length");
-        assert_eq!(length, 267328);
+        assert_eq!(length, 32 + 64 * 80 + 8193 * RECORD_BYTES);
         output.file.seek(SeekFrom::Start(0)).expect("rewind");
         let restored = RawStore::read_cache(Arc::new(Mutex::new(output.file)), length,
             8192, 1, 128 * 1024 * 1024).expect("restore");
@@ -458,7 +464,7 @@ mod tests {
         }).expect("visit");
         assert_eq!(visited, 8193);
         let max_writes = (32 + 64 * 80usize).div_ceil(1024)
-            + (8192 * 32usize).div_ceil(8192) + 1;
+            + (8192 * RECORD_BYTES as usize).div_ceil(8192) + 1;
         eprintln!("raw cache: {} writes for {length} bytes", output.writes);
         assert!(output.writes <= max_writes,
             "raw cache used {} writes, bounded batched maximum is {max_writes}", output.writes);
@@ -494,7 +500,7 @@ mod tests {
         assert_eq!(records[1].point.y, 7.0);
         assert_eq!(records[2].point, SourcePoint::new(9, -3.5, 6.25));
         assert_eq!(records[3].point.y, f64::INFINITY);
-        assert_eq!(store.disk_bytes(), 128);
+        assert_eq!(store.disk_bytes(), 4 * RECORD_BYTES);
         assert_eq!(store.persisted_bytes(), bytes(&store).len() as u64);
     }
 
@@ -509,8 +515,8 @@ mod tests {
                 "bounds" => data[48..56].copy_from_slice(&(-4.0f64).to_le_bytes()),
                 "nan" => data[128..136].copy_from_slice(&f64::NAN.to_le_bytes()),
                 "row_id" => data[120..128].copy_from_slice(&0u64.to_le_bytes()),
-                "duplicate_ordinal" => data[144..152].copy_from_slice(&0u64.to_le_bytes()),
-                "gap_order" => data[208..216].copy_from_slice(&1u64.to_le_bytes()),
+                "duplicate_ordinal" => data[152..160].copy_from_slice(&0u64.to_le_bytes()),
+                "gap_order" => data[232..240].copy_from_slice(&1u64.to_le_bytes()),
                 "truncated" => { data.pop(); },
                 _ => data.push(0),
             }

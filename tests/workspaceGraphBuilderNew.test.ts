@@ -55,7 +55,7 @@ try {
   assert.equal(useGraphBuilderNewStore.getState().items.length, 2, "close retains the durable definition");
   const saved = JSON.parse(JSON.stringify(useGraphBuilderNewStore.getState().items));
   assert.equal("datasetGeneration" in saved[0], false);
-  assert.deepEqual(Object.keys(saved[0]).sort(), ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "showMean", "xMode", "rawMode", "camera"].sort());
+  assert.deepEqual(Object.keys(saved[0]).sort(), ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "layers", "xMode", "camera"].sort());
   useGraphBuilderNewStore.getState().reset();
   useProjectStore.setState({ dirty: false });
   useGraphBuilderNewStore.getState().loadFromProject(saved);
@@ -128,7 +128,7 @@ try {
   assert.equal(useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === first)?.xColumnId, "missing-column");
   const beforeInvalid = useGraphBuilderNewStore.getState();
   assert.throws(() => useGraphBuilderNewStore.getState().setCamera(first, { xMin: NaN, xMax: 1, yMin: 0, yMax: 1 }), /invalid_camera/);
-  assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], version: 3 } as any]), /unsupported_document_version/);
+  assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], version: 4 } as any]), /unsupported_document_version/);
   assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], overlayColumnId: null, hiddenOverlayGroupIds: ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }]), /invalid_overlay_state/);
   assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([saved[0], saved[0]]), /duplicate_document_id/);
   assert.strictEqual(useGraphBuilderNewStore.getState(), beforeInvalid, "invalid loads are atomic");
@@ -155,7 +155,8 @@ try {
 
   assert.equal(openedId, sessionId);
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions, [{
-    version: 2,
+    version: 3,
+    layers: useGraphBuilderNewStore.getState().items.find(item=>item.id === sessionId)!.layers,
     id: sessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[0].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[0].runtimeEpoch,
@@ -167,7 +168,7 @@ try {
     yColumnId: null,
     overlayColumnId: null,
     hiddenOverlayGroupIds: [],
-    showMean: true,
+    showMean: false,
     xMode: "auto",
     rawMode: "scatter",
   }]);
@@ -175,7 +176,8 @@ try {
   useGraphBuilderNewStore.getState().setMean(sessionId, false);
   useGraphBuilderNewStore.getState().setColumns(sessionId, "column-x", "column-y");
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions[0], {
-    version: 2,
+    version: 3,
+    layers: useGraphBuilderNewStore.getState().items.find(item=>item.id === sessionId)!.layers,
     id: sessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[0].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[0].runtimeEpoch,
@@ -207,7 +209,8 @@ try {
   assert.equal(replacementId, replacementSessionId);
   assert.equal(useGraphBuilderNewStore.getState().sessions.length, 2);
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions[1], {
-    version: 2,
+    version: 3,
+    layers: useGraphBuilderNewStore.getState().items.find(item=>item.id === replacementSessionId)!.layers,
     id: replacementSessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[1].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[1].runtimeEpoch,
@@ -219,7 +222,7 @@ try {
     yColumnId: null,
     overlayColumnId: null,
     hiddenOverlayGroupIds: [],
-    showMean: true,
+    showMean: false,
     xMode: "auto",
     rawMode: "scatter",
   });
@@ -269,12 +272,9 @@ const legacy = {
 } as const;
 useProjectStore.setState({ dirty: false, readOnly: false });
 useGraphBuilderNewStore.getState().loadFromProject([legacy]);
-assert.deepEqual(useGraphBuilderNewStore.getState().items[0], {
-  ...legacy,
-  version: 2,
-  overlayColumnId: null,
-  hiddenOverlayGroupIds: [],
-});
+assert.equal(useGraphBuilderNewStore.getState().items[0].version,3);
+assert.equal(useGraphBuilderNewStore.getState().items[0].layers.length,2);
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].camera,legacy.camera);
 assert.equal(useProjectStore.getState().dirty, false);
 const legacyId = useGraphBuilderNewStore.getState().items[0].id;
 const legacyCamera = useGraphBuilderNewStore.getState().items[0].camera;

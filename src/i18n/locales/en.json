@@ -1,5 +1,6 @@
 {
   "graphNewUi": {
+    "addLayerHint": "Add a graph element to begin",
     "columns": "Columns",
     "layers": "Layers",
     "legend": "Legend",
@@ -41,6 +42,8 @@
     "unavailable": "{{feature}} is not available yet."
   },
   "graphNew": {
+    "jitterBudget": "Jitter exceeds the resource budget; displaying the complete Scatter without jitter.",
+    "pointRadius": "Point radius (px)",
     "sourceUnavailable": "The source table is no longer available.",
     "sourceChanged": "The source table changed. Close this session and open a new one.",
     "fieldUnavailable": "{{field}} (unavailable)",
@@ -58,14 +61,14 @@
     "xMode": { "auto": "Auto", "numeric": "Numeric", "time": "Time", "duration": "Duration", "category": "Category" },
     "rawMode": { "scatter": "Scatter", "line": "Line", "pointsLine": "Points + line" },
     "rawLine": "Raw line",
-    "rawUnavailable": "Raw line unavailable: complete data is not retained.",
+    "rawUnavailable": "Raw line unavailable for this view.",
     "xUnrepresentable": "This X field cannot be represented within the axis limits.",
     "cachePressure": "Plot exceeded the render memory budget. Hide layers or reset the view.",
     "gpuValidation": "Plot rendering failed GPU validation. Hide layers or reset the view.",
     "layers": "Plot layers",
     "mean": "Mean",
     "points": "Points",
-    "meanUnavailable": "Mean unavailable: complete data is not retained.",
+    "meanUnavailable": "Mean unavailable for this view.",
     "meanNeedsGroups": "Mean line requires at least two distinct X values.",
     "textFieldType": "Text",
     "timestampFieldType": "Timestamp",

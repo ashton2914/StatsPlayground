@@ -55,6 +55,13 @@ async function main() {
   rejectRender("database /private/user/secret.db failed");
   await assert.rejects(failed.completion, /graph_new_render_failed/);
   assert.deepEqual(errors, ["graph_new_render_failed"]);
+  assert.equal(failed.diagnostic(), "backend_invoke_invalid");
+  const explicitRenderFailure = graphNewService.render({ ...request, requestId: "render-3" }, {
+    activeIdentity: () => ({ ...request, requestId: "render-3" }), onFrame: () => {}, onError: () => {},
+  });
+  rejectRender("Stats error: graph_new_render_failed");
+  await assert.rejects(explicitRenderFailure.completion, /graph_new_render_failed/);
+  assert.equal(explicitRenderFailure.diagnostic(), "backend_render_failed");
   for (const invalid of [{ width: 95 }, { height: 63 }, { devicePixelRatio: 9 },
     { datasetGeneration: -1 }, { cameraGeneration: 1.5 }, { rendererGeneration: Number.MAX_SAFE_INTEGER + 1 }]) {
     assert.throws(() => graphNewService.render({ ...request, ...invalid }, {
@@ -67,6 +74,7 @@ async function main() {
   resolveRender({ requestId: request.requestId, processedRows: 4, finiteRows: -3,
     excludedNonFiniteRows: 1, selectedMarks: 3, buildMs: 0, renderMs: 0, readbackMs: 0, width: 96, height: 64 });
   await assert.rejects(invalidCompletion.completion, /graph_new_render_failed/);
+  assert.equal(invalidCompletion.diagnostic?.(), "graph_new_completion_overlay_invalid");
   const malformed = graphNewService.render(request, {
     activeIdentity: () => request, onFrame: () => assert.fail("bad metadata must not present"), onError: () => {},
   });
@@ -81,18 +89,79 @@ async function main() {
     exactVisible: true, visibleRows: 2, rawIndexEntriesInspected: 1, rawBlocksInspected: 1, rawPointsInspected: 3,
     excludedNonFiniteRows: 1, selectedMarks: 2, buildMs: 0, renderMs: 1, readbackMs: 1, width: 96, height: 64,
     cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4,
+    xAxis: { kind: "numeric", utc: false, ticks: [{ value: 0.5, position: 0.5, label: "0.5" }] },
+    yAxis: { kind: "numeric", utc: false, ticks: [{ value: 0.5, position: 0.5, label: "0.5" }] },
     overlayActive: false, overlayGroups: [], hiddenOverlayGroups: 0 };
   const handlers = { activeIdentity: () => cameraRequest, onFrame: () => {}, onError: () => {} };
+  for (const pixelCounts of [{ finiteRows: 100_000_000, visibleRows: 100_000_000, selectedMarks: 2 },
+    { finiteRows: 3, visibleRows: 2, selectedMarks: 32 },
+    { finiteRows: 3, visibleRows: 0, selectedMarks: 4 }]) {
+    const pixel = { ...cameraCompletion, ...pixelCounts, processedRows: pixelCounts.finiteRows,
+      excludedNonFiniteRows: 0, rawPointsInspected: 0, pixelAggregated: true };
+    const rendered = graphNewService.render(cameraRequest, handlers);
+    resolveRender(pixel);
+    assert.deepEqual(await rendered.completion, pixel, "full-source pixels are not point geometry counts");
+    const invalid = graphNewService.render(cameraRequest, handlers);
+    resolveRender({ ...pixel, pixelAggregated: false });
+    await assert.rejects(invalid.completion, /graph_new_render_failed/);
+    for (const invalidPixels of [{ pixelAggregated: "true" }, { exactVisible: false }, { selectedMarks: 257 },
+      { cameraDomain: { ...cameraDomain, xMin: cameraDomain.xMin + Number.EPSILON } }]) {
+      const rejected = graphNewService.render(cameraRequest, handlers);
+      resolveRender({ ...pixel, ...invalidPixels });
+      await assert.rejects(rejected.completion, /graph_new_render_failed/);
+    }
+  }
   for (const invalid of [{ xMode: "guessLocale" }, { rawMode: "mean" }, { rawMode: false }]) {
     assert.throws(() => graphNewService.render({ ...cameraRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
   }
+  const layer = { id: "p", kind: "points", options: { summaryStat: "none", errorInterval: "auto", intervalStyle: "errorBar", jitter: "stacked", jitterLimit: 0.5 } } as const;
+  for (const layers of [[layer, layer], [{...layer,options:{...layer.options,jitterLimit:2}}], [{...layer,options:{...layer.options,unknown:true}}]]) {
+    assert.throws(()=>graphNewService.render({...cameraRequest,layers} as any,handlers),/graph_new_invalid_layer/);
+  }
+  const layerRequest={...cameraRequest,layers:[layer],layerConfigurationId:"new"} as any;
+  const staleLayer=graphNewService.render(layerRequest,{...handlers,activeIdentity:()=>layerRequest});
+  resolveRender({...cameraCompletion,layerConfigurationId:"old",layerStates:[{layerId:"p",available:true,marks:2,reason:null}]});
+  await assert.rejects(staleLayer.completion,/graph_new_render_failed/);assert.equal(staleLayer.diagnostic(),"graph_new_completion_layers_invalid");
+  const approximateScatterRequest = { ...cameraRequest, rawMode: "scatter" } as const;
+  const approximateScatterCompletion = {
+    ...cameraCompletion,
+    rawMode: "scatter",
+    rawLineAvailable: true,
+    rawLineSegments: 0,
+    exactVisible: false,
+  } as const;
+  const approximateScatter = graphNewService.render(approximateScatterRequest, {
+    activeIdentity: () => approximateScatterRequest,
+    onFrame: () => {},
+    onError: () => {},
+  });
+  resolveRender(approximateScatterCompletion);
+  assert.deepEqual(await approximateScatter.completion, approximateScatterCompletion);
+  const rebuiltCamera = graphNewService.render(cameraRequest, handlers);
+  const rebuiltCameraCompletion = { ...cameraCompletion, sourceProjectionQueryCount: 1 };
+  resolveRender(rebuiltCameraCompletion);
+  await assert.rejects(rebuiltCamera.completion, /graph_new_render_failed/);
+  assert.equal(rebuiltCamera.diagnostic?.(), "graph_new_completion_identity_invalid");
+  const authoritativeCamera = graphNewService.render(cameraRequest, handlers);
+  const authoritativeCameraCompletion = {
+    ...cameraCompletion,
+    cameraDomain: { ...cameraDomain, xMax: 1 },
+    xAxis: { ...cameraCompletion.xAxis, ticks: [] },
+  };
+  resolveRender(authoritativeCameraCompletion);
+  await assert.rejects(authoritativeCamera.completion, /graph_new_render_failed/);
   const typedRequest = { ...cameraRequest, xMode: "duration", rawMode: "pointsLine" } as const;
   const typedCompletion = { ...cameraCompletion, selectedMarks: 3, rawMode: "pointsLine", rawLineAvailable: true, rawLineSegments: 2,
     xAxis: { kind: "duration", utc: false, ticks: [{ value: 0.5, position: 0.5, label: null }] } };
+  const { yAxis: _missingYAxis, ...completionWithoutYAxis } = typedCompletion;
   for (const invalid of [
     { ...typedCompletion, rawLineSegments: 3 }, { ...typedCompletion, rawLineAvailable: false },
+    { ...typedCompletion, exactVisible: false, visibleRows: null },
     { ...typedCompletion, xAxis: { ...typedCompletion.xAxis, ticks: [{ value: 0.5, position: 2, label: null }] } },
     { ...typedCompletion, xAxis: { ...typedCompletion.xAxis, kind: "category" } },
+    completionWithoutYAxis,
+    { ...typedCompletion, yAxis: { ...typedCompletion.yAxis, kind: "duration" } },
+    { ...typedCompletion, yAxis: { ...typedCompletion.yAxis, ticks: [{ value: 0.25, position: 0.75, label: "0.25" }] } },
   ]) {
     const typed = graphNewService.render(typedRequest, handlers);
     resolveRender(invalid);
@@ -156,7 +225,9 @@ async function main() {
     await assert.rejects(pending.completion, /graph_new_render_failed/);
   }
   const extremeCompletion = { ...cameraCompletion, cameraDomain: { xMin: -1e308, xMax: 1e308, yMin: 0, yMax: 1 },
-    xAxis: { kind: "numeric", utc: false, ticks: [-1e308, -5e307, 0, 5e307, 1e308].map((value, index) => ({ value, position: index / 4, label: null })) } };
+    xAxis: { kind: "numeric", utc: false, ticks: [-1e308, -5e307, 0, 5e307, 1e308].map((value, index) => ({
+      value, position: index / 4, label: String(value),
+    })) } };
   const extreme = graphNewService.render({ ...request, xMode: "numeric" }, handlers);
   resolveRender(extremeCompletion);
   assert.deepEqual(await extreme.completion, extremeCompletion);
@@ -206,7 +277,7 @@ async function main() {
   for (const invalid of [
     cameraCompletion, { ...meanCompletion, meanGroups: 4 }, { ...meanCompletion, meanGroups: 1.5 },
     { ...meanCompletion, meanGroups: null }, { ...meanCompletion, meanAvailable: false },
-    { ...meanCompletion, meanVisible: false }, { ...meanCompletion, exactVisible: false },
+    { ...meanCompletion, meanVisible: false },
     { ...meanCompletion, meanGroups: 0 },
   ]) {
     const mean = graphNewService.render(meanRequest, handlers);
@@ -214,6 +285,7 @@ async function main() {
     await assert.rejects(mean.completion, /graph_new_render_failed/, "reject untrustworthy mean metadata");
   }
   for (const completion of [meanCompletion,
+    { ...meanCompletion, exactVisible: false, visibleRows: null },
     { ...meanCompletion, meanGroups: 1, meanVisible: false },
     { ...meanCompletion, meanAvailable: false, meanGroups: null, meanVisible: false, exactVisible: false, selectedMarks: 2 },
   ]) {
@@ -296,8 +368,7 @@ async function main() {
     resolveRender(completion);
     assert.deepEqual(await accepted.completion, completion);
   }
-  for (const invalid of [{ ...cameraCompletion, sourceProjectionQueryCount: 1 },
-    { ...cameraCompletion, visibleRows: null },
+  for (const invalid of [{ ...cameraCompletion, visibleRows: null },
     { ...cameraCompletion, visibleRows: undefined, exactVisible: false },
     { ...cameraCompletion, visibleRows: 3 },
     { ...cameraCompletion, exactVisible: undefined },
@@ -313,8 +384,7 @@ async function main() {
       { rawBlocksInspected: 2 }, { rawPointsInspected: 4 },
       { selectedMarks: 3, visibleRows: 2, exactVisible: false },
     ].map((counts) => ({ ...cameraCompletion, ...counts })),
-    { ...cameraCompletion, plotRect: { x: 0, y: 0, width: 1000, height: 1 } },
-    { ...cameraCompletion, cameraDomain: { ...cameraDomain, xMax: 1 } }]) {
+    { ...cameraCompletion, plotRect: { x: 0, y: 0, width: 1000, height: 1 } }]) {
     const controller = graphNewService.render(cameraRequest, handlers);
     resolveRender(invalid);
     await assert.rejects(controller.completion, /graph_new_render_failed/);
