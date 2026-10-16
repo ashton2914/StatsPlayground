@@ -55,3 +55,9 @@ pub mod vscode_workspace;
 
 pub mod vscode_launch_service;
 pub mod built_in_skills;
+
+pub(crate) mod graph_new_layers;
+pub(crate) mod graph_new_layers_cache;
+
+pub(crate) mod graph_new_pixel_jitter;
+mod graph_new_line_pixels;

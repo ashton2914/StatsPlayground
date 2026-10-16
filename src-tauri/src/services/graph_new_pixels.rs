@@ -22,11 +22,13 @@ struct Record {
     y: f64,
     group: u64,
 }
+#[derive(Debug)]
 struct Block {
     start: usize,
     len: usize,
     bounds: [f64; 4],
 }
+#[derive(Debug)]
 struct Centers {
     domain: GraphDomain,
     frame: [u32; 2],
@@ -34,6 +36,7 @@ struct Centers {
     bits: Vec<u64>,
     counts: [u64; 64],
 }
+#[derive(Debug)]
 pub(crate) struct PixelStore {
     map: Option<memmap2::Mmap>,
     blocks: Vec<Block>,
@@ -107,6 +110,16 @@ fn project(x: f64, y: f64, d: GraphDomain, w: usize, h: usize) -> Option<(usize,
     Some((axis(nx, w)?, axis(ny, h)?))
 }
 impl PixelStore {
+    pub(crate) fn record_count(&self) -> u64 { self.map.as_ref().map_or(0, |map| map.len() as u64 / 24) }
+    pub(crate) fn visit_source(&self, control: &dyn Fn() -> Result<(), AppError>, visitor: &mut dyn FnMut(super::graph_new_raw::SourceRecord) -> Result<(), AppError>) -> Result<(), AppError> {
+        let Some(map) = &self.map else {return Ok(())};
+        for (i, bytes) in map.chunks_exact(24).enumerate() {
+            if i % 4096 == 0 {control()?;}
+            let record: Record = bytemuck::pod_read_unaligned(bytes);
+            visitor(super::graph_new_raw::SourceRecord {scan_ordinal:i as u64, point:super::graph_new_lod::SourcePoint::with_group(i as i64+1,record.x,record.y,record.group as u16)})?;
+        }
+        Ok(())
+    }
     pub fn from_spool(
         mut reader: BufReader<File>,
         count: u64,

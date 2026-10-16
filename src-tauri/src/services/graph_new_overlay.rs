@@ -68,7 +68,9 @@ impl OverlayCatalog {
         }
     }
 
-    pub(crate) fn validate_for_restore(&self, total_finite_rows: u64) -> Result<(), AppError> {
+    pub(crate) fn validate_for_restore(&self, total_finite_rows: u64) -> Result<(), AppError> { self.validate_catalog(total_finite_rows, false) }
+    pub(crate) fn validate_for_layers_restore(&self, total_finite_rows: u64) -> Result<(), AppError> { self.validate_catalog(total_finite_rows, true) }
+    fn validate_catalog(&self, total_finite_rows:u64, allow_empty:bool)->Result<(),AppError> {
         if !self.active {
             return if self.groups.is_empty() {
                 Ok(())
@@ -100,7 +102,7 @@ impl OverlayCatalog {
             if !valid_group_id(&group.id)
                 || group.label.len() > MAX_OVERLAY_LABEL_BYTES
                 || usize::from(group.code) >= MAX_OVERLAY_GROUPS
-                || group.total_rows == 0
+                || (!allow_empty && group.total_rows == 0)
                 || !ids.insert(group.id.clone())
                 || !codes.insert(group.code)
             {
@@ -240,8 +242,16 @@ impl OverlayDictionary {
         Ok(code)
     }
 
-    pub fn finish(&self) -> OverlayCatalog {
-        let mut groups = self.groups.clone();
+    pub fn observe_gap(&mut self, value: Option<&str>) -> Result<u16, AppError> {
+        let code = self.observe(value)?;
+        self.groups[usize::from(code)].total_rows -= 1;
+        Ok(code)
+    }
+
+    pub fn finish(&self) -> OverlayCatalog { self.finish_catalog(false) }
+    pub fn finish_layers(&self) -> OverlayCatalog { self.finish_catalog(true) }
+    fn finish_catalog(&self, keep_empty:bool)->OverlayCatalog {
+        let mut groups: Vec<_> = self.groups.iter().filter(|g| keep_empty || g.total_rows > 0).cloned().collect();
         groups.sort_by(|left, right| {
             left.missing
                 .cmp(&right.missing)

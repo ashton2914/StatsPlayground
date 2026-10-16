@@ -16,7 +16,7 @@ export function isCameraDomain(domain: CameraDomain): boolean {
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 
-export function isRestorableCamera(domain: CameraDomain, full: CameraDomain): boolean {
+export function isRestorableCamera(domain: CameraDomain, full: CameraDomain, independentLayers = false): boolean {
   if (!isCameraDomain(domain) || !isCameraDomain(full)) return false;
   const ratios: number[] = [];
   for (const [minimum, maximum, baseMinimum, baseMaximum] of [
@@ -30,7 +30,7 @@ export function isRestorableCamera(domain: CameraDomain, full: CameraDomain): bo
       || center < -2.000001 || center > 3.000001) return false;
     ratios.push(ratio);
   }
-  return Math.abs(ratios[0] / ratios[1] - 1) <= 1e-6;
+  return independentLayers || Math.abs(ratios[0] / ratios[1] - 1) <= 1e-6;
 }
 
 function isUniformCamera(domain: CameraDomain, full: CameraDomain): boolean {
@@ -48,15 +48,15 @@ function moveAxis(min: number, max: number, baseMin: number, baseMax: number, an
   return [baseMin + bounded * baseSpan, baseMin + (bounded + nextSpan) * baseSpan];
 }
 
-export function panCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, dx: number, dy: number): CameraDomain {
+export function panCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, dx: number, dy: number, independentLayers = false): CameraDomain {
   if (![dx, dy].every(Number.isFinite)) return domain;
   const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, 0, 1, clamp(-dx / plot.width, -1e6, 1e6));
   const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, 0, 1, clamp(dy / plot.height, -1e6, 1e6));
   const next = { xMin, xMax, yMin, yMax };
-  return isUniformCamera(next, full) ? next : domain;
+  return (independentLayers ? isRestorableCamera(next, full, true) : isUniformCamera(next, full)) ? next : domain;
 }
 
-export function zoomCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, pointer: { x: number; y: number }, delta: number): CameraDomain {
+export function zoomCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, pointer: { x: number; y: number }, delta: number, independentLayers = false): CameraDomain {
   if (!Number.isFinite(delta)) return domain;
   const xRatio = (domain.xMax - domain.xMin) / (full.xMax - full.xMin);
   const yRatio = (domain.yMax - domain.yMin) / (full.yMax - full.yMin);
@@ -66,7 +66,7 @@ export function zoomCamera(domain: CameraDomain, full: CameraDomain, plot: PlotR
   const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, clamp((pointer.x - plot.x) / plot.width, 0, 1), factor, 0);
   const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, clamp(1 - (pointer.y - plot.y) / plot.height, 0, 1), factor, 0);
   const next = { xMin, xMax, yMin, yMax };
-  return isUniformCamera(next, full) ? next : domain;
+  return (independentLayers ? isRestorableCamera(next, full, true) : isUniformCamera(next, full)) ? next : domain;
 }
 
 export function cameraTransform(presented: CameraDomain, current: CameraDomain, plot: PlotRect) {

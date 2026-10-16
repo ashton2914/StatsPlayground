@@ -61,7 +61,7 @@ impl PixelTexture {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: None,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

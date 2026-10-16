@@ -12,6 +12,7 @@ export interface PanelSplitterProps {
   defaultValue: number;
   unit: "px" | "%";
   direction?: 1 | -1;
+  pointerScale?: (separator: HTMLElement) => number;
   label: string;
   onChange: (value: number) => void;
   onCommit: (value: number) => void;
@@ -40,6 +41,7 @@ export function PanelSplitter({
   max,
   unit,
   direction = 1,
+  pointerScale,
   label,
   onChange,
   onCommit,
@@ -49,6 +51,7 @@ export function PanelSplitter({
   const dragPointerIdRef = useRef<number | null>(null);
   const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartValueRef = useRef(value);
+  const dragScaleRef = useRef(1);
   const dragLatestValueRef = useRef(clamp(value, min, max));
   const bodyCursorRef = useRef("");
   const bodyUserSelectRef = useRef("");
@@ -94,6 +97,7 @@ export function PanelSplitter({
     const separator = separatorRef.current;
     if (!separator) return;
 
+    dragScaleRef.current = pointerScale?.(separator) ?? 1;
     dragPointerIdRef.current = event.pointerId;
     dragOriginRef.current = { x: event.clientX, y: event.clientY };
     dragStartValueRef.current = clamp(value, min, max);
@@ -118,7 +122,7 @@ export function PanelSplitter({
     const delta = orientation === "vertical"
       ? event.clientX - dragOriginRef.current.x
       : event.clientY - dragOriginRef.current.y;
-    const nextValue = clamp(dragStartValueRef.current + delta * direction, min, max);
+    const nextValue = clamp(dragStartValueRef.current + delta * direction * dragScaleRef.current, min, max);
 
     dragLatestValueRef.current = nextValue;
     onChange(nextValue);

@@ -13,6 +13,7 @@ pub const GRAPH_NEW_TILE_FORMAT_VERSION: u16 = 2;
 pub(crate) enum RetentionPolicy {
     Bounded,
     Lossless,
+    Layers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +96,8 @@ impl GraphKey {
         Self::with_policy(parts, RetentionPolicy::Bounded)
     }
 
+    pub(crate) fn layers(parts: &GraphKeyParts) -> Result<Self, AppError> { Self::with_policy(parts, RetentionPolicy::Layers) }
+
     #[cfg(test)]
     pub(crate) fn lossless(parts: &GraphKeyParts) -> Result<Self, AppError> {
         Self::with_policy(parts, RetentionPolicy::Lossless)
@@ -156,6 +159,7 @@ impl GraphKey {
             key_version: match retention_policy {
                 RetentionPolicy::Bounded => "graph-new-v7-overlay-compact-exact-2100000",
                 RetentionPolicy::Lossless => "graph-new-v4-lossless-research",
+                RetentionPolicy::Layers => "graph-new-v2-layers-stable-sample",
             },
             dataset_id: &dataset_id,
             dataset_generation: parts.dataset_generation,

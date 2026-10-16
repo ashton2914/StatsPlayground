@@ -209,13 +209,15 @@ impl<'a> GraphNewService<'a> {
                 self.ensure_render_current(request)
             };
             ensure_current()?;
-            let pixel_mode = request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line && {
+            let retain_layers = request.layers.as_ref().is_some_and(|layers| layers.iter().any(|layer| !matches!(layer, super::graph_new_layers::GraphNewLayer::Points { options, .. } if options.summary_stat == "none")));
+            let pixel_mode = (request.layers.is_some() || request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line) && {
                 let db = self.state.db.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
                 let rows: u64 = db.conn().query_row("SELECT row_count FROM _meta_datasets WHERE id=$1",
                     params![request.dataset_id], |row| row.get(0))?;
-                rows > super::graph_new_renderer::MAX_SCENE_POINTS as u64
+                rows > if request.layers.is_some() { 50_000 } else { super::graph_new_renderer::MAX_SCENE_POINTS as u64 }
             };
-            let key = GraphKey::canonical(&GraphKeyParts {
+            let key_fn = if retain_layers { GraphKey::layers } else { GraphKey::canonical };
+            let key = key_fn(&GraphKeyParts {
                 dataset_id: request.dataset_id.clone(), dataset_generation: request.dataset_generation,
                 x_column_id: request.x_column_id.clone(), y_column_id: request.y_column_id.clone(),
                 overlay_column_id: request.overlay_column_id.clone(),
@@ -228,6 +230,11 @@ impl<'a> GraphNewService<'a> {
             let mut source_projection_query_count = 0;
             let mut pending = None;
             let cpu_hit = cache.contains(&key.hash_hex);
+            if request.layers.is_some() && request.camera_domain.is_none() && !cpu_hit {
+                // The browser retains its coherent bitmap. A new full-source policy
+                // can reclaim the old source reservation before constructing its index.
+                cache.unpin();
+            }
             let mut disk_hit = false;
             if !cpu_hit {
                 if request.camera_domain.is_some() {
@@ -236,37 +243,50 @@ impl<'a> GraphNewService<'a> {
                 disk_hit = cache.restore(&key)?;
                 if !disk_hit {
                     let started = Instant::now();
-                    let required_disk = self.construction_disk_requirement(&build_request)?;
+                    let required_disk = self.construction_disk_requirement(&build_request)?.checked_add(if retain_layers { self.state.db.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?.conn().query_row("SELECT row_count FROM _meta_datasets WHERE id = $1", params![request.dataset_id], |row| row.get::<_,u64>(0))?.saturating_mul(160) } else { 0 }).ok_or_else(|| AppError::Stats("graph_new_cache_pressure".into()))?;
                     let (mut construction, disk_limit) = cache.admit_construction(
                         build_request.construction_memory_limit_bytes,
                         required_disk,
                     )?;
-                    let built = self.build_with_disk_limit_pixels(&build_request, &mut |_| {}, &is_current, disk_limit, request.x_mode, pixel_mode)?;
+                    let built = self.build_with_disk_limit_pixels(&build_request, &mut |_| {}, &is_current, disk_limit, request.x_mode, pixel_mode, retain_layers)?;
                     source_projection_query_count = built.query_count;
                     build_ms = started.elapsed().as_secs_f64() * 1000.0;
                     construction.retain_completed_build(&built)?;
-                    cache.prepare_admission(&built)?;
-                    drop(construction);
+                    cache.prepare_constructed_admission(&built, construction)?;
                     pending = Some(built);
                 }
             }
             ensure_current()?;
+            let scratch_disk = cache.scratch_disk_available().saturating_sub(pending.as_ref().map_or(0, |b| b.pyramid.encoded_bytes()));
             let built = pending.as_ref().or_else(|| cache.get(&key.hash_hex))
                 .ok_or_else(|| AppError::Stats("graph_new_render_failed".into()))?;
-            if let Some(camera) = request.camera_domain {
-                validate_camera_limits(camera, built.pyramid.domain)?;
+            // The immutable source is tied to the checked dataset generation. Inner
+            // loops only need cheap cancellation checks; generation is checked again
+            // before rendering and atomically before publishing the frame.
+            let layer_control = || if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) };
+            let layer_geometry = request.layers.as_ref().map(|layers| built.pyramid.prepared_layers(layers, scratch_disk, &layer_control)).transpose()?;
+            let mut full_domain = built.pyramid.domain;
+            if let Some(extent) = layer_geometry.as_ref().and_then(|p| p.extent()) {
+                if layer_geometry.as_ref().is_some_and(|p|p.raw_points.is_empty()) { full_domain=super::graph_new_lod::normalized_domain(super::graph_new_lod::GraphDomain{x_min:extent[0],x_max:extent[1],y_min:extent[2],y_max:extent[3]}); }
+                full_domain.x_min = full_domain.x_min.min(extent[0]); full_domain.x_max = full_domain.x_max.max(extent[1]);
+                full_domain.y_min = full_domain.y_min.min(extent[2]); full_domain.y_max = full_domain.y_max.max(extent[3]);
             }
-            let domain = request.camera_domain.map_or(built.pyramid.domain, |camera| super::graph_new_lod::GraphDomain {
+
+            if request.layers.is_some() { full_domain = default_layer_camera(full_domain, built.pyramid.x_axis.kind, request.width, request.height); }
+            if let Some(camera) = request.camera_domain {
+                validate_camera_limits(camera, full_domain, request.layers.is_some())?;
+            }
+            let domain = request.camera_domain.map_or(full_domain, |camera| super::graph_new_lod::GraphDomain {
                 x_min: camera.x_min, x_max: camera.x_max, y_min: camera.y_min, y_max: camera.y_max,
             });
             let enabled_groups = EnabledOverlayMask::from_hidden(
                 &built.pyramid.overlay,
                 &request.hidden_overlay_group_ids,
             )?;
-            let mean = if request.show_mean { built.pyramid.mean_line(&|| {
+            let mean = if request.layers.is_none() && request.show_mean { built.pyramid.mean_line(&|| {
                 if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) }
             })? } else { None };
-            let raster = if let Some(source) = &built.pyramid.pixel_store {
+            let raster = if let Some(source) = layer_geometry.as_ref().and_then(|layers| layers.pixel_source.as_ref()).or(built.pyramid.pixel_store.as_ref()) {
                 let frame = [(request.width as f64 * request.device_pixel_ratio).ceil() as u32,
                     (request.height as f64 * request.device_pixel_ratio).ceil() as u32];
                 Some(std::sync::Arc::new(source.raster(domain, frame,
@@ -309,7 +329,7 @@ impl<'a> GraphNewService<'a> {
                     points.push(SourcePoint::with_group(row_id, x, y, group_code));
                 }
             }
-            let raw_line = if request.raw_mode != crate::models::graph_new::GraphNewRawMode::Scatter && built.pyramid.mean_available() {
+            let raw_line = if request.layers.is_none() && request.raw_mode != crate::models::graph_new::GraphNewRawMode::Scatter && built.pyramid.mean_available() {
                 built.pyramid.raw_line(&points, &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?
             } else { None };
             let overlay_active = built.pyramid.overlay.active;
@@ -322,7 +342,20 @@ impl<'a> GraphNewService<'a> {
                 selected_marks
             };
             let enabled_visible_rows = if let Some(raster) = &raster { Some(raster.visible) } else if overlay_active {
-                selection.visible_rows.map(|_| enabled_selected_marks as u64)
+                if domain.x_min <= built.pyramid.domain.x_min && domain.x_max >= built.pyramid.domain.x_max
+                    && domain.y_min <= built.pyramid.domain.y_min && domain.y_max >= built.pyramid.domain.y_max {
+                    Some(built.pyramid.overlay.groups.iter()
+                        .filter(|group| enabled_groups.is_enabled(group.code))
+                        .map(|group| group.total_rows).sum())
+                } else if selection.exact {
+                    Some(points.iter().filter(|point| enabled_groups.is_enabled(point.group_code)
+                        && point.x >= domain.x_min && point.x <= domain.x_max
+                        && point.y >= domain.y_min && point.y <= domain.y_max).count() as u64)
+                } else if request.hidden_overlay_group_ids.is_empty() {
+                    selection.visible_rows
+                } else {
+                    None
+                }
             } else {
                 selection.visible_rows
             };
@@ -372,13 +405,41 @@ impl<'a> GraphNewService<'a> {
             } else {
                 raw_line.as_ref().map_or(0, |segments| segments.len())
             };
-            let x_axis = axis_ticks(&built.pyramid.x_axis, domain, request.width)?;
+            let mut axis_data = built.pyramid.x_axis.clone();
+            if axis_data.kind == GraphNewXMode::Category && layer_geometry.as_ref().and_then(|p|p.extent()).is_some_and(|e|e[1]>=axis_data.categories.len() as f64) {axis_data.categories.push("(Missing)".into());}
+            let x_axis = axis_ticks(&axis_data, domain, request.width)?;
+            let y_axis = GraphNewAxis {
+                kind: GraphNewXMode::Numeric,
+                utc: false,
+                ticks: super::graph_new_ticks::numeric_ticks(domain.y_min, domain.y_max)?
+                    .into_iter()
+                    .map(|tick| GraphNewAxisTick {
+                        value: tick.value,
+                        position: tick.position,
+                        label: Some(tick.label),
+                    })
+                    .collect(),
+                origin: None,
+            };
+            let raster = if let Some(layers) = layer_geometry.as_ref().filter(|p| !p.line_sources.is_empty()) {
+                let frame = [(request.width as f64 * request.device_pixel_ratio).ceil() as u32,
+                    (request.height as f64 * request.device_pixel_ratio).ceil() as u32];
+                let (line, _) = super::graph_new_line_pixels::rasterize(&layers.line_sources, &layers.line_raster, domain, frame,
+                    super::graph_new_renderer::pixel_plot(request.width, request.height, request.device_pixel_ratio),
+                    request.device_pixel_ratio, &built.pyramid.overlay, enabled_groups, &layer_control)?;
+                let mut rgba = line.fill.clone();
+                if !layers.raw_points.is_empty() { if let Some(scatter) = &raster { super::graph_new_line_pixels::composite(&mut rgba, &scatter.rgba); } }
+                super::graph_new_line_pixels::composite(&mut rgba, &line.lines);
+                Some(std::sync::Arc::new(super::graph_new_pixels::PixelRaster { width:frame[0],height:frame[1],rgba,
+                    visible:enabled_visible_rows.unwrap_or(0),occupied:selected_marks,work:super::graph_new_raw::QueryWork::default() }))
+            } else { raster };
             let scene = GraphNewScene { width: request.width, height: request.height,
                 device_pixel_ratio: request.device_pixel_ratio, domain, points,
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
-                    raster, point_radius: request.point_radius,
-                    raw_line: raw_line.clone(), show_points: request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line,
+                    raster: if layer_geometry.as_ref().is_some_and(|p| p.raw_points.is_empty() && p.line_sources.is_empty()) { None } else { raster }, point_radius: request.point_radius,
+                    layer_geometry: layer_geometry.clone(),
+                    raw_line: raw_line.clone(), show_points: layer_geometry.as_ref().is_some_and(|p| !p.line_sources.is_empty()) || request.layers.as_ref().map_or(request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line, |layers| layers.iter().any(|layer| matches!(layer, super::graph_new_layers::GraphNewLayer::Points { options, .. } if options.summary_stat == "none"))),
                     x_axis: (x_axis.kind != GraphNewXMode::Numeric).then_some(x_axis.clone()),
                 } };
             let (width, height) = scene.physical_size()?;
@@ -416,9 +477,13 @@ impl<'a> GraphNewService<'a> {
                 readback_completed_at_unix_micros: SystemTime::now().duration_since(UNIX_EPOCH)
                     .map_err(|_| AppError::Stats("graph_new_render_failed".into()))?.as_micros() as u64,
             };
-            let mut completion = GraphNewRenderCompletion { request_id: request.request_id.clone(),
-                pixel_aggregated: scene.presentation.raster.is_some(),
+            let mut completion = GraphNewRenderCompletion {
+                layer_configuration_id: request.layer_configuration_id.clone(),
+                layer_states: request.layers.as_ref().map_or_else(Vec::new, |layers| layers.iter().enumerate().map(|(i,l)| crate::models::graph_new::GraphNewLayerState { layer_id: l.id().into(), available: !layer_geometry.as_ref().is_some_and(|p|p.jitter_limited && matches!(l,super::graph_new_layers::GraphNewLayer::Points{..})), reason: layer_geometry.as_ref().filter(|p|p.jitter_limited && matches!(l,super::graph_new_layers::GraphNewLayer::Points{..})).map(|_|"graph_new_jitter_budget".into()), marks: layer_geometry.as_ref().and_then(|p| p.layer_marks.get(i)).copied().unwrap_or(0) }).collect()),
+                request_id: request.request_id.clone(),
+                pixel_aggregated: built.pyramid.pixel_store.is_some(),
                 x_axis,
+                y_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
                 raw_line_segments: enabled_raw_segments,
                 overlay_groups: built.pyramid.overlay.groups.clone(),
@@ -534,12 +599,12 @@ impl<'a> GraphNewService<'a> {
         &self, request: &GraphNewBuildRequest, progress_sink: &mut dyn FnMut(GraphBuildProgress),
         is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode,
     ) -> Result<GraphNewBuildResult, AppError> {
-        self.build_with_disk_limit_pixels(request, progress_sink, is_current, disk_limit, x_mode, false)
+        self.build_with_disk_limit_pixels(request, progress_sink, is_current, disk_limit, x_mode, false, false)
     }
 
     fn build_with_disk_limit_pixels(
         &self, request: &GraphNewBuildRequest, progress_sink: &mut dyn FnMut(GraphBuildProgress),
-        is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode, pixels: bool,
+        is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode, pixels: bool, retain_layers: bool,
     ) -> Result<GraphNewBuildResult, AppError> {
         request.validate()?;
         self.ensure_current(request, is_current, "before scan")?;
@@ -594,7 +659,8 @@ impl<'a> GraphNewService<'a> {
             ));
         }
 
-        let key = GraphKey::canonical(&GraphKeyParts {
+        let key_fn = if retain_layers { GraphKey::layers } else { GraphKey::canonical };
+        let key = key_fn(&GraphKeyParts {
             dataset_id: request.dataset_id.clone(),
             dataset_generation: request.dataset_generation,
             x_column_id: x_column.column_id.clone(),
@@ -654,6 +720,7 @@ impl<'a> GraphNewService<'a> {
             request.construction_memory_limit_bytes,
         )?;
         if pixels { builder.enable_pixel_mode(); }
+        if retain_layers { builder.retain_layer_source()?; }
         builder.limit_disk_to(disk_limit);
         builder.account_input_capacity(request.batch_rows)?;
         let mut batch = Vec::new();
@@ -729,7 +796,10 @@ impl<'a> GraphNewService<'a> {
                     group_code,
                 )
             } else {
-                SourcePoint::new(row_id, x.unwrap_or(f64::NAN), y.unwrap_or(f64::NAN))
+                let group_code = if retain_layers {
+                    if let Some(dictionary) = &mut overlay_dictionary { dictionary.observe_gap(if overlay_missing { None } else { overlay_label.as_deref() })? } else { 0 }
+                } else { 0 };
+                SourcePoint::with_group(row_id, x.unwrap_or(f64::NAN), y.unwrap_or(f64::NAN), group_code)
             };
             batch.push(point);
             rows_since_current_check += 1;
@@ -797,7 +867,7 @@ impl<'a> GraphNewService<'a> {
         )?;
 
         if let Some(dictionary) = overlay_dictionary.take() {
-            builder.set_overlay(dictionary.finish());
+            builder.set_overlay(if retain_layers { dictionary.finish_layers() } else { dictionary.finish() });
         }
 
         let mut pyramid = builder.finish_with_control(&|| {
@@ -975,6 +1045,27 @@ fn axis_policy(mode: GraphNewXMode) -> String {
     else { format!("{GRAPH_NEW_DEFAULT_DOMAIN_POLICY}-{mode:?}") }
 }
 
+// Keep category jitter and complete marker glyphs inside the default plot.
+// This is a presentation camera only; the immutable source/tile domain stays unchanged.
+fn default_layer_camera(mut domain: super::graph_new_lod::GraphDomain, kind: GraphNewXMode, width: u32, height: u32) -> super::graph_new_lod::GraphDomain {
+    fn pad(min: f64, max: f64, pixels: f64) -> (f64, f64) {
+        let fraction = 0.05_f64.max(4.0 / pixels.max(16.0)).min(0.25);
+        let margin = (max - min) * fraction / (1.0 - 2.0 * fraction);
+        let lower = min - margin;
+        let upper = max + margin;
+        if lower.is_finite() && upper.is_finite() && (upper - lower).is_finite() {
+            (lower, upper)
+        } else { (min, max) }
+    }
+    if kind == GraphNewXMode::Category {
+        domain.x_min = domain.x_min.round() - 0.5;
+        domain.x_max = domain.x_max.round() + 0.5;
+    }
+    (domain.x_min, domain.x_max) = pad(domain.x_min, domain.x_max, f64::from(width.saturating_sub(80)));
+    (domain.y_min, domain.y_max) = pad(domain.y_min, domain.y_max, f64::from(height.saturating_sub(48)));
+    domain
+}
+
 fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain, width: u32) -> Result<GraphNewAxis, AppError> {
     let ticks = if axis.kind == GraphNewXMode::Category {
         let start = domain.x_min.ceil().max(0.0) as usize;
@@ -988,7 +1079,9 @@ fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain
                 let nanos = tick.value * f64::from(origin.unit_nanos);
                 (nanos - nanos.round()).abs() < 1e-6
             })).map(|tick| GraphNewAxisTick {
-            value: tick.value, position: tick.position, label: None,
+            value: tick.value,
+            position: tick.position,
+            label: (axis.kind == GraphNewXMode::Numeric).then_some(tick.label),
         }).collect()
     };
     Ok(GraphNewAxis { kind: axis.kind, utc: axis.utc, ticks, origin: axis.origin.clone() })
@@ -1190,7 +1283,7 @@ fn resolve_columns(
     Ok(bindings)
 }
 
-fn validate_camera_limits(camera: crate::models::graph_new::GraphNewCameraDomain, full: super::graph_new_lod::GraphDomain) -> Result<(), AppError> {
+fn validate_camera_limits(camera: crate::models::graph_new::GraphNewCameraDomain, full: super::graph_new_lod::GraphDomain, independent_layers: bool) -> Result<(), AppError> {
     let mut ratios = [0.0; 2];
     for (index, (min, max, base_min, base_max)) in [
         (camera.x_min, camera.x_max, full.x_min, full.x_max),
@@ -1205,7 +1298,7 @@ fn validate_camera_limits(camera: crate::models::graph_new::GraphNewCameraDomain
         }
         ratios[index] = ratio;
     }
-    if (ratios[0] / ratios[1] - 1.0).abs() > 1e-6 {
+    if !independent_layers && (ratios[0] / ratios[1] - 1.0).abs() > 1e-6 {
         return Err(AppError::InvalidParam("graph_new_invalid_request".into()));
     }
     Ok(())
@@ -1219,7 +1312,7 @@ fn safe_render_error(error: AppError) -> AppError {
         AppError::InvalidParam(message) if message == "graph_new_x_unrepresentable" => AppError::InvalidParam(message),
         AppError::InvalidParam(_) => AppError::InvalidParam("graph_new_invalid_request".into()),
         AppError::Stats(message) if message == "graph_new_channel_closed" || message == "graph_new_missing_cache"
-            || message == "graph_new_cache_pressure" || message == "graph_new_gpu_validation" => AppError::Stats(message),
+            || message == "graph_new_cache_pressure" || message == "graph_new_gpu_validation" || message == "graph_new_layer_overflow" => AppError::Stats(message),
         _ => AppError::Stats("graph_new_render_failed".into()),
     }
 }
@@ -2245,7 +2338,7 @@ mod tests {
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
             width: 320, height: 200, device_pixel_ratio: 2.0,
-            renderer_generation: generation, camera_generation: 0, camera_domain: None, show_mean: false,
+            renderer_generation: generation, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             x_mode: Default::default(),
             raw_mode: Default::default(),
             overlay_column_id: None,
@@ -2347,7 +2440,7 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let render = |scene: &super::super::graph_new_renderer::GraphNewScene| {
             assert!(state.db.try_lock().is_ok(), "render must not hold DB lock");
@@ -2392,7 +2485,7 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let error = service.render_with(&request, |_| Err(AppError::FileIO("/private/secret.db".into())),
             &mut |_, _| panic!("failed rendering must not send")).expect_err("failure");
@@ -2434,7 +2527,7 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let (ready_send, ready_receive) = std::sync::mpsc::channel();
         let (release_send, release_receive) = std::sync::mpsc::channel();
@@ -2457,6 +2550,152 @@ mod tests {
             assert!(matches!(worker.join().expect("join"), Err(AppError::Cancelled(_))));
         });
         assert!(state.graph_new.cache.lock().expect("cache").is_none());
+    }
+
+
+    #[test]
+    fn graph_new_layers_default_view_preserves_numeric_extrema_and_source_counts() {
+        let state = AppState::new().unwrap();
+        let (x, y) = seed_dataset(&state, "numeric-padding");
+        let request = serde_json::from_value(serde_json::json!({
+            "requestId":"numeric-padding", "sessionId":"numeric-padding", "datasetId":"numeric-padding", "datasetGeneration":0,
+            "xColumnId":x, "yColumnId":y, "width":320, "height":200, "devicePixelRatio":2,
+            "rendererGeneration":1, "cameraGeneration":0,
+            "layers":[{"id":"points", "kind":"points", "options":{"jitterLimit":0}}], "layerConfigurationId":"padding"
+        })).unwrap();
+        let completion = GraphNewService::new(&state).render_with(&request, |scene| {
+            assert!(scene.domain.x_min < 0. && scene.domain.x_max > 6.);
+            assert!(scene.domain.y_min < 1. && scene.domain.y_max > 7.);
+            assert_eq!(scene.points.len(), 3);
+            super::GraphNewRenderer::render(scene)
+        }, &mut |_,_| Ok(())).unwrap();
+        assert_eq!(completion.visible_rows, Some(3));
+        assert_eq!(completion.excluded_non_finite_rows, 1);
+        assert_eq!(completion.x_axis.kind, crate::models::graph_new::GraphNewXMode::Numeric);
+    }
+
+    #[test]
+    fn graph_new_layers_default_view_leaves_room_for_category_jitter() {
+        for categories in [1, 4] {
+            let state = AppState::new().unwrap();
+            let (_, y) = seed_dataset(&state, "category-padding");
+            let x: String = {
+                let db = state.db.lock().unwrap();
+                db.conn().execute("UPDATE dataset_category_padding SET label = CASE WHEN $1 = 1 THEN 'a' ELSE label END, y_value = CASE WHEN _row_id = 1 THEN 0 ELSE 5 END", params![categories]).unwrap();
+                db.conn().query_row("SELECT column_id FROM _meta_columns WHERE dataset_id = 'category-padding' AND col_name = 'label'", [], |r| r.get(0)).unwrap()
+            };
+            let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+                "requestId":"padding", "sessionId":"padding", "datasetId":"category-padding", "datasetGeneration":0,
+                "xColumnId":x, "yColumnId":y, "width":320, "height":200, "devicePixelRatio":1,
+                "rendererGeneration":1, "cameraGeneration":0,
+                "layers":[{"id":"points", "kind":"points", "options":{"jitter":"uniform", "jitterLimit":1}}], "layerConfigurationId":"padding"
+            })).unwrap();
+            let service = GraphNewService::new(&state);
+            let render = |scene: &super::GraphNewScene| Ok(super::SyntheticFrame {
+                rgba:vec![255;scene.width as usize*scene.height as usize*4], padded_bytes_per_row:scene.width*4, render_ms:0., readback_ms:0.
+            });
+            let first = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+            let last = if categories == 1 { 0. } else { 3. };
+            assert!(first.camera_domain.x_min < -0.5, "left jitter and marker must fit");
+            assert!(first.camera_domain.x_max > last + 0.5, "right jitter and marker must fit");
+            assert!(first.camera_domain.y_min < 0. && first.camera_domain.y_max > 5., "vertical extrema must fit");
+            let camera = first.camera_domain;
+            let x_span = camera.x_max - camera.x_min;
+            let y_span = camera.y_max - camera.y_min;
+            assert!((-0.5 - camera.x_min) / x_span * 240. >= 4.);
+            assert!((camera.x_max - last - 0.5) / x_span * 240. >= 4.);
+            assert!(-camera.y_min / y_span * 152. >= 4.);
+            assert!((camera.y_max - 5.) / y_span * 152. >= 4.);
+            assert!(first.x_axis.ticks.iter().all(|t| t.position > 0. && t.position < 1.));
+            request.request_id = "zoom".into(); request.renderer_generation = 2;
+            let mut zoom = first.camera_domain; zoom.x_min = 0.; zoom.x_max = 1.;
+            request.camera_domain = Some(zoom);
+            let second = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+            assert_eq!(second.camera_domain, zoom, "explicit camera must not be padded again");
+            assert_eq!(second.source_projection_query_count, 0);
+        }
+    }
+
+    #[test] fn graph_new_layers_service_complete_source_and_camera_cache() {
+        let state=AppState::new().unwrap();let (x,y)=seed_dataset(&state,"layers-fixture");
+        let request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({"requestId":"layer1","sessionId":"s","datasetId":"layers-fixture","datasetGeneration":0,"xColumnId":x,"yColumnId":y,"width":320,"height":200,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"line","kind":"line","options":{"summaryStat":"none","missingValues":"break"}},{"id":"points","kind":"points","options":{"summaryStat":"sum","errorInterval":"none"}}],"layerConfigurationId":"a"})).unwrap();
+        let service=GraphNewService::new(&state);let render=|scene:&super::GraphNewScene|{let p=scene.presentation.layer_geometry.as_ref().unwrap();assert!(p.lines.is_empty());assert_eq!(p.line_sources.len(),1);assert_eq!(p.line_sources[0].count,4);assert!(scene.presentation.raster.as_ref().unwrap().rgba.chunks_exact(4).any(|pixel|pixel==[31,111,235,255]));assert_eq!(p.points.len(),3);Ok(super::SyntheticFrame{rgba:vec![255;scene.width as usize*scene.height as usize*4],padded_bytes_per_row:scene.width*4,render_ms:0.,readback_ms:0.})};
+        let first=service.render_with(&request,render,&mut |_,_|Ok(())).unwrap();assert_eq!(first.source_projection_query_count,1);assert_eq!(first.layer_configuration_id.as_deref(),Some("a"));
+        let mut next=request.clone();next.request_id="layer2".into();next.renderer_generation=2;next.camera_domain=Some(first.camera_domain);let second=service.render_with(&next,render,&mut |_,_|Ok(())).unwrap();assert_eq!(second.source_projection_query_count,0);assert_eq!(second.layer_states.len(),2);
+    }
+
+    #[test]
+    fn graph_new_layers_service_sum_domain_includes_complete_source() {
+        let state=AppState::new().unwrap();let (x,y)=seed_dataset(&state,"layers-sum");
+        state.db.lock().unwrap().conn().execute("UPDATE dataset_layers_sum SET x_value = 0", []).unwrap();
+        let request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({"requestId":"sum","sessionId":"s","datasetId":"layers-sum","datasetGeneration":0,"xColumnId":x,"yColumnId":y,"width":320,"height":200,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"points","kind":"points","options":{"summaryStat":"sum","errorInterval":"none"}}],"layerConfigurationId":"sum"})).unwrap();
+        let completion=GraphNewService::new(&state).render_with(&request,|scene| {
+            let p=scene.presentation.layer_geometry.as_ref().unwrap();assert_eq!(p.points.len(),1);assert!((p.points[0].point.y-11.).abs()<1e-12);
+            Ok(super::SyntheticFrame{rgba:vec![255;scene.width as usize*scene.height as usize*4],padded_bytes_per_row:scene.width*4,render_ms:0.,readback_ms:0.})
+        },&mut |_,_|Ok(())).unwrap();
+        assert!(completion.camera_domain.y_min > 7. && completion.camera_domain.y_min <= 11. && completion.camera_domain.y_max >= 11.-1e-12);
+    }
+
+    #[test] fn graph_new_layers_review_configuration_retains_camera_and_overflow_code() {
+      let state=AppState::new().unwrap();let (x,y)=seed_dataset(&state,"review-camera");
+      state.db.lock().unwrap().conn().execute("UPDATE dataset_review_camera SET x_value = CASE WHEN _row_id < 3 THEN 0 ELSE 1 END", []).unwrap();
+      let mut request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({"requestId":"a","sessionId":"s","datasetId":"review-camera","datasetGeneration":0,"xColumnId":x,"yColumnId":y,"width":320,"height":200,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"p","kind":"points","options":{}}],"layerConfigurationId":"a"})).unwrap();
+      let render=|scene:&super::GraphNewScene|Ok(super::SyntheticFrame{rgba:vec![255;scene.width as usize*scene.height as usize*4],padded_bytes_per_row:scene.width*4,render_ms:0.,readback_ms:0.});
+      let service=GraphNewService::new(&state);let first=service.render_with(&request,render,&mut |_,_|Ok(())).unwrap();
+      request.request_id="b".into();request.renderer_generation=2;request.camera_domain=Some(first.camera_domain);request.layer_configuration_id=Some("b".into());
+      request.layers=Some(serde_json::from_value(serde_json::json!([{"id":"p","kind":"points","options":{"summaryStat":"sum","errorInterval":"stdDev"}}])).unwrap());
+      assert!(service.render_with(&request,render,&mut |_,_|Ok(())).is_err(), "a changed source policy requires an explicit rebuild");
+      request.camera_domain=None; request.renderer_generation+=1;
+      service.render_with(&request,render,&mut |_,_|Ok(())).unwrap();
+      request.camera_domain=Some(first.camera_domain); request.renderer_generation+=1;
+      let next=service.render_with(&request,render,&mut |_,_|Ok(())).unwrap();assert_eq!(next.camera_domain,first.camera_domain);assert_eq!(next.source_projection_query_count,0);
+      assert!(matches!(super::safe_render_error(crate::error::AppError::Stats("graph_new_layer_overflow".into())),crate::error::AppError::Stats(s) if s=="graph_new_layer_overflow"));
+    }
+
+    #[test] fn graph_new_layers_service_generation_checks_are_bounded_for_unique_x() {
+      let state=AppState::new().unwrap();let (x,y)=seed_dataset(&state,"unique-x");
+      {let db=state.db.lock().unwrap();db.conn().execute("INSERT INTO dataset_unique_x (_row_id,x_value,y_value,label) SELECT i,i,i%100,'a' FROM range(5,1005) t(i)",[]).unwrap();db.conn().execute("UPDATE _meta_datasets SET row_count=1004 WHERE id='unique-x'",[]).unwrap();}
+      let request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({"requestId":"unique","sessionId":"s","datasetId":"unique-x","datasetGeneration":0,"xColumnId":x,"yColumnId":y,"width":320,"height":200,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"l","kind":"line","options":{}}],"layerConfigurationId":"unique"})).unwrap();
+      let completion=GraphNewService::new(&state).render_with(&request,|scene|Ok(super::SyntheticFrame{rgba:vec![255;scene.width as usize*scene.height as usize*4],padded_bytes_per_row:scene.width*4,render_ms:0.,readback_ms:0.}),&mut |_,_|Ok(())).unwrap();
+      assert!(completion.render_generation_check_count<=8,"{} database generation checks",completion.render_generation_check_count);
+    }
+
+    #[test]
+    fn graph_new_layers_overlay_lod_preserves_points_and_source_visibility() {
+        let state = AppState::new().unwrap();
+        let (x, y) = seed_dataset(&state, "overlay-layers");
+        let overlay: String = {
+            let db = state.db.lock().unwrap();
+            db.conn().execute("INSERT INTO dataset_overlay_layers (_row_id,x_value,y_value,label) SELECT i,i,i%100,'MS4-' || CAST(i%3 AS VARCHAR) FROM range(5,100005) t(i)", []).unwrap();
+            db.conn().execute("UPDATE _meta_datasets SET row_count=100004 WHERE id='overlay-layers'", []).unwrap();
+            db.conn().query_row("SELECT column_id FROM _meta_columns WHERE dataset_id='overlay-layers' AND col_name='label'", [], |row| row.get(0)).unwrap()
+        };
+        let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({"requestId":"overlay-a","sessionId":"s","datasetId":"overlay-layers","datasetGeneration":0,"xColumnId":x,"yColumnId":y,"overlayColumnId":overlay,"width":640,"height":480,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"p","kind":"points","options":{}}],"layerConfigurationId":"overlay"})).unwrap();
+        let render = |scene: &super::GraphNewScene| Ok(super::SyntheticFrame {rgba:vec![255;scene.width as usize*scene.height as usize*4],padded_bytes_per_row:scene.width*4,render_ms:0.,readback_ms:0.});
+        let service = GraphNewService::new(&state);
+        let all = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+        assert!(all.selected_marks > 100, "only {} representatives survived Overlay", all.selected_marks);
+        assert!(all.exact_visible && all.pixel_aggregated, "layer scatter must preserve full-source occupancy");
+        assert_eq!(all.visible_rows, Some(all.finite_rows));
+        let group = all.overlay_groups.iter().find(|g| g.label == "MS4-0").unwrap();
+        request.hidden_overlay_group_ids = vec![group.id.clone()];
+        request.camera_domain = Some(all.camera_domain);
+        request.request_id = "overlay-b".into(); request.renderer_generation = 2;
+        let hidden = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+        assert_eq!(hidden.visible_rows, Some(all.finite_rows - group.total_rows));
+        request.request_id = "overlay-c".into(); request.renderer_generation = 3;
+        request.camera_domain.as_mut().unwrap().x_max = 75000.;
+        let partial = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+        let expected: u64 = state.db.lock().unwrap().conn().query_row(
+            "SELECT count(*) FROM dataset_overlay_layers WHERE x_value<=75000 AND y_value IS NOT NULL AND label<>'MS4-0'", [], |row| row.get(0)).unwrap();
+        assert!(partial.exact_visible && partial.pixel_aggregated);
+        assert_eq!(partial.visible_rows, Some(expected), "partial viewport count must match complete-source SQL");
+        request.request_id = "overlay-d".into(); request.renderer_generation = 4;
+        request.camera_domain.as_mut().unwrap().x_max = 100.;
+        let exact = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+        assert!(exact.exact_visible);
+        assert_eq!(exact.visible_rows, Some(67));
+        assert_eq!(exact.source_projection_query_count, 0);
     }
 
     fn seed_dataset(state: &AppState, dataset_id: &str) -> (String, String) {
@@ -2617,6 +2856,108 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "explicit before/after UI integration performance comparison"]
+    fn graph_new_pixel_ux_performance_guard() {
+        let state = AppState::new().unwrap();
+        let (x, y) = seed_dense_dataset(&state, "uxperf", 3_000_000);
+        state.db.lock().unwrap().conn().execute("UPDATE dataset_uxperf SET x_value=CASE WHEN _row_id=3000000 THEN 1.25 ELSE (_row_id::BIGINT*48271%2147483647)/2147483647.0 END, y_value=CASE WHEN _row_id=3000000 THEN 1.25 ELSE (_row_id::BIGINT*69621%2147483647)/2147483647.0 END", []).unwrap();
+        let service = GraphNewService::new(&state);
+        let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"uxperf-1", "sessionId":"uxperf", "datasetId":"uxperf", "datasetGeneration":0,
+            "xColumnId":x, "yColumnId":y, "width":720, "height":720, "devicePixelRatio":1,
+            "rendererGeneration":1, "cameraGeneration":0, "pointRadius":1, "showMean":false,
+            "layers":[{"id":"scatter","kind":"points","options":{}}], "layerConfigurationId":"default-scatter"
+        })).unwrap();
+        let mut samples = Vec::new();
+        for i in 0..25 {
+            request.renderer_generation = i + 1;
+            request.request_id = format!("uxperf-{i}");
+            request.camera_generation = i;
+            request.point_radius = Some(if i % 2 == 0 { 1 } else { 5 });
+            request.camera_domain = if i < 13 { None } else { let a=0.2+(i-13) as f64*0.001;
+                Some(crate::models::graph_new::GraphNewCameraDomain { x_min:a, x_max:a+0.1, y_min:0.2, y_max:0.3 }) };
+            let started = std::time::Instant::now();
+            let result = service.render_with(&request, |scene| {
+                assert!(scene.points.is_empty(), "no point geometry or representative sampling");
+                assert!(scene.presentation.raster.is_some());
+                Ok(super::SyntheticFrame { rgba:vec![255;720*720*4], padded_bytes_per_row:720*4, render_ms:0., readback_ms:0. })
+            }, &mut |_,_|Ok(())).unwrap();
+            if i > 0 { assert_eq!(result.source_projection_query_count,0); }
+            if i > 0 && i < 13 { assert_eq!(result.raw_points_inspected,0,"radius must reuse centers"); }
+            if i < 13 { assert_eq!(result.visible_rows,Some(3_000_000)); }
+            assert!(result.pixel_aggregated && result.exact_visible);
+            samples.push(started.elapsed().as_secs_f64()*1000.);
+        }
+        let mut warm=samples[1..13].to_vec();warm.sort_by(f64::total_cmp);
+        let mut zoom=samples[13..].to_vec();zoom.sort_by(f64::total_cmp);
+        println!("PIXEL_UX_PERF {}",serde_json::json!({"points":3000000,"frame":[720,720],"coldMs":samples[0],"warmRadiusMedianMs":warm[warm.len()/2],"zoomPanMedianMs":zoom[zoom.len()/2],"samplesMs":samples,"boundary":"debug CPU service + raster + synthetic frame; excludes GPU/IPC/UI"}));
+    }
+
+    #[test]
+    #[ignore = "explicit complete-source statistical Line performance measurement"]
+    fn graph_new_line_pixel_performance_guard() {
+        let state=AppState::new().unwrap();let count=3_000_000;
+        let (x,y)=seed_dense_dataset(&state,"lineperf",count);
+        state.db.lock().unwrap().conn().execute("UPDATE dataset_lineperf SET y_value=sin(_row_id*0.01)",[]).unwrap();
+        let service=GraphNewService::new(&state);
+        let mut request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({
+            "requestId":"lineperf","sessionId":"lineperf","datasetId":"lineperf","datasetGeneration":0,"xColumnId":x,"yColumnId":y,
+            "width":720,"height":720,"devicePixelRatio":1,"rendererGeneration":1,"cameraGeneration":0,"layers":[{"id":"line","kind":"line","options":{}}],"layerConfigurationId":"line"
+        })).unwrap();
+        let mut samples=Vec::new();let mut index_bytes=0;
+        for i in 0..10 {
+            request.request_id=format!("lineperf-{i}");request.renderer_generation=i+1;
+            request.camera_domain=if i<5{None}else{Some(crate::models::graph_new::GraphNewCameraDomain{x_min:500000.+i as f64*1000.,x_max:800000.+i as f64*1000.,y_min:-1.,y_max:1.})};
+            let started=std::time::Instant::now();let completion=service.render_with(&request,|scene|{
+                let p=scene.presentation.layer_geometry.as_ref().unwrap();assert!(scene.points.is_empty()&&p.lines.is_empty()&&p.points.is_empty());
+                assert_eq!(p.line_sources[0].count,count as usize);index_bytes=p.line_sources[0].resident_bytes();
+                assert!(scene.presentation.raster.as_ref().unwrap().rgba.chunks_exact(4).any(|pixel|pixel==[31,111,235,255]));
+                Ok(super::SyntheticFrame{rgba:vec![255;720*720*4],padded_bytes_per_row:720*4,render_ms:0.,readback_ms:0.})
+            },&mut|_,_|Ok(())).unwrap();
+            if i>0{assert_eq!(completion.source_projection_query_count,0);}if i>0&&i<5{assert_eq!(completion.raw_points_inspected,0);}
+            samples.push(started.elapsed().as_secs_f64()*1000.);
+        }
+        println!("LINE_PIXEL_PERF {}",serde_json::json!({"points":count,"frame":[720,720],"indexBytes":index_bytes,"samplesMs":samples,"boundary":"debug CPU service + complete statistics/index + pixel masks/composition + synthetic frame; excludes GPU/IPC/UI"}));
+    }
+
+    #[test]
+    fn graph_new_layers_scatter_to_line_reclaims_previous_source_reservation() {
+        let state = AppState::new().unwrap();
+        let (x, y) = seed_dense_dataset(&state, "layertransition", 2_032_293);
+        let service = GraphNewService::new(&state);
+        let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"scatter", "sessionId":"transition", "datasetId":"layertransition", "datasetGeneration":0,
+            "xColumnId":x,"yColumnId":y,"width":640,"height":480,"devicePixelRatio":2,
+            "rendererGeneration":1,"cameraGeneration":0,"pointRadius":1,
+            "layers":[{"id":"scatter","kind":"points","options":{"jitterLimit":0}}],"layerConfigurationId":"scatter"
+        })).unwrap();
+        let render = |scene: &super::GraphNewScene| {
+            assert!(scene.points.is_empty());
+            assert!(scene.presentation.raster.is_some());
+            Ok(super::SyntheticFrame { rgba: vec![255; 1280*960*4], padded_bytes_per_row:1280*4, render_ms:0., readback_ms:0. })
+        };
+        let scatter = service.render_with(&request, render, &mut |_,_| Ok(())).unwrap();
+        assert_eq!(scatter.visible_rows, Some(2_032_293));
+        request.layers.as_mut().unwrap().push(serde_json::from_value(serde_json::json!({"id":"line","kind":"line","options":{}})).unwrap());
+        request.renderer_generation=2; request.request_id="line".into(); request.layer_configuration_id=Some("scatter-line".into());
+        let line = service.render_with(&request, render, &mut |_,_| Ok(())).expect("changing source policy must reclaim the previous source cache under the same budget");
+        assert_eq!(line.visible_rows, Some(2_032_293));
+        assert_eq!(line.layer_states.len(), 2);
+        request.renderer_generation=3; request.request_id="line-warm".into(); request.camera_domain=Some(line.camera_domain);
+        request.point_radius=Some(4);
+        let warm = service.render_with(&request, |scene| {
+            let prepared=scene.presentation.layer_geometry.as_ref().unwrap();
+            assert!(prepared.lines.is_empty() && prepared.points.is_empty());
+            assert_eq!(prepared.line_sources[0].count,2_032_293);
+            let frame=super::GraphNewRenderer::render(scene)?;
+            assert!(frame.rgba.chunks_exact(4).any(|pixel|pixel==[31,111,235,255]));
+            Ok(frame)
+        }, &mut |_,_|Ok(())).unwrap();
+        assert_eq!(warm.source_projection_query_count,0);
+        assert_eq!(warm.raw_points_inspected,0);
+    }
+
+    #[test]
     fn graph_new_pixels_massive_service_uses_all_source_and_native_texture() {
         let state = AppState::new().expect("state");
         let count=super::super::graph_new_renderer::MAX_SCENE_POINTS as u64+1;
@@ -2626,7 +2967,9 @@ mod tests {
         let mut request:crate::models::graph_new::GraphNewRenderRequest=serde_json::from_value(serde_json::json!({
             "requestId":"pixel-native-1","sessionId":"pixel-native","datasetId":"pixelnative","datasetGeneration":0,
             "xColumnId":x,"yColumnId":y,"width":360,"height":240,"devicePixelRatio":2,
-            "rendererGeneration":1,"cameraGeneration":0,"pointRadius":0,"showMean":false
+            "rendererGeneration":1,"cameraGeneration":0,"pointRadius":0,"showMean":false,
+            "layers":[{"id":"scatter","kind":"points","options":{"summaryStat":"none","errorInterval":"auto","intervalStyle":"errorBar","jitter":"stacked","jitterLimit":0}}],
+            "layerConfigurationId":"scatter-raw"
         })).unwrap();
         let service=GraphNewService::new(&state);
         let first=service.render_with(&request,|scene|{

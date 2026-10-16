@@ -530,7 +530,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             else { u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height) };
         let upload_bytes = scene.map_or(0, |scene| scene.presentation.raster.as_ref().map_or(0, |r| r.rgba.len() as u64 * 2) + scene.point_upload_bytes() + 1024 * 40 + 64
             + scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16)
-            + scene.raw_upload_bytes()
+            + scene.raw_upload_bytes() + scene.layer_upload_bytes()
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
         let replacement_bytes = scene.map_or(0, |scene| self.scene_pipeline.as_ref()
             .map_or(upload_bytes + 96, |pipeline| pipeline.replacement_bytes(scene)));
@@ -1152,7 +1152,7 @@ mod tests {
         let (overlay, enabled_groups) = grouped_overlay(2_000_000);
         let scene = GraphNewScene {
             presentation: super::super::graph_new_renderer::ScenePresentation {
-                raw_line: Some(indices),
+                layer_geometry: None,                raw_line: Some(indices),
                 show_points: false,
                 x_axis: None,
                 ..Default::default()
