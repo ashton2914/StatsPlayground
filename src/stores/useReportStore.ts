@@ -1,3 +1,4 @@
+import { projectDocumentNames, createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 import { create } from "zustand";
 
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -22,7 +23,9 @@ interface ReportStore {
 
 const REPORT_HELPERS = createNamedDocumentHelpers("Report");
 
-export const useReportStore = create<ReportStore>((set, get) => ({
+export const useReportStore = create<ReportStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("report", rawSet, get, (state) => state.items);
+return ({
   items: [],
   documentRevisions: {},
   counter: 0,
@@ -62,11 +65,11 @@ export const useReportStore = create<ReportStore>((set, get) => ({
       })(),
     }));
   },
-  loadFromProject: (items) => set({ items, documentRevisions: {}, counter: REPORT_HELPERS.maxSuffix(items) }),
-  reset: () => set({ items: [], documentRevisions: {}, counter: 0 }),
+  loadFromProject: (items) => withoutDocumentPersistence(() => set({ items, documentRevisions: {}, counter: REPORT_HELPERS.maxSuffix(items) })),
+  reset: () => withoutDocumentPersistence(() => set({ items: [], documentRevisions: {}, counter: 0 })),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    const nextCounter = get().counter + 1;
+    const nextCounter = Math.max(get().counter, REPORT_HELPERS.maxSuffix(projectDocumentNames(["report"], []).map(name => ({name})))) + 1;
     set({ counter: nextCounter });
     return REPORT_HELPERS.nextName(nextCounter - 1);
   },
@@ -79,4 +82,5 @@ export const useReportStore = create<ReportStore>((set, get) => ({
       },
     }));
   },
-}));
+});
+});

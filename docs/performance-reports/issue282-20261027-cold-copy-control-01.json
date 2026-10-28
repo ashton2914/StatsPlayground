@@ -1,0 +1,19 @@
+{
+  "size": 41431040,
+  "pages": 2529,
+  "pageSize": 16384,
+  "copySha256": "f5fe13ad8dd750d12ef99576531139618f2c7bd5ee01a8309abccf9144dcbf0b",
+  "copyMethod": "new exclusive file, F_NOCACHE writes and fsync",
+  "beforeInvalidate": {
+    "return": 0,
+    "errno": 0,
+    "residentPages": 2
+  },
+  "msyncReturn": 0,
+  "msyncErrno": 0,
+  "afterInvalidate": {
+    "return": 0,
+    "errno": 0,
+    "residentPages": 0
+  }
+}

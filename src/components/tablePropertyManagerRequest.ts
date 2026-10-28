@@ -18,12 +18,13 @@ interface TablePropertyManagerReadiness {
   loadedDisplayPropsLoadToken: string | null;
 }
 
-export function createTableRenderLoadToken(revision: DatasetRevision): string {
+export function createTableRenderLoadToken(revision: DatasetRevision, projectEpoch?:number): string {
   return JSON.stringify([
     revision.datasetId,
     revision.generation,
     revision.rowCount,
     revision.updatedAt,
+    ...(projectEpoch===undefined?[]:[projectEpoch]),
   ]);
 }
 

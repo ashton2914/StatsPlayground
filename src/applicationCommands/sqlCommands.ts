@@ -57,7 +57,7 @@ export function createSqlCommandHandlers(
 
   async function createTable(
     input: SqlCreateTableInput,
-    controls?: { signal?: AbortSignal; beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void; assertCurrent?: () => void },
   ): Promise<{ result: SqlCreateTableResult; warnings: CommandWarning[] }> {
     if (!input.sql.trim()) {
       throw new CommandExecutionError("invalid_input", "sql is required");
@@ -84,6 +84,7 @@ export function createSqlCommandHandlers(
 
     const warnings: CommandWarning[] = [];
     await runPostCreateCoordinator({
+      assertCurrent: controls?.assertCurrent,
       dependencies: resolvedDependencies,
       datasetId: created.id,
       historyMessage: resolvedDependencies.historyMessage(created.name),

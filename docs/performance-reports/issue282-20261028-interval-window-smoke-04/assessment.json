@@ -1,0 +1,297 @@
+{
+  "qualified": false,
+  "failures": [
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/catalog: release source/build/engine provenance required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/catalog: at least 100 warm samples required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/catalog: native latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/catalog: UI latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/window: release source/build/engine provenance required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/window: at least 100 warm samples required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/window: UI latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/scroll: release source/build/engine provenance required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/scroll: at least 100 warm samples required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/scroll: UI latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/edit: release source/build/engine provenance required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/edit: at least 100 warm samples required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/edit: native latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/edit: UI latency exceeds budget",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/close: release source/build/engine provenance required",
+    "2b664ffd-8ceb-4104-99f0-0065969d2aba/close: at least 100 warm samples required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/catalog: release source/build/engine provenance required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/catalog: at least 100 warm samples required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/window: release source/build/engine provenance required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/window: at least 100 warm samples required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/window: UI latency exceeds budget",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/scroll: release source/build/engine provenance required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/scroll: at least 100 warm samples required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/scroll: native latency exceeds budget",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/scroll: UI latency exceeds budget",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/edit: release source/build/engine provenance required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/edit: at least 100 warm samples required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/edit: native latency exceeds budget",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/edit: UI latency exceeds budget",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/close: release source/build/engine provenance required",
+    "f3138c37-5b38-4891-9dff-e80b56418b44/close: at least 100 warm samples required",
+    "missing 300000x20 catalog/cold",
+    "missing 300000x20 catalog/warm",
+    "missing 300000x20 window/warm",
+    "missing 300000x20 scroll/warm",
+    "missing 300000x20 edit/warm",
+    "missing 300000x20 close/warm",
+    "missing 2000000x20 catalog/cold",
+    "missing 2000000x20 catalog/warm",
+    "missing 2000000x20 window/warm",
+    "missing 2000000x20 scroll/warm",
+    "missing 2000000x20 edit/warm",
+    "missing 2000000x20 close/warm",
+    "missing 10000000x20 catalog/cold",
+    "missing 10000000x20 catalog/warm",
+    "missing 10000000x20 window/warm",
+    "missing 10000000x20 scroll/warm",
+    "missing 10000000x20 edit/warm",
+    "missing 10000000x20 close/warm"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "2b664ffd-8ceb-4104-99f0-0065969d2aba",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "native latency exceeds budget",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 820.213583,
+        "uiP95Ms": 850,
+        "backendMedianMs": 790.3840829999999,
+        "uiMedianMs": 821.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "2b664ffd-8ceb-4104-99f0-0065969d2aba",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 76.782208,
+        "uiP95Ms": 329,
+        "backendMedianMs": 75.792479,
+        "uiMedianMs": 253,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "2b664ffd-8ceb-4104-99f0-0065969d2aba",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 70.027917,
+        "uiP95Ms": 153,
+        "backendMedianMs": 62.464354,
+        "uiMedianMs": 140.5,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "2b664ffd-8ceb-4104-99f0-0065969d2aba",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "native latency exceeds budget",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 350.368292,
+        "uiP95Ms": 581,
+        "backendMedianMs": 298.3746255,
+        "uiMedianMs": 481,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "2b664ffd-8ceb-4104-99f0-0065969d2aba",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 114.746041,
+        "uiP95Ms": 171,
+        "backendMedianMs": 112.622708,
+        "uiMedianMs": 169,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "f3138c37-5b38-4891-9dff-e80b56418b44",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 114.446,
+        "uiP95Ms": 124,
+        "backendMedianMs": 111.1419375,
+        "uiMedianMs": 121.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "f3138c37-5b38-4891-9dff-e80b56418b44",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 284.285541,
+        "uiP95Ms": 550,
+        "backendMedianMs": 281.3180625,
+        "uiMedianMs": 535,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "f3138c37-5b38-4891-9dff-e80b56418b44",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "native latency exceeds budget",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 470.032667,
+        "uiP95Ms": 786,
+        "backendMedianMs": 421.6712295,
+        "uiMedianMs": 735,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "f3138c37-5b38-4891-9dff-e80b56418b44",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "native latency exceeds budget",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 962.529792,
+        "uiP95Ms": 1379,
+        "backendMedianMs": 690.0655835,
+        "uiMedianMs": 979.5,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "f3138c37-5b38-4891-9dff-e80b56418b44",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 111.189166,
+        "uiP95Ms": 144,
+        "backendMedianMs": 100.591437,
+        "uiMedianMs": 125.5,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

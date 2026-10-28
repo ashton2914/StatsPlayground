@@ -1,0 +1,10 @@
+{
+  "qualified": true,
+  "failures": [],
+  "sampleCount": 100,
+  "backendP95Ms": 12.441625,
+  "uiP95Ms": 63,
+  "backendMedianMs": 10.868208,
+  "uiMedianMs": 60,
+  "budgetMs": 300
+}

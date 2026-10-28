@@ -1,3 +1,4 @@
+import { createPersistedRecordSetter } from "../projectPersistence/recordMutations";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
 
@@ -47,7 +48,15 @@ function mutable(): void {
 }
 
 export function createDatasetFilterStore(): StoreApi<DatasetFilterStoreState> {
-  return createStore<DatasetFilterStoreState>((set, get) => ({
+  return createStore<DatasetFilterStoreState>((rawSet, get) => {
+    const set = createPersistedRecordSetter(rawSet, get, (before, after) => {
+      if (before.byDataset === after.byDataset) return null;
+      const ids = new Set([...Object.keys(before.byDataset), ...Object.keys(after.byDataset)]);
+      const settings = [...ids].filter((id) => before.byDataset[id] !== after.byDataset[id])
+        .map((id) => ({ key: `filter:${id}`, value: after.byDataset[id] ?? [] }));
+      return settings.length ? { kind: "settings", settings } : null;
+    });
+    return ({
     byDataset: {},
 
     replaceFilters: (datasetId, filters) => {
@@ -107,15 +116,16 @@ export function createDatasetFilterStore(): StoreApi<DatasetFilterStoreState> {
       for (const [datasetId, filters] of Object.entries(payload)) {
         if (filters.length > 0) byDataset[datasetId] = clone(filters);
       }
-      set({ byDataset });
+      rawSet({ byDataset });
     },
 
     toProjectPayload: () => clone(get().byDataset),
 
     reset: () => {
-      set({ byDataset: {} });
+      rawSet({ byDataset: {} });
     },
-  }));
+  });
+  });
 }
 
 const datasetFilterStore = createDatasetFilterStore();

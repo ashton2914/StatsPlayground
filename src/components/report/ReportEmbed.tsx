@@ -1,4 +1,7 @@
-import { Component, lazy, Suspense, type ReactNode } from "react";
+import {prepareNativeDocumentAccess} from "@/projectPersistence/catalogAccess";
+import {useProjectStore} from "@/stores/useProjectStore";
+import {useProjectCatalogStore} from "@/stores/useProjectCatalogStore";
+import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { analysisReportPolicies } from "@/components/analysis/analysisReportPolicies";
@@ -341,11 +344,37 @@ function renderResolvedEmbed(source: ReportResolvedSource, runtime: ReportEmbedR
   return renderLazyEmbed(<TabulateReportEmbed source={source} runtime={runtime?.tabulate} />);
 }
 
+function useNativeReportDependency(dependency: ReportDependency) {
+  const owner = useProjectStore(state => state.persistence);
+  const revision = useProjectCatalogStore(state => state.summaries[dependency.documentId]?.revision);
+  const key = `${owner?.snapshot().epoch ?? "legacy"}:${dependency.kind}:${dependency.documentId}`;
+  const [attempt,setAttempt] = useState(0);
+  const [load,setLoad] = useState<{key:string;status:"loading"|"ready"|"error"}>({key,status:owner?"loading":"ready"});
+  useEffect(() => {
+    if (!owner) return;
+    let cancelled = false;
+    setLoad({key,status:"loading"});
+    void prepareNativeDocumentAccess(dependency.kind === "table"
+      ? {datasetIds:[dependency.documentId]} : {documentIds:[dependency.documentId]}).then(() => {
+      if (!cancelled && useProjectStore.getState().persistence === owner) setLoad({key,status:"ready"});
+    }, () => {
+      if (!cancelled && useProjectStore.getState().persistence === owner) setLoad({key,status:"error"});
+    });
+    return () => {cancelled = true;};
+  },[owner,key,revision,attempt]);
+  return {status:!owner?"ready":load.key===key?load.status:"loading",retry:()=>setAttempt(value=>value+1)};
+}
+
 export function ReportEmbed({ dependency, runtime }: ReportEmbedProps) {
   const { t } = useTranslation();
   const resolution = useReportDependencyResolution(dependency);
+  const nativeLoad = useNativeReportDependency(dependency);
   const dataRevision = useHistoryStore((state) => state.dataRevision);
 
+  if (nativeLoad.status === "loading") return <div className="sp-report-embed-loading" role="status">{t("common.loading")}</div>;
+  if (nativeLoad.status === "error") return <div className="sp-report-embed-error" role="alert">
+    {t("workspace.documentLoadFailed")} <button type="button" onClick={nativeLoad.retry}>{t("workspace.retryDocumentLoad")}</button>
+  </div>;
   if (resolution.status === "missing") {
     return <div className="sp-report-embed-unavailable">{renderMissingMessage(t as never, dependency)}</div>;
   }

@@ -24,7 +24,8 @@ export function createIoCommandHandlers(
     createSnapshot: dependencyOverrides.createSnapshot ?? (async (name) => {
       const historyStore = useHistoryStore.getState();
       const beforeCount = historyStore.snapshots.length;
-      await historyStore.createSnapshot(name);
+      const created=await historyStore.createSnapshot(name);
+      if(created)return created;
       const latestSnapshot = useHistoryStore.getState().snapshots[0] ?? null;
       return {
         id: latestSnapshot?.id ?? (useHistoryStore.getState().snapshots.length > beforeCount ? latestSnapshot?.id ?? null : null),

@@ -105,7 +105,7 @@ export function createTableCommandHandlers(
 
   async function createTable(
     input: TableCreateInput,
-    controls?: { beginCommit?: () => void },
+    controls?: { beginCommit?: () => void; assertCurrent?: () => void },
   ): Promise<{ result: TableCreateResult; warnings: CommandWarning[] }> {
     if (input.request.columns.length !== 0 && input.request.rows.length > 0) {
       for (const row of input.request.rows) {
@@ -133,6 +133,7 @@ export function createTableCommandHandlers(
     const created = await resolvedDependencies.createManagedTable(input.request);
     const warnings: CommandWarning[] = [];
     await runPostCreateCoordinator({
+      assertCurrent: controls?.assertCurrent,
       dependencies: resolvedDependencies,
       datasetId: created.dataset.id,
       historyMessage: resolvedDependencies.historyMessage(created.dataset.name),

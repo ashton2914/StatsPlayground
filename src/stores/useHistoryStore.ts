@@ -1,3 +1,5 @@
+import {useProjectDataSnapshotStore} from "@/stores/useProjectDataSnapshotStore";
+import type { ProjectHistorySummary } from "../types/projectPersistence";
 import { create } from "zustand";
 import { dataService } from "@/services/dataService";
 import { historyService } from "@/services/historyService";
@@ -23,6 +25,23 @@ import {
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
+async function refreshNativeSnapshots(owner=useProjectStore.getState().persistence) {
+  if(!owner||useProjectStore.getState().persistence!==owner)throw new Error("project_session_required");
+  const snapshot=owner.snapshot();useProjectDataSnapshotStore.getState().install(snapshot.epoch,snapshot.committedRevision);
+  await useProjectDataSnapshotStore.getState().loadNextPage();
+  if(useProjectStore.getState().persistence!==owner)throw new Error("project_epoch_stale");
+  const state=useProjectDataSnapshotStore.getState();if(state.error)throw new Error(state.error);
+}
+async function nativeSnapshot(id:string,owner=useProjectStore.getState().persistence) {
+ await refreshNativeSnapshots(owner);
+ while(true) {
+  if(useProjectStore.getState().persistence!==owner)throw new Error("project_epoch_stale");
+  const state=useProjectDataSnapshotStore.getState();const item=state.items.find(item=>item.id===id);if(item)return item;
+  if(!state.nextCursor)throw new Error("project_snapshot_missing");await state.loadNextPage();
+  if(useProjectDataSnapshotStore.getState().error)throw new Error(useProjectDataSnapshotStore.getState().error!);
+ }
+}
+
 const MAX_HISTORY = 100;
 let historyEpoch = 0;
 let historyErrorSequence = 0;
@@ -41,6 +60,7 @@ function nowISO(): string {
 }
 
 function dropDiscardedChangeSets(previous: HistoryEntry[], next: HistoryEntry[]): void {
+  if (useProjectStore.getState().persistence) return;
   const requestEpoch = historyEpoch;
   for (const changeSetId of discardedChangeSetIds(previous, next)) {
     const datasetId = previous.find((entry) => entry.action?.kind === "changeSet"
@@ -58,12 +78,44 @@ function dropDiscardedChangeSets(previous: HistoryEntry[], next: HistoryEntry[])
   }
 }
 
+/** Native metadata owns replay order, including after a lost acknowledgement. */
+async function replayNativeHistoryFrontier(undo:boolean) {
+  const owner=useProjectStore.getState().persistence;
+  if(!owner) return;
+  const requestEpoch=historyEpoch;
+  let datasetId:string|null=null;
+  useHistoryStore.setState(state=>({nativeReplayPending:true,tableMutationDepth:state.tableMutationDepth+1,historyError:null,historyErrorNotification:null}));
+  try {
+    const {projectService}=await import("../services/projectService");
+    if(historyEpoch!==requestEpoch||useProjectStore.getState().persistence!==owner)return;
+    const page=await projectService.getHistoryFrontier(owner.snapshot().epoch,undo);
+    if(historyEpoch!==requestEpoch||useProjectStore.getState().persistence!==owner)return;
+    if(!Number.isSafeInteger(page.committedRevision)||page.committedRevision<owner.snapshot().committedRevision)throw new Error("project_history_frontier_stale");
+    const entry=page.entry;
+    if(!entry)return;
+    if(typeof entry.id!=="string"||!entry.id||typeof entry.datasetId!=="string"||!entry.datasetId||entry.applied!==undo
+      ||typeof entry.operation!=="string"||!Number.isSafeInteger(entry.generation)||entry.generation<0)throw new Error("project_history_frontier_invalid");
+    datasetId=entry.datasetId;
+    assertProjectMutable(useProjectStore.getState().readOnly);
+    if(entry.operation==="create_table"||entry.operation==="delete_table")await dataService.applyTableLifecycle(entry.id,undo);
+    else await dataService.applyTableChangeSet(entry.id,undo,entry.datasetId);
+    if(historyEpoch===requestEpoch&&useProjectStore.getState().persistence===owner)useHistoryStore.setState(state=>{
+      const index=state.history.findIndex(item=>item.id===entry.id);
+      return {currentIdx:index<0?state.currentIdx:undo?index+1:index,historyRevision:state.historyRevision+1,dataRevision:state.dataRevision+1};
+    });
+  } catch(error) {
+    if(historyEpoch===requestEpoch&&useProjectStore.getState().persistence===owner)useHistoryStore.setState({historyError:String(error),historyErrorNotification:createHistoryErrorNotification(error,datasetId)});
+  } finally {
+    if(historyEpoch===requestEpoch)useHistoryStore.setState(state=>({nativeReplayPending:false,tableMutationDepth:Math.max(0,state.tableMutationDepth-1)}));
+  }
+}
+
 function updateReplayGeneration(
   entry: HistoryEntry,
   entryId: string,
   generation: number,
 ): HistoryEntry {
-  if (entry.id !== entryId || !entry.action || entry.action.kind === "changeSet") return entry;
+  if (entry.id !== entryId || !entry.action || (entry.action.kind === "changeSet" || entry.action.kind === "tableLifecycle")) return entry;
   return { ...entry, action: { ...entry.action, generation } };
 }
 
@@ -81,12 +133,14 @@ interface HistoryStore {
   dataRevision: number;
   historyError: string | null;
   historyErrorNotification: HistoryErrorNotification | null;
-  consumeHistoryError: (id: number, datasetId: string) => string | null;
+  consumeHistoryError: (id: number, datasetId: string | null) => string | null;
   tableMutationDepth: number;
+  nativeReplayPending: boolean;
 
   /** Record a new action with optional afterState for undo/redo */
   record: (description: string, afterState?: unknown) => void;
   recordTable: (description: string, action: TableHistoryAction) => void;
+  recordCommittedTableMutation: (entry: ProjectHistorySummary) => void;
   invalidateData: () => void;
   tryBeginTableMutation: () => boolean;
   endTableMutation: () => void;
@@ -99,13 +153,13 @@ interface HistoryStore {
   /** Clear the pending restore signal */
   clearPendingRestore: () => void;
   /** Create a named snapshot from current state (full capture, uses IPC) */
-  createSnapshot: (name?: string) => Promise<void>;
+  createSnapshot: (name?: string) => Promise<{id:string;name:string;createdAt:string}|void>;
   /** Restore a named snapshot */
   restoreSnapshot: (id: string) => Promise<void>;
   /** Delete a named snapshot */
-  deleteSnapshot: (id: string) => void;
+  deleteSnapshot: (id: string) => Promise<void>;
   /** Rename a named snapshot */
-  renameSnapshot: (id: string, name: string) => void;
+  renameSnapshot: (id: string, name: string) => Promise<void>;
   /** Clear all history (e.g. on project close) */
   reset: () => void;
   /** Load history/snapshots from saved project data */
@@ -127,6 +181,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   historyError: null,
   historyErrorNotification: null,
   tableMutationDepth: 0,
+  nativeReplayPending: false,
 
   consumeHistoryError: (id, datasetId) => {
     const notification = get().historyErrorNotification;
@@ -158,7 +213,20 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     });
   },
 
+  recordCommittedTableMutation: (summary) => {
+    if (!summary.applied) return;
+    set((state) => {
+      if (state.history.some((entry) => entry.id === summary.id)) return state;
+      const entry: HistoryEntry = { id: summary.id, timestamp: nowISO(), description: summary.operation,
+        action: summary.operation === "create_table" || summary.operation === "delete_table"
+          ? { kind: "tableLifecycle", datasetId: summary.datasetId, eventId: summary.id }
+          : { kind: "changeSet", datasetId: summary.datasetId, changeSetId: summary.id } };
+      return { ...recordIncrementalEntry(state, entry, MAX_HISTORY), historyRevision: state.historyRevision + 1, dataRevision: state.dataRevision + 1 };
+    });
+  },
+
   recordTable: (description: string, action: TableHistoryAction) => {
+    if (useProjectStore.getState().persistence) return;
     assertProjectMutable(useProjectStore.getState().readOnly);
     const entry: HistoryEntry = {
       id: nextId(),
@@ -180,11 +248,11 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   tryBeginTableMutation: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    if (get().pendingAction) return false;
-    set((state) => state.pendingAction
+    if (get().pendingAction || get().nativeReplayPending) return false;
+    set((state) => state.pendingAction || state.nativeReplayPending
       ? state
       : { tableMutationDepth: state.tableMutationDepth + 1 });
-    return get().pendingAction === null;
+    return get().pendingAction === null && !get().nativeReplayPending;
   },
 
   endTableMutation: () => {
@@ -195,6 +263,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     assertProjectMutable(useProjectStore.getState().readOnly);
     const { history, currentIdx, pendingAction, tableMutationDepth } = get();
     if (pendingAction || tableMutationDepth > 0) return;
+    if (useProjectStore.getState().persistence) return replayNativeHistoryFrontier(true);
     const transition = undoIncrementalEntry({ history, currentIdx });
     if (transition) {
       const request = transition.request;
@@ -226,8 +295,10 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
             request.action.from,
             request.action.generation,
           );
+        } else if (request.action.kind === "tableLifecycle") {
+          await dataService.applyTableLifecycle(request.action.eventId, true);
         } else {
-          await dataService.applyTableChangeSet(request.action.changeSetId, true);
+          await dataService.applyTableChangeSet(request.action.changeSetId, true, request.action.datasetId);
         }
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
@@ -266,6 +337,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     assertProjectMutable(useProjectStore.getState().readOnly);
     const { history, currentIdx, pendingAction, tableMutationDepth } = get();
     if (pendingAction || tableMutationDepth > 0) return;
+    if (useProjectStore.getState().persistence) return replayNativeHistoryFrontier(false);
     const transition = redoIncrementalEntry({ history, currentIdx });
     if (transition) {
       const request = transition.request;
@@ -297,8 +369,10 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
             request.action.to,
             request.action.generation,
           );
+        } else if (request.action.kind === "tableLifecycle") {
+          await dataService.applyTableLifecycle(request.action.eventId, false);
         } else {
-          await dataService.applyTableChangeSet(request.action.changeSetId, false);
+          await dataService.applyTableChangeSet(request.action.changeSetId, false, request.action.datasetId);
         }
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
@@ -349,6 +423,12 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   createSnapshot: async (name?: string) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const owner=useProjectStore.getState().persistence;
+    if(owner) {
+      await refreshNativeSnapshots(owner);
+      const resolvedName=allocateProjectBasename(name||`Snapshot ${formatSnapshotTimestamp(new Date())}`,projectFileExtension("snapshot"),useProjectDataSnapshotStore.getState().items.map(item=>item.name));
+      const created=await historyService.createNativeSnapshot(resolvedName,owner);await refreshNativeSnapshots(owner);return created;
+    }
     try {
       const snapshot = await historyService.captureProjectSnapshot();
       const ts = nowISO();
@@ -375,21 +455,27 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   restoreSnapshot: async (id: string) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const owner=useProjectStore.getState().persistence;
+    if(owner) {const snapshot=await nativeSnapshot(id,owner);await historyService.restoreNativeSnapshot(id,snapshot.revision,owner);await refreshNativeSnapshots(owner);return;}
     const { snapshots } = get();
     const snap = snapshots.find((s) => s.id === id);
     if (!snap) return;
     await historyService.restoreProjectSnapshot(snap.snapshot);
   },
 
-  deleteSnapshot: (id: string) => {
+  deleteSnapshot: async (id: string) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const owner=useProjectStore.getState().persistence;
+    if(owner) {const snapshot=await nativeSnapshot(id,owner);await historyService.deleteNativeSnapshot(id,snapshot.revision,owner);await refreshNativeSnapshots(owner);return;}
     set((state) => ({
       snapshots: state.snapshots.filter((s) => s.id !== id),
     }));
   },
 
-  renameSnapshot: (id: string, name: string) => {
+  renameSnapshot: async (id: string, name: string) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const owner=useProjectStore.getState().persistence;
+    if(owner) {const snapshot=await nativeSnapshot(id,owner);await historyService.renameNativeSnapshot(id,snapshot.revision,name,owner);await refreshNativeSnapshots(owner);return;}
     set((state) => ({
       snapshots: state.snapshots.map((s) =>
         s.id === id ? { ...s, name } : s
@@ -400,7 +486,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   reset: () => {
     dropDiscardedChangeSets(get().history, []);
     historyEpoch += 1;
-    set({ history: [], snapshots: [], currentIdx: -1, pendingRestore: null, pendingAction: null, historyError: null, historyErrorNotification: null, tableMutationDepth: 0 });
+    set({ history: [], snapshots: [], currentIdx: -1, pendingRestore: null, pendingAction: null, historyError: null, historyErrorNotification: null, tableMutationDepth: 0, nativeReplayPending: false });
   },
 
   loadFromProject: (
@@ -414,6 +500,6 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       : Math.max(0, Math.min(storedHistory.length, currentIdx));
     dropDiscardedChangeSets(get().history, []);
     historyEpoch += 1;
-    set({ history: storedHistory, snapshots, currentIdx: restoredCurrentIdx, pendingAction: null, pendingRestore: null, tableMutationDepth: 0, historyError: null, historyErrorNotification: null });
+    set({ history: storedHistory, snapshots, currentIdx: restoredCurrentIdx, pendingAction: null, pendingRestore: null, tableMutationDepth: 0, nativeReplayPending: false, historyError: null, historyErrorNotification: null });
   },
 }));

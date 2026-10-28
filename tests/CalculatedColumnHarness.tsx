@@ -1,3 +1,4 @@
+import {createProjectPersistenceCoordinator} from "../src/projectPersistence/coordinator";
 import { useEffect, useState } from "react";
 
 import i18n from "../src/i18n";
@@ -37,6 +38,8 @@ type HarnessSnapshot = {
     headerNames: string[] | null;
     colTypes: string[];
     expectedGeneration?: number;
+    rowIds?:number[];
+    columnIds?:string[];
   }>;
   confirmMessages: string[];
   clipboardWrites: string[];
@@ -296,9 +299,15 @@ function setDatasetGeneration(generation: number) {
 export function CalculatedColumnHarness({
   scenario,
   width = 1280,
+  nativePersistence=false,
+  reverseRows=false,
+  unloadedTail=false,
 }: {
   scenario: CalculatedColumnHarnessScenario;
   width?: number;
+  nativePersistence?:boolean;
+  reverseRows?:boolean;
+  unloadedTail?:boolean;
 }) {
   const [ready, setReady] = useState(false);
   const [tableVisible, setTableVisible] = useState(true);
@@ -321,11 +330,20 @@ export function CalculatedColumnHarness({
     const previousUpdateCell = dataService.updateCell;
     const previousClearCells = dataService.clearCells;
     const previousPasteAtPositionWithChangeSet = dataService.pasteAtPositionWithChangeSet;
+    const previousResolvePasteRowIds=dataService.resolveTablePasteRowIds;
     const previousConfirm = window.confirm;
     const previousClipboard = Object.getOwnPropertyDescriptor(Navigator.prototype, "clipboard");
     let active = true;
     let currentGeneration = DATASET.generation;
     let currentWindow: TableWindowResult = buildWindow();
+    if(reverseRows) currentWindow={...currentWindow,rows:[...currentWindow.rows].reverse()};
+    if(unloadedTail)currentWindow={...currentWindow,totalRows:currentWindow.rows.length+1};
+    dataService.resolveTablePasteRowIds=async(request,isCurrent)=> {
+      if(!isCurrent())throw new Error("stale paste fixture");
+      if(request.start!==0||request.count!==3)throw new Error("unexpected row identity range");
+      return [...currentWindow.rows.map(row=>row[0] as number),99];
+    };
+    const nativeOwner=nativePersistence?createProjectPersistenceCoordinator({projectId:"native-paste",epoch:7,committedRevision:0,now:Date.now,newOperationId:()=>crypto.randomUUID(),setTimer:(run,delay)=>setTimeout(run,delay),clearTimer:timer=>clearTimeout(timer as ReturnType<typeof setTimeout>),transport:async()=>{throw new Error("unexpected native harness operation");}}):null;
     let currentDescriptors: ColumnDescriptor[] = cloneDescriptors(BASE_DESCRIPTORS);
     let confirmResult = true;
     let clipboardText = "";
@@ -368,6 +386,7 @@ export function CalculatedColumnHarness({
       saving: false,
       saveError: null,
     });
+    if(nativeOwner) useProjectStore.getState().installPersistence(nativeOwner);
     useHistoryStore.setState({
       ...previousHistoryState,
       historyRevision: 0,
@@ -571,8 +590,13 @@ export function CalculatedColumnHarness({
     dataService.clearCells = async (datasetId, cells) => {
       snapshot.clearCellsCalls.push({ datasetId, cells });
     };
-    dataService.pasteAtPositionWithChangeSet = async (datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration) => {
-      snapshot.pasteCalls.push({ datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration });
+    dataService.pasteAtPositionWithChangeSet = async (datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration,rowIds,columnIds) => {
+      snapshot.pasteCalls.push({ datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration,...(rowIds?{rowIds}:{}),...(columnIds?{columnIds}:{}) });
+      if(nativeOwner) {
+        currentGeneration++;
+        currentWindow={...currentWindow,generation:currentGeneration,rows:currentWindow.rows.map(row=>{const index=rowIds?.indexOf(row[0] as number)??-1;if(index<0)return row;const next=[...row];for(let offset=0;offset<rows[index].length;offset++)next[startCol+offset+1]=Number(rows[index][offset]);return next;})};
+        return {changeSetId:`paste-${currentGeneration}`,generation:currentGeneration,rowCount:BASE_ROWS.length,columnCount:BASE_VISIBLE_COLUMNS.length};
+      }
       return { changeSetId: `paste-${currentGeneration}` };
     };
     window.confirm = (message?: string) => {
@@ -682,6 +706,7 @@ export function CalculatedColumnHarness({
 
     return () => {
       active = false;
+      if(nativeOwner) void nativeOwner.close();
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
       dataService.queryTableWindow = previousQueryTableWindow;
       dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
@@ -695,6 +720,7 @@ export function CalculatedColumnHarness({
       dataService.updateCell = previousUpdateCell;
       dataService.clearCells = previousClearCells;
       dataService.pasteAtPositionWithChangeSet = previousPasteAtPositionWithChangeSet;
+      dataService.resolveTablePasteRowIds=previousResolvePasteRowIds;
       window.confirm = previousConfirm;
       if (previousClipboard) {
         Object.defineProperty(window.navigator, "clipboard", previousClipboard);
@@ -705,7 +731,7 @@ export function CalculatedColumnHarness({
       useHistoryStore.setState(previousHistoryState, true);
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [scenario]);
+  }, [scenario,nativePersistence,reverseRows,unloadedTail]);
 
   if (!ready) return null;
 

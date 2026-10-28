@@ -1,0 +1,12 @@
+{
+  "qualified": false,
+  "failures": [
+    "sample 13: foreground UI phase proof unavailable or inconsistent"
+  ],
+  "sampleCount": 100,
+  "backendP95Ms": 10.972833,
+  "uiP95Ms": 64,
+  "backendMedianMs": 10.2623955,
+  "uiMedianMs": 61,
+  "budgetMs": 300
+}

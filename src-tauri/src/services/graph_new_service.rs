@@ -41,11 +41,37 @@ struct RenderOwner {
 
 #[derive(Default)]
 pub struct GraphNewRuntime {
+    suspended: std::sync::atomic::AtomicBool,
     owner: Mutex<RenderOwner>,
     cache: Mutex<super::graph_new_cache::GraphNewCacheCoordinator>,
 }
 
 impl GraphNewRuntime {
+    pub(crate) fn shutdown(&self) -> Result<(), AppError> {
+        self.suspended.store(true, std::sync::atomic::Ordering::Release);
+        {
+            let mut owner = self.owner.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
+            owner.active = false;
+            owner.closed = true;
+            owner.preserve_cache = false;
+        }
+        // Rendering checks owner while holding cache; release owner before joining it.
+        self.cache.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?.invalidate();
+        Ok(())
+    }
+
+    pub(crate) fn resume_previous(&self) -> Result<(), AppError> {
+        let mut owner = self.owner.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
+        owner.closed = false;
+        owner.active = false;
+        self.suspended.store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn resume(&self) {
+        self.suspended.store(false, std::sync::atomic::Ordering::Release);
+    }
+
     pub fn release_idle_cache(&self) -> Result<(), AppError> {
         self.cache.try_lock().map_err(|_| AppError::Busy("graph_new_busy".into()))?.evict_unpinned();
         Ok(())
@@ -93,7 +119,8 @@ impl GraphNewRuntime {
     fn begin(&self, request: &GraphNewRenderRequest) -> Result<(), AppError> {
         request.validate()?;
         let mut owner = self.owner.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
-        if request.renderer_generation <= owner.renderer_generation
+        if self.suspended.load(std::sync::atomic::Ordering::Acquire)
+            || request.renderer_generation <= owner.renderer_generation
             || (owner.closed && owner.session_id == request.session_id) {
             return Err(AppError::Cancelled("graph_new_cancelled".into()));
         }
@@ -1363,6 +1390,44 @@ mod tests {
 
     use crate::services::graph_new_service::{GraphBuildProgress, GraphNewService};
     use crate::state::AppState;
+
+    #[test]
+    fn project_v5_lifecycle_refused_close_can_resume_the_previous_graph_session() {
+        let runtime = super::GraphNewRuntime::default();
+        let mut request: super::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"old-request", "sessionId":"old-session", "datasetId":"table", "datasetGeneration":0,
+            "xColumnId":"x", "yColumnId":"y", "width":640, "height":360, "devicePixelRatio":1,
+            "rendererGeneration":1, "cameraGeneration":0
+        })).unwrap();
+        runtime.begin(&request).unwrap();
+        runtime.shutdown().unwrap();
+        request.renderer_generation=2;
+        assert!(runtime.begin(&request).is_err());
+        runtime.resume_previous().unwrap();
+        runtime.begin(&request).unwrap();
+        assert!(runtime.is_current(&request));
+    }
+
+    #[test]
+    fn project_v5_lifecycle_graph_shutdown_cancels_owner_and_joins_cache_work() {
+        let runtime = std::sync::Arc::new(super::GraphNewRuntime::default());
+        runtime.owner.lock().unwrap().active = true;
+        let cache = runtime.cache.lock().unwrap();
+        let worker_runtime = runtime.clone();
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || done.send(worker_runtime.shutdown()).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.owner.lock().unwrap().active {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(completion.try_recv().is_err(), "shutdown must join work holding the cache");
+        drop(cache);
+        completion.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+        worker.join().unwrap();
+        assert!(runtime.cache.lock().unwrap().is_none());
+        assert!(runtime.owner.lock().unwrap().closed);
+    }
 
     #[test]
     fn graph_new_persistence_fresh_transport_survives_closed_owner_and_late_controls() {

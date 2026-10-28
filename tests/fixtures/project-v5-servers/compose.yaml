@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: statsplayground_test
+      POSTGRES_USER: fixture_admin
+      POSTGRES_PASSWORD: issue282-test-only-admin
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./postgres.sql:/docker-entrypoint-initdb.d/fixture.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fixture_admin -d statsplayground_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: statsplayground_test
+      MYSQL_ROOT_PASSWORD: issue282-test-only-admin
+      MYSQL_USER: stats_reader
+      MYSQL_PASSWORD: issue282-test-only-reader
+    ports:
+      - "127.0.0.1:53306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    volumes:
+      - ./mysql.sql:/docker-entrypoint-initdb.d/fixture.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pissue282-test-only-admin"]
+      interval: 2s
+      timeout: 2s
+      retries: 60

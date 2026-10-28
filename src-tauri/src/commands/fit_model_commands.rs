@@ -4,7 +4,8 @@ use crate::models::fit_model::{
 };
 use crate::services::fit_model_service::FitModelService;
 use crate::state::AppState;
-use tauri::State;
+use tauri::{Emitter,State};
+use crate::models::project_persistence::{ProjectWriteContext,ProjectMutationResult};
 
 #[tauri::command]
 pub fn fit_model(
@@ -22,11 +23,18 @@ pub(crate) fn acquire_mutation_permit(
 
 #[tauri::command]
 pub fn save_fit_model_columns(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     request: SaveFitModelColumnsRequest,
-) -> Result<SaveFitModelColumnsResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<SaveFitModelColumnsResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).save_fit_model_columns(&context,&request)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
-    FitModelService::new(&state).save_columns(request)
+    FitModelService::new(&state).save_columns(request).map(ProjectMutationResult::Legacy)
 }
 
 #[cfg(test)]
@@ -65,7 +73,7 @@ mod tests {
             .expect("save command must exist");
         let command_source = &source[command_start..];
         assert!(command_source.contains("request: SaveFitModelColumnsRequest"));
-        assert!(command_source.contains("Result<SaveFitModelColumnsResult, AppError>"));
+        assert!(command_source.contains("Result<ProjectMutationResult<SaveFitModelColumnsResult>, AppError>"));
         assert!(command_source.contains("let _permit = acquire_mutation_permit(state.inner())?;"));
         assert!(command_source.contains("FitModelService::new(&state).save_columns(request)"));
     }

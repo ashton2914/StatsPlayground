@@ -13,6 +13,8 @@ import {
   replaceSaveProgress,
 } from "@/utils/saveReadOnly";
 
+import type { ProjectPersistenceCoordinator, PersistenceSnapshot } from "@/projectPersistence/coordinator";
+
 type ProjectServiceLike = Pick<
   typeof projectService,
   "initProject" | "createProject" | "openProject" | "saveProject" | "getCurrentProject"
@@ -39,6 +41,11 @@ interface ProjectStore {
   saveError: string | null;
   /** 应用层命令修订号。 */
   projectRevision: number;
+  persistence: ProjectPersistenceCoordinator | null;
+  persistenceSnapshot: PersistenceSnapshot | null;
+  installPersistence: (coordinator: ProjectPersistenceCoordinator | null, readOnly?: boolean) => void;
+  syncPersistence: (snapshot: PersistenceSnapshot) => void;
+  flushPersistence: () => Promise<void>;
   /** 初始化项目（内存中，未保存到磁盘） */
   initProject: () => Promise<void>;
   /** 创建新项目 */
@@ -60,7 +67,7 @@ interface ProjectStore {
 }
 
 export function createProjectStore(
-  deps: ProjectStoreDeps = { projectService },
+  deps: ProjectStoreDeps = { get projectService() { return projectService; } },
 ) {
   let saveGeneration = 0;
   let activeSaveGeneration: number | null = null;
@@ -74,6 +81,34 @@ export function createProjectStore(
     saveProgress: null,
     saveError: null,
     projectRevision: 0,
+    persistence: null,
+    persistenceSnapshot: null,
+
+    installPersistence: (persistence, readOnly = false) => {
+      const previous = get().persistence;
+      if (previous && previous !== persistence) {
+        const pending = previous.snapshot();
+        if (pending.pendingSequence !== pending.acknowledgedSequence) throw new Error("Pending project changes must finish saving first");
+      }
+      const snapshot = persistence?.snapshot() ?? null;
+      set({ persistence, persistenceSnapshot: snapshot, readOnly,
+        ...(snapshot ? { dirty: snapshot.pendingSequence > snapshot.acknowledgedSequence,
+          saving: snapshot.status === "saving", saveError: snapshot.error, projectRevision: snapshot.committedRevision } : {}),
+      });
+    },
+    syncPersistence: (snapshot) => {
+      const persistence = get().persistence;
+      if (!persistence || persistence.snapshot().epoch !== snapshot.epoch) return;
+      set({ persistenceSnapshot: snapshot, dirty: snapshot.pendingSequence > snapshot.acknowledgedSequence,
+        saving: snapshot.status === "saving", saveError: snapshot.error, projectRevision: snapshot.committedRevision });
+    },
+    flushPersistence: async () => {
+      const persistence = get().persistence;
+      if (!persistence) return;
+      const sequence = persistence.captureBarrier();
+      try { await persistence.flushThrough(sequence); }
+      finally { if (get().persistence === persistence) get().syncPersistence(persistence.snapshot()); }
+    },
 
     initProject: async () => {
       set({ loading: true });
@@ -117,6 +152,13 @@ export function createProjectStore(
     },
 
     saveProject: async (request) => {
+      if (get().persistence) {
+        if (request.filePath && request.filePath !== get().project?.filePath) {
+          throw new Error("A project snapshot is required for a new destination");
+        }
+        await get().flushPersistence();
+        return;
+      }
       set((state) => ({
         ...beginSaveState({
           dirty: state.dirty,
@@ -176,6 +218,7 @@ export function createProjectStore(
     },
 
     closeProject: () => {
+      if (get().persistence) throw new Error("The persistent project must finish closing first");
       activeSaveGeneration = null;
       set({
         project: null,
@@ -190,10 +233,12 @@ export function createProjectStore(
 
     markDirty: () => {
       assertProjectMutable(get().readOnly);
+      if (get().persistence) { get().syncPersistence(get().persistence!.snapshot()); return; }
       set({ dirty: true });
     },
 
     setDirty: (dirty) => {
+      if (get().persistence) { get().syncPersistence(get().persistence!.snapshot()); return; }
       if (dirty) {
         assertProjectMutable(get().readOnly);
       }
@@ -201,11 +246,11 @@ export function createProjectStore(
     },
 
     resetRevision: () => {
-      set({ projectRevision: 0 });
+      set({ projectRevision: get().persistence?.snapshot().committedRevision ?? 0 });
     },
 
     setRevision: (revision) => {
-      set({ projectRevision: revision });
+      set({ projectRevision: get().persistence?.snapshot().committedRevision ?? revision });
     },
   }));
 }

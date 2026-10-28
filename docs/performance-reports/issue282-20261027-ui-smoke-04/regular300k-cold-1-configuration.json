@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/tmp/statsplayground-282-ui-smoke-20261027-04/regular300k.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261027-ui-smoke-04/regular300k-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261027-ui-smoke-04/regular300k-cold-1",
+  "sourceTreeHash": "6f2ecbb1f3af9dbcb21c3b5648874ca4b945609e",
+  "tier": "regular",
+  "samples": 1,
+  "cacheMode": "cold"
+}

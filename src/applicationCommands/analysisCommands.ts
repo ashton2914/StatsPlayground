@@ -1,3 +1,4 @@
+import {projectDocumentNames} from "@/stores/documentStore";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import type {
   AnalysisCommandResult,
@@ -175,7 +176,7 @@ function resolveAnalysisName(
   items: readonly AnalysisDocument[],
 ): string {
   const name = requestedName?.trim() || defaultAnalysisName(kind, items);
-  const resolved = resolveProjectBasenameForKind(name, "analysis", items.map((item) => item.name));
+  const resolved = resolveProjectBasenameForKind(name, "analysis", projectDocumentNames(["analysis"], items.map((item) => item.name)));
   if (resolved.error) {
     throw new CommandExecutionError("invalid_input", `Invalid analysis name: ${resolved.error}`);
   }

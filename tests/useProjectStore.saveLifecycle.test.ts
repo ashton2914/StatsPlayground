@@ -632,4 +632,41 @@ function resetGraphBuilderStore() {
   assert.equal(store.getState().dirty, true);
 }
 
+
+{
+  const { createProjectPersistenceCoordinator } = await import("../src/projectPersistence/coordinator.ts");
+  let legacySaves = 0;
+  const store = createProjectStore({ projectService: {
+    initProject: async () => savedProject,
+    createProject: async () => savedProject,
+    openProject: async () => { throw new Error("unused"); },
+    saveProject: async () => { legacySaves++; throw new Error("legacy save must not run"); },
+    getCurrentProject: async () => savedProject,
+  } });
+  store.setState({ project: savedProject });
+  const reply = deferred<import("../src/types/projectPersistence.ts").ProjectCommit<unknown>>();
+  const persistence = createProjectPersistenceCoordinator({ projectId: "native", epoch: 1, committedRevision: 23,
+    now: () => 0, newOperationId: () => "native-save", setTimer: () => 1, clearTimer: () => undefined,
+    onChange: (state) => store.getState().syncPersistence(state),
+    transport: <T>() => reply.promise as Promise<import("../src/types/projectPersistence.ts").ProjectCommit<T>>,
+  });
+  store.getState().installPersistence(persistence);
+  persistence.enqueueDocument({ expectedRevision: 1, document: { schemaVersion: 1,
+    summary: { id: "report", name: "Report", kind: "report", folder: "", revision: 2, dependencies: [] },
+    body: { id: "report", name: "Report", schemaVersion: 1, markdown: "edit" },
+  } });
+  store.getState().setRevision(999);
+  assert.equal(store.getState().projectRevision, 23);
+  const saving = store.getState().saveProject(request);
+  assert.equal(store.getState().readOnly, false, "autosave must allow further editing");
+  reply.resolve({ operationId: "native-save", epoch: 1, committedRevision: 24, value: null,
+    changedDatasetGenerations: [], changedDocumentRevisions: [{ id: "report", revision: 2 }] });
+  await saving;
+  assert.equal(legacySaves, 0);
+  assert.equal(store.getState().projectRevision, 24);
+  assert.equal(store.getState().dirty, false);
+  await persistence.close();
+  store.getState().installPersistence(null);
+}
+
 console.log("useProjectStore save lifecycle passed");

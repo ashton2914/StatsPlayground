@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import {createMigrationCancellation} from "../src/projectPersistence/migrationCancellation.ts";
+let calls=0;const changes:boolean[]=[];const errors:unknown[]=[];
+const control=createMigrationCancellation({cancel:async()=>++calls>1,onChange:value=>changes.push(value),onError:error=>errors.push(error)});
+await control.request();assert.equal(calls,1,"an early cancel may precede backend registration");
+await control.registered();assert.equal(calls,2,"registration retries the pending intent once");
+await control.request();await control.registered();assert.equal(calls,2);assert.deepEqual(changes,[true]);assert.equal(control.isRequested(),true);
+let resolve:((value:boolean)=>void)|undefined;let pendingCalls=0;
+const pending=createMigrationCancellation({cancel:()=>{pendingCalls++;return new Promise<boolean>(done=>{resolve=done;});},onChange:()=>{},onError:()=>{}});
+const request=pending.request();await Promise.resolve();await Promise.resolve();const registered=pending.registered();assert.equal(pendingCalls,1);
+pending.dispose();resolve!(false);await request;await registered;assert.equal(pendingCalls,1,"disposed jobs cannot resend cancellation into another project");
+const failed=createMigrationCancellation({cancel:async()=>{throw new Error("IPC unavailable");},onChange:value=>changes.push(value),onError:error=>errors.push(error)});
+await failed.request();assert.equal(failed.isRequested(),false);assert.equal(errors.length,1);assert.deepEqual(changes.slice(-2),[true,false]);
+console.log("migration cancellation: early intent retries on registration, deduplicates active requests and fences disposed/error jobs");

@@ -1,3 +1,4 @@
+import {readNativeProjectDirectory,hydrateNativeProjectDocument,type NativeProjectDirectory} from "@/projectPersistence/catalogAccess";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import { buildAnalysisProjectPayload } from "@/components/analysis/analysisWorkspaceLifecycle";
 import type {
@@ -39,6 +40,8 @@ import type { ReportItem } from "@/types/report";
 import type { TabulateItem } from "@/types/tabulate";
 import type { TableTransformDefinition } from "@/types/tableTransform";
 
+import type { ProjectPersistenceCoordinator } from "@/projectPersistence/coordinator";
+
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 const MIN_TABLE_PREVIEW_LIMIT = 1;
@@ -50,6 +53,10 @@ const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/:*?"<>|\
 const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:[^\/\r\n\s][^\/\r\n]*)(?:\/[^\/\r\n]+)*)/g;
 
 export interface ProjectCommandDependencies {
+  getPersistence?: () => ProjectPersistenceCoordinator | null;
+  readNativeDirectory?: () => Promise<NativeProjectDirectory|null>;
+  hydrateNativeDocument?: (id:string,epoch:number) => Promise<void>;
+  savePersistentProject?: (input: ProjectSaveInput) => Promise<ProjectSaveResult>;
   getProjectState: () => {
     project: ProjectInfo | null;
     dirty: boolean;
@@ -57,6 +64,9 @@ export interface ProjectCommandDependencies {
     projectRevision: number;
   };
   listDatasets: () => DatasetMeta[];
+  readNativeDatasets?: (directory: NativeProjectDirectory) => Promise<DatasetMeta[]>;
+  listGraphsNew: () => import("@/types/graphBuilderNew").GraphBuilderNewDocument[];
+  listWorkflows: () => import("@/types/workflow").WorkflowDefinition[];
   listTableTransforms: () => TableTransformDefinition[];
   listGraphs: () => GraphBuilderItem[];
   listReports: () => ReportItem[];
@@ -267,6 +277,15 @@ export function createProjectCommandHandlers(
   dependencyOverrides: Partial<ProjectCommandDependencies> = {},
 ) {
   const dependencies: ProjectCommandDependencies = {
+    getPersistence: () => useProjectStore.getState().persistence,
+    savePersistentProject: async input=>{
+      if(!input.filePath) throw new CommandExecutionError("project_path_required","Project save requires a destination path");
+      const {nativeProjectLifecycle}=await import("@/projectPersistence/nativeLifecycle");
+      await nativeProjectLifecycle.saveAs(input.filePath);
+      return summarizeProjectForSave(useProjectStore.getState().project);
+    },
+    readNativeDirectory: readNativeProjectDirectory,
+    hydrateNativeDocument: hydrateNativeProjectDocument,
     getProjectState: () => {
       const state = useProjectStore.getState();
       return {
@@ -277,6 +296,16 @@ export function createProjectCommandHandlers(
       };
     },
     listDatasets: () => useDataStore.getState().datasets,
+    readNativeDatasets: async directory => {
+      const owner = useProjectStore.getState().persistence;
+      const datasets = await dataService.listDatasets();
+      if (!owner || useProjectStore.getState().persistence !== owner || owner.snapshot().epoch !== directory.epoch) {
+        throw new CommandExecutionError("project_required", "Project changed while reading table metadata");
+      }
+      return datasets;
+    },
+    listGraphsNew: () => useGraphBuilderNewStore.getState().items,
+    listWorkflows: () => useWorkflowStore.getState().workflows,
     listTableTransforms: () => useTableTransformStore.getState().definitions,
     listGraphs: () => useGraphBuilderStore.getState().items,
     listReports: () => useReportStore.getState().items,
@@ -297,6 +326,7 @@ export function createProjectCommandHandlers(
 
   async function inspectProject(input: ProjectInspectInput): Promise<ProjectInspectResult> {
     const state = dependencies.getProjectState();
+    const native = await dependencies.readNativeDirectory?.();
     const datasets = dependencies.listDatasets();
     const tableTransforms = dependencies.listTableTransforms();
     const graphs = dependencies.listGraphs();
@@ -326,6 +356,12 @@ export function createProjectCommandHandlers(
       },
     };
 
+    if(native) {
+      const count=(kind:string)=>native.items.filter(item=>item.kind===kind).length;
+      output.projectRevision=native.committedRevision;
+      output.counts={tables:count("table"),tableTransforms:count("transform"),graphs:count("graph"),analyses:count("analysis"),tabulates:count("tabulate"),reports:count("report"),graphsNew:count("graphNew"),workflows:count("workflow")};
+    }
+
     if (input.includeCapabilities) {
       output.capabilities = {
         table: {
@@ -349,6 +385,15 @@ export function createProjectCommandHandlers(
   async function saveProjectCommand(input: ProjectSaveInput): Promise<ProjectSaveResult> {
     const state = dependencies.getProjectState();
     await dependencies.flushPendingHistory();
+    const persistence = dependencies.getPersistence?.();
+    if (persistence) {
+      if (input.filePath && input.filePath !== state.project?.filePath) {
+        if (dependencies.savePersistentProject) return dependencies.savePersistentProject(input);
+        throw new CommandExecutionError("project_path_required", "A project snapshot is required for this destination");
+      }
+      await persistence.flushThrough(persistence.captureBarrier());
+      return summarizeProjectForSave(dependencies.getProjectState().project);
+    }
     const request = dependencies.buildSaveProjectRequest(input.filePath ?? state.project?.filePath ?? undefined);
     if (!request.filePath && !state.project?.filePath) {
       throw new CommandExecutionError("project_path_required", "Project save requires a destination path");
@@ -356,16 +401,31 @@ export function createProjectCommandHandlers(
     return dependencies.saveProjectCommand(request);
   }
 
+  async function readTableMetadata(): Promise<DatasetMeta[]> {
+    const directory = await dependencies.readNativeDirectory?.();
+    if (directory) {
+      if (!dependencies.readNativeDatasets) throw new CommandExecutionError("project_required", "Native table metadata loading is unavailable");
+      return dependencies.readNativeDatasets(directory);
+    }
+    return dependencies.listDatasets();
+  }
+
   async function listProjectTables(input: TableListInput): Promise<TableListResult> {
     const limit = normalizePageLimit(input.limit);
-    const datasets = dependencies.listDatasets().map(toTableListItem)
+    const datasets = (await readTableMetadata()).map(toTableListItem)
       .sort((a, b) => a.id.localeCompare(b.id));
     const page = paginateByCursor(datasets, input.cursor, limit);
     return sanitizeValue(page);
   }
 
   async function describeProjectTable(input: TableDescribeInput): Promise<TableDescribeResult> {
-    const dataset = dependencies.listDatasets().find((item) => item.id === input.datasetId);
+    const owner = dependencies.getPersistence?.();
+    const assertCurrent = () => {
+      if (owner && dependencies.getPersistence?.() !== owner) {
+        throw new CommandExecutionError("project_required", "Project changed while describing a table");
+      }
+    };
+    const dataset = (await readTableMetadata()).find((item) => item.id === input.datasetId);
     if (!dataset) {
       throw new CommandExecutionError("not_found", `Dataset ${input.datasetId} was not found`);
     }
@@ -389,6 +449,7 @@ export function createProjectCommandHandlers(
       dependencies.getColumnDisplayProps(input.datasetId),
       dependencies.getDatasetGeneration(input.datasetId),
     ]);
+    assertCurrent();
     const displayByIndex = new Map(displayRaw.map((item) => [item.colIndex, item]));
     const columns = columnsRaw.map(([colName, colType], colIndex) => {
       const display = displayByIndex.get(colIndex);
@@ -420,41 +481,64 @@ export function createProjectCommandHandlers(
         generation,
       });
 
+      const valueColumns=columns.map(column=>window.columns.indexOf(column.colName));
+      if(valueColumns.some(index=>index<0)) throw new CommandExecutionError("execution_failed","Table preview columns do not match the table metadata");
       output.preview = {
         offset,
         limit,
         totalRows: window.totalRows,
         rows: window.rows.slice(0, limit).map((row, rowOffset) => ({
           rowIndex: offset + rowOffset,
-          cells: row.map((value, colIndex) => ({ colIndex, value })),
+          cells: valueColumns.map((sourceIndex,colIndex) => ({ colIndex, value:row[sourceIndex] })),
         })),
       };
     }
 
+    assertCurrent();
     return sanitizeValue(output);
   }
 
   async function listProjectDocuments(input: ProjectDocumentListInput): Promise<ProjectDocumentListResult> {
     const limit = normalizePageLimit(input.limit);
-    const all = summarizeDocuments({
+    const native=await dependencies.readNativeDirectory?.();
+    const all = native?native.items.flatMap(item=>{
+      const kinds:Partial<Record<typeof item.kind,ProjectDocumentKind>>={transform:"tableTransform",graph:"graph",analysis:"analysis",tabulate:"tabulate",report:"report",graphNew:"graphNew",workflow:"workflow"};
+      const kind=kinds[item.kind];
+      if(!kind) return [];
+      return [{kind,id:item.id,name:item.name,...(item.analysisKind?{analysisKind:item.analysisKind}:{}),...(["graph","graphNew","analysis","tabulate"].includes(item.kind)&&item.dependencies[0]?{sourceDatasetId:item.dependencies[0]}:{})}];
+    }).sort((a,b)=>`${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`)):summarizeDocuments({
       tableTransforms: dependencies.listTableTransforms(),
       graphs: dependencies.listGraphs(),
       reports: dependencies.listReports(),
       analyses: dependencies.listAnalyses(),
       tabulates: dependencies.listTabulates(),
     });
+    if (!native) {
+      all.push(...dependencies.listGraphsNew().map(item => ({kind:"graphNew" as const,id:item.id,name:item.name,sourceDatasetId:item.datasetId})),
+        ...dependencies.listWorkflows().map(item => ({kind:"workflow" as const,id:item.id,name:item.name})));
+      all.sort((a,b)=>`${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
+    }
     const filtered = input.kind ? all.filter((item) => item.kind === input.kind) : all;
     const page = paginateByCursor(filtered, input.cursor, limit);
     return sanitizeValue(page);
   }
 
   async function getProjectDocument(input: ProjectDocumentGetInput): Promise<ProjectDocumentGetResult> {
+    const native=await dependencies.readNativeDirectory?.();
+    if(native) {
+      const kind=input.kind==="tableTransform"?"transform":input.kind;
+      if(!native.items.some(item=>item.id===input.id&&item.kind===kind)) throw new CommandExecutionError("not_found", `${input.kind} ${input.id} was not found`);
+      if(!dependencies.hydrateNativeDocument) throw new CommandExecutionError("project_required","Native document loading is unavailable");
+      await dependencies.hydrateNativeDocument(input.id,native.epoch);
+    }
     const lookup: Record<ProjectDocumentKind, unknown[]> = {
       tableTransform: dependencies.listTableTransforms(),
       graph: dependencies.listGraphs(),
       analysis: dependencies.listAnalyses(),
       tabulate: dependencies.listTabulates(),
       report: dependencies.listReports(),
+      graphNew: dependencies.listGraphsNew(),
+      workflow: dependencies.listWorkflows(),
     };
 
     const collection = lookup[input.kind] as Array<{ id: string }>;

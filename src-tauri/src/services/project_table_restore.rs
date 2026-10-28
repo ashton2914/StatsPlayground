@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::MutexGuard;
+use crate::engine::shared_database::DatabaseGuard;
 #[cfg(any(test, feature = "perf-harness"))]
 use std::time::Instant;
 
@@ -53,7 +53,7 @@ fn record_completed_append() {
 
 pub(crate) struct ProjectTableRestoreSession<'a> {
     state: &'a AppState,
-    db: MutexGuard<'a, DuckDbEngine>,
+    db: DatabaseGuard<'a>,
     header: StreamedTableHeader,
     canonical_columns: Vec<(String, String)>,
     calculated_columns_by_id: Option<std::collections::HashMap<String, ArchivedCalculatedColumn>>,
@@ -274,6 +274,8 @@ impl<'a> ProjectTableRestoreSession<'a> {
         #[cfg(test)]
         record_completed_append();
 
+        #[cfg(any(test, feature="perf-harness"))]
+        super::project_work_counters::restored_rows(rows.len());
         let previous_rows_written = self.rows_written;
         self.rows_written += rows.len();
         if let Some(progress) = self.progress {

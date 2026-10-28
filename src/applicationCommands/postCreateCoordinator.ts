@@ -64,13 +64,18 @@ async function runStage(
 
 export async function runPostCreateCoordinator(input: {
   dependencies: PostCreateCoordinatorDependencies;
+  assertCurrent?: () => void;
   datasetId: string;
   historyMessage: string;
   warnings: CommandWarning[];
   warningMap: PostCreateWarnings;
 }): Promise<void> {
+  input.assertCurrent?.();
   await runStage("refresh", () => input.dependencies.refreshDatasets(), input.warnings, input.warningMap);
+  input.assertCurrent?.();
   await runStage("dirty", () => input.dependencies.markDirty(), input.warnings, input.warningMap);
+  input.assertCurrent?.();
   await runStage("selection", () => input.dependencies.activateDataset(input.datasetId), input.warnings, input.warningMap);
+  input.assertCurrent?.();
   await runStage("history", () => input.dependencies.recordAction(input.historyMessage), input.warnings, input.warningMap);
 }

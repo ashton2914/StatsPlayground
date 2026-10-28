@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import {createProjectDataSnapshotStore} from "../src/stores/useProjectDataSnapshotStore.ts";
+import type {ProjectDataSnapshotPage} from "../src/types/projectPersistence.ts";
+const item=(id:string)=>({id,name:id,revision:1,createdAt:"2026-10-21T00:00:00Z",tableCount:10000});
+let finish!:(page:ProjectDataSnapshotPage)=>void;const calls:Array<[number,string|null,number]>=[];
+const store=createProjectDataSnapshotStore({list:async(epoch,after,limit)=>{calls.push([epoch,after,limit]);return new Promise(resolve=>{finish=resolve;});}});
+store.getState().install(7,1);const first=store.getState().loadNextPage();assert.equal(store.getState().loadNextPage(),first);
+assert.deepEqual(calls,[[7,null,200]]);finish({items:[item("one")],nextCursor:"next",committedRevision:1});await first;
+const second=store.getState().loadNextPage();assert.deepEqual(calls.at(-1),[7,"next",200]);
+store.getState().install(8,5);finish({items:[item("old-project")],nextCursor:null,committedRevision:1});await second;
+assert.equal(store.getState().epoch,8);assert.equal(store.getState().items.length,0);assert.equal(store.getState().loading,false);
+const third=store.getState().loadNextPage();finish({items:[item("new-project")],nextCursor:null,committedRevision:5});await third;
+assert.equal(store.getState().items[0].id,"new-project");assert.equal(store.getState().loaded,true);
+let attempt=0;
+const retry=createProjectDataSnapshotStore({list:async()=>{if(++attempt===1)throw new Error("read failed");return {items:[item("recovered")],nextCursor:null,committedRevision:1};}});
+retry.getState().install(7,1);await retry.getState().loadNextPage();assert.match(retry.getState().error!,/read failed/);
+await retry.getState().loadNextPage();assert.equal(retry.getState().error,null);assert.equal(retry.getState().items[0].id,"recovered");
+console.log("native snapshot catalog: bounded pages, deduplicated reads, retry and old-owner response fencing passed");

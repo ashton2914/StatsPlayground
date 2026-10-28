@@ -1,0 +1,153 @@
+{
+  "qualified": false,
+  "failures": [
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/catalog: release source/build/engine provenance required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/catalog: at least 100 warm samples required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/window: release source/build/engine provenance required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/window: at least 100 warm samples required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/scroll: release source/build/engine provenance required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/scroll: at least 100 warm samples required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/scroll: UI latency exceeds budget",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/edit: release source/build/engine provenance required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/edit: at least 100 warm samples required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/edit: native latency exceeds budget",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/edit: UI latency exceeds budget",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/close: release source/build/engine provenance required",
+    "f7d97918-5892-45d7-ba9e-f38b2356fd9b/close: at least 100 warm samples required",
+    "missing 300000x20 catalog/cold",
+    "missing 2000000x20 catalog/cold",
+    "missing 2000000x20 catalog/warm",
+    "missing 2000000x20 window/warm",
+    "missing 2000000x20 scroll/warm",
+    "missing 2000000x20 edit/warm",
+    "missing 2000000x20 close/warm",
+    "missing 10000000x20 catalog/cold",
+    "missing 10000000x20 catalog/warm",
+    "missing 10000000x20 window/warm",
+    "missing 10000000x20 scroll/warm",
+    "missing 10000000x20 edit/warm",
+    "missing 10000000x20 close/warm",
+    "missing many-documents tier",
+    "missing long-strings tier"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "f7d97918-5892-45d7-ba9e-f38b2356fd9b",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 111.400792,
+        "uiP95Ms": 127,
+        "backendMedianMs": 107.4720835,
+        "uiMedianMs": 126,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "f7d97918-5892-45d7-ba9e-f38b2356fd9b",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 59.016958,
+        "uiP95Ms": 165,
+        "backendMedianMs": 58.978375,
+        "uiMedianMs": 137.5,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "f7d97918-5892-45d7-ba9e-f38b2356fd9b",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 51.581208,
+        "uiP95Ms": 193,
+        "backendMedianMs": 46.676666499999996,
+        "uiMedianMs": 186.5,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "f7d97918-5892-45d7-ba9e-f38b2356fd9b",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required",
+          "native latency exceeds budget",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 347.436916,
+        "uiP95Ms": 431,
+        "backendMedianMs": 280.152458,
+        "uiMedianMs": 331,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "f7d97918-5892-45d7-ba9e-f38b2356fd9b",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "at least 100 warm samples required"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 101.185375,
+        "uiP95Ms": 123,
+        "backendMedianMs": 88.62270849999999,
+        "uiMedianMs": 110,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

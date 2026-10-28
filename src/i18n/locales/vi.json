@@ -296,6 +296,14 @@
     "projectFile": "Dự án chưa đặt tên.spprj"
   },
   "history": {
+    "nativeReplayFailed": "Không thể hoàn tác hoặc làm lại thao tác này.",
+    "nativeLoadFailed": "Không thể tải lịch sử",
+    "nativeSnapshotLoadFailed": "Không thể tải ảnh chụp dữ liệu.",
+    "loadMore": "Tải thêm",
+    "nativeTableUpdate": "Đã cập nhật bảng “{{name}}”",
+    "nativeTable": "Bảng",
+    "nativeArchived": "Từ dự án trước",
+    "nativeUndone": "Đã hoàn tác",
     "title": "Lịch sử",
     "empty": "Chưa có lịch sử",
     "snapshot": "Ảnh chụp",
@@ -387,6 +395,7 @@
     "noLineage": "Chưa có dòng dữ liệu quy trình."
   },
   "workspace": {
+    "destinationPublished": "Bản sao đã được ghi vào vị trí đích.",
     "directory": "Thư mục",
     "datasourceLabel": "Nguồn: {{name}}",
     "datasourceDeleted": "Nguồn đã bị xóa",
@@ -415,7 +424,17 @@
     "statMax": "Lớn nhất: ",
     "statSum": "Tổng: ",
     "statCount": "Đếm: ",
+    "migrationTitle": "Chuyển đổi dự án",
+    "migrationConfirm": "Dự án này dùng định dạng cũ. Hãy tạo bản sao đã chuyển đổi để mở. Tệp gốc sẽ được giữ lại. Dự án lớn có thể mất thời gian để chuyển đổi lần đầu.",
+    "migrationCreateCopy": "Tạo bản sao đã chuyển đổi",
+    "migrationChooseDestination": "Lưu dự án đã chuyển đổi",
+    "migratingProject": "Đang chuyển đổi dự án…",
+    "migrationCancel": "Hủy chuyển đổi",
+    "migrationCancelling": "Đang hủy…",
     "openingProject": "Đang mở dự án…",
+    "documentLoadFailed": "Không thể mở mục này. Vui lòng thử lại.",
+    "directoryPageLoadFailed": "Không thể tải thêm mục",
+    "retryDocumentLoad": "Thử lại",
     "creatingSnapshot": "Đang tạo ảnh chụp…",
     "restoringSnapshot": "Đang khôi phục ảnh chụp…",
     "importingSqlite": "Đang nhập cơ sở dữ liệu SQLite…",
@@ -426,6 +445,8 @@
     "importProgressTable": "Bảng {{i}}/{{total}}: {{name}}",
     "importProgressRows": "hàng",
     "createSnapshotTitle": "Tạo ảnh chụp",
+    "resolveFailedOperation": "Tiếp tục lưu các thay đổi khác",
+    "resolveFailedOperationHint": "Hủy thao tác lỗi chưa được áp dụng và tiếp tục lưu các thay đổi sau đó. Các thay đổi đã lưu được giữ lại.",
     "savingProject": "Đang lưu dự án…",
     "readOnlyWhileSaving": "Chỉ đọc trong khi lưu",
     "savePhase": {
@@ -815,6 +836,9 @@
     "totalPercentage": "Total %"
   },
   "welcome": {
+    "recoverProject": "Khôi phục dự án chưa đặt tên",
+    "recoverProjectHint": "Công việc trước đó đã được giữ lại. Chọn dự án để tiếp tục hoặc tạo dự án mới.",
+    "untitledProject": "Chưa đặt tên",
     "subtitle": "Nhẹ · Đa nền tảng · Công cụ phân tích dữ liệu mã nguồn mở",
     "newProject": "Dự án mới",
     "openProject": "Mở dự án",
@@ -1093,6 +1117,8 @@
     }
   },
   "dataTable": {
+    "pasteResultUnavailable": "Không thể xác nhận kết quả dán. Hãy thử lưu lại để khôi phục trạng thái.",
+    "pasteTargetChanged": "Chế độ xem bảng đã thay đổi khi chuẩn bị dán. Vui lòng thử lại.",
     "loading": "Đang tải...",
     "type": {
       "VARCHAR": "Văn bản",

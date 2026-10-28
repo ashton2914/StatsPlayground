@@ -1,0 +1,6 @@
+{
+  "sourceTreeHash": "ae073ac46458c5e79ec8a35964c6679ad487bb1b",
+  "hostExit": 2,
+  "samplePid": 65932,
+  "method": "Unqualified debug12-cycle foreground run with intrusive five-second OS WebContent CPU sampling; use for stacks, not latency qualification"
+}

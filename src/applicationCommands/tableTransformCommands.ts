@@ -151,7 +151,7 @@ export function createTableTransformCommandHandlers(
 
   async function create(
     input: TableTransformCreateInput,
-    controls?: { signal?: AbortSignal; beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void; assertCurrent?: () => void },
   ): Promise<{ data: TableTransformCommandData; warnings: CommandWarning[] }> {
     try {
       await resolvedDependencies.preflightCreateAndRun(input.draft);
@@ -170,11 +170,13 @@ export function createTableTransformCommandHandlers(
     }
     const warnings: CommandWarning[] = [];
 
+    controls?.assertCurrent?.();
     await runWarningSafe(
       () => resolvedDependencies.refreshDatasets(),
       warnings,
       TRANSFORM_CREATE_WARNINGS.refresh,
     );
+    controls?.assertCurrent?.();
     await runWarningSafe(
       () => resolvedDependencies.markDirty(),
       warnings,
@@ -183,11 +185,13 @@ export function createTableTransformCommandHandlers(
 
     if (execution.output) {
       const output = execution.output;
+      controls?.assertCurrent?.();
       await runWarningSafe(
         () => resolvedDependencies.activateDataset(output.id),
         warnings,
         TRANSFORM_CREATE_WARNINGS.selection,
       );
+      controls?.assertCurrent?.();
       await runWarningSafe(
         () => resolvedDependencies.recordAction(resolvedDependencies.historyMessage(output.name)),
         warnings,
@@ -195,13 +199,14 @@ export function createTableTransformCommandHandlers(
       );
     }
 
+    controls?.assertCurrent?.();
     const data = await buildCommandData(execution, warnings);
     return { data, warnings };
   }
 
   async function run(
     input: TableTransformRunInput,
-    controls?: { signal?: AbortSignal; beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void; assertCurrent?: () => void },
   ): Promise<{ data: TableTransformCommandData; warnings: CommandWarning[] }> {
     if (!input.transformId) {
       throw new CommandExecutionError("invalid_input", "transformId is required");
@@ -223,17 +228,20 @@ export function createTableTransformCommandHandlers(
       throw mapTauriAppError(error);
     }
     const warnings: CommandWarning[] = [];
+    controls?.assertCurrent?.();
     await runWarningSafe(
       () => resolvedDependencies.refreshDatasets(),
       warnings,
       TRANSFORM_CREATE_WARNINGS.refresh,
     );
+    controls?.assertCurrent?.();
     await runWarningSafe(
       () => resolvedDependencies.markDirty(),
       warnings,
       TRANSFORM_CREATE_WARNINGS.dirty,
     );
 
+    controls?.assertCurrent?.();
     const data = await buildCommandData(execution, warnings);
     return { data, warnings };
   }

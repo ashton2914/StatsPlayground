@@ -17,9 +17,9 @@ use super::calculated_column_expression::{
     compile_formula_sql, parse_and_validate_formula, validate_formula_graph, FormulaColumn,
     FormulaError, FormulaSqlColumn, TypedCalculatedExpression, TypedCalculatedOutput,
 };
-use super::table_mutation_coordinator::{execute_table_mutation, TableMutationEffects};
+use super::table_mutation_coordinator::{execute_column_mutation_in_transaction, execute_table_mutation_in_transaction, TableMutationEffects};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct UpsertCalculatedColumnInput {
     pub dataset_id: String,
     pub output_name: String,
@@ -36,7 +36,7 @@ pub struct DeleteCalculatedColumnsInput {
     pub column_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ConvertCalculatedColumnToValuesInput {
     pub dataset_id: String,
     pub formula_id: String,
@@ -113,6 +113,8 @@ struct TargetColumnPlan {
 struct ValidationPlan {
     candidate_definition: CalculatedColumnDefinitionV1,
     target_column: TargetColumnPlan,
+    // Retained by the legacy validation/materialization plan.
+    #[allow(dead_code)]
     all_definitions_by_output: BTreeMap<String, CalculatedColumnDefinitionV1>,
     affected_output_ids: Vec<String>,
 }
@@ -153,13 +155,31 @@ impl<'a> CalculatedColumnService<'a> {
             .db
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
+        db.conn().execute_batch("BEGIN TRANSACTION")?;
+        let result = self.upsert_scoped_in_transaction(&db, input, false);
+        crate::services::table_delta_mutation::finish_transaction(&db, result)
+    }
+
+    pub(crate) fn upsert_in_transaction(
+        &self,
+        db: &DuckDbEngine,
+        input: &UpsertCalculatedColumnInput,
+    ) -> Result<CalculatedColumnMutationResult, AppError> {
+        self.upsert_scoped_in_transaction(db,input,true)
+    }
+
+    fn upsert_scoped_in_transaction(
+        &self,db:&DuckDbEngine,input:&UpsertCalculatedColumnInput,scoped:bool,
+    )->Result<CalculatedColumnMutationResult,AppError> {
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let (output_column_id, warning_count) = execute_table_mutation(
-            &db,
+        let plan = self.build_validation_plan(db,input)?;
+        let affected=plan.affected_output_ids.iter().cloned().collect();
+        let (output_column_id, warning_count) = execute_column_mutation_in_transaction(
+            db,
             &input.dataset_id,
             input.expected_generation,
+            if scoped {Some(affected)} else {None},
             |engine| {
-                let plan = self.build_validation_plan(engine, input)?;
                 let output_column_id = plan.target_column.column_id.clone();
                 let warning_count =
                     self.validation_warning_count(engine, &input.dataset_id, &plan)?;
@@ -292,9 +312,19 @@ impl<'a> CalculatedColumnService<'a> {
             .db
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
+        db.conn().execute_batch("BEGIN TRANSACTION")?;
+        let result = self.convert_to_values_in_transaction(&db, input);
+        crate::services::table_delta_mutation::finish_transaction(&db, result)
+    }
+
+    pub(crate) fn convert_to_values_in_transaction(
+        &self,
+        db: &DuckDbEngine,
+        input: &ConvertCalculatedColumnToValuesInput,
+    ) -> Result<(String, u64, String), AppError> {
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let output_column_id = execute_table_mutation(
-            &db,
+        let output_column_id = execute_table_mutation_in_transaction(
+            db,
             &input.dataset_id,
             input.expected_generation,
             |engine| {
@@ -316,7 +346,7 @@ impl<'a> CalculatedColumnService<'a> {
                     value: output_column_id.clone(),
                     changed_column_ids: BTreeSet::from([output_column_id]),
                     change_set_id: Some(change_set_id.clone()),
-                    recompute_column_ids: None,
+                    recompute_column_ids: Some(BTreeSet::new()),
                 })
             },
         )?;

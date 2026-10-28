@@ -1,6 +1,7 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::State;
+use tauri::{State,Emitter};
+use crate::models::project_persistence::{ProjectWriteContext,ProjectMutationResult};
 
 use crate::error::AppError;
 use crate::models::table::{
@@ -73,8 +74,12 @@ pub(crate) fn query_table_window_entry(
     state: &AppState,
     request: &TableWindowRequest,
 ) -> Result<TableWindowResult, AppError> {
-    let service = DataService::new(state);
-    service.query_table_window(request)
+    #[cfg(all(feature="project-v5",feature="perf-harness"))]
+    let span=crate::perf_project_v5_ui::query_span(state,&request.dataset_id,None);
+    let result=DataService::new(state).query_table_window(request);
+    #[cfg(all(feature="project-v5",feature="perf-harness"))]
+    crate::perf_project_v5_ui::finish_span(span,&result);
+    result
 }
 
 pub(crate) fn query_table_navigation_window_entry(
@@ -82,7 +87,9 @@ pub(crate) fn query_table_navigation_window_entry(
     request: &TableNavigationRequest,
 ) -> Result<TableNavigationResult, AppError> {
     let service = DataService::new(state);
-    let mut result = service.query_table_navigation_window(request)?;
+    #[cfg(all(feature="project-v5",feature="perf-harness"))]
+    let span=crate::perf_project_v5_ui::query_span(state,&request.dataset_id,Some(&request.request_id));
+    let mut result=service.query_table_navigation_window(request)?;
     if request.include_transport_diagnostics {
         let encode_started = Instant::now();
         let _ = serde_json::to_vec(&result)
@@ -105,7 +112,10 @@ pub(crate) fn query_table_navigation_window_entry(
         result.timings.diagnostic_json_bytes =
             Some(compute_navigation_response_bytes(&mut result)?);
     }
-    Ok(result)
+    let result=Ok(result);
+    #[cfg(all(feature="project-v5",feature="perf-harness"))]
+    crate::perf_project_v5_ui::finish_span(span,&result);
+    result
 }
 
 fn compute_navigation_response_bytes(result: &mut TableNavigationResult) -> Result<u64, AppError> {
@@ -146,11 +156,16 @@ pub fn prepare_table_navigation_benchmark(
     ))
 }
 
-#[tauri::command]
-pub fn import_file(state: State<'_, AppState>, file_path: String) -> Result<DatasetMeta, AppError> {
+#[tauri::command(async)]
+pub fn import_file(app:tauri::AppHandle,state: State<'_, AppState>, file_path: String,context:Option<ProjectWriteContext>) -> Result<ProjectMutationResult<DatasetMeta>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).import_file(&context,&file_path)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.import_csv(&file_path)
+    service.import_csv(&file_path).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -159,9 +174,14 @@ pub fn list_datasets(state: State<'_, AppState>) -> Result<Vec<DatasetMeta>, App
     service.list_datasets()
 }
 
-#[tauri::command]
-pub fn delete_dataset(state: State<'_, AppState>, dataset_id: String) -> Result<(), AppError> {
-    delete_dataset_entry(state.inner(), &dataset_id)
+#[tauri::command(async)]
+pub fn delete_dataset(app:tauri::AppHandle,state: State<'_, AppState>, dataset_id: String,context:Option<ProjectWriteContext>) -> Result<ProjectMutationResult<()>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).delete_dataset(&context,&dataset_id)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
+    delete_dataset_entry(state.inner(), &dataset_id).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -197,6 +217,11 @@ pub fn query_table_navigation_window(
     request: TableNavigationRequest,
 ) -> Result<TableNavigationResult, AppError> {
     query_table_navigation_window_entry(state.inner(), &request)
+}
+
+#[tauri::command(async)]
+pub fn query_table_navigation_row_ids(state:State<'_,AppState>,request:TableNavigationRequest) -> Result<TableNavigationResult,AppError> {
+    DataService::new(&state).query_table_navigation_row_ids(&request)
 }
 
 #[tauri::command(async)]
@@ -280,15 +305,22 @@ pub fn execute_sql_query(
     service.execute_sql_query(&sql, page, page_size)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_table_from_sql_query(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     sql: String,
     name: String,
-) -> Result<DatasetMeta, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<DatasetMeta>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).materialize_sql(&context,&sql,&name)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.create_table_from_sql_query(&sql, &name)
+    service.create_table_from_sql_query(&sql, &name).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -313,24 +345,38 @@ pub fn create_table(
     service.create_table(&name, &column_names, &column_types)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_table_from_rows(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     request: CreateTableFromRowsRequest,
-) -> Result<DatasetMeta, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<DatasetMeta>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).create_table_from_rows(&context,&request)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.create_table_from_rows(&request)
+    service.create_table_from_rows(&request).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_managed_table(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     request: CreateManagedTableRequest,
-) -> Result<ManagedTableCreateResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<ManagedTableCreateResult>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).create_managed_table(&context,&request)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.create_managed_table_outcome(&request)
+    service.create_managed_table_outcome(&request).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -340,22 +386,23 @@ pub fn add_row(state: State<'_, AppState>, dataset_id: String) -> Result<i64, Ap
     service.add_row(&dataset_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_rows(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     count: usize,
     before_row_id: Option<i64>,
     expected_generation: u64,
-) -> Result<RowMutationResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<RowMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).add_rows(&context,&dataset_id,count,before_row_id,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
-    add_rows_entry(
-        state.inner(),
-        &dataset_id,
-        count,
-        before_row_id,
-        expected_generation,
-    )
+    add_rows_entry(state.inner(),&dataset_id,count,before_row_id,expected_generation).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -384,27 +431,41 @@ pub fn update_cell(
     service.update_cell(&dataset_id, row_id, &column_name, &value)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_cells(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     cells: Vec<CellPosition>,
-) -> Result<(), AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<()>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).clear_cells(&context,&dataset_id,&cells)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.clear_cells(&dataset_id, &cells)
+    service.clear_cells(&dataset_id, &cells).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_cells(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     updates: Vec<CellUpdate>,
     expected_generation: Option<u64>,
-) -> Result<u64, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<u64>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).update_cells(&context,&dataset_id,&updates,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.update_cells(&dataset_id, &updates, expected_generation)
+    service.update_cells(&dataset_id, &updates, expected_generation).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -429,37 +490,61 @@ pub fn delete_rows(
     service.delete_rows(&dataset_id, &row_ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_rows_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     row_ids: Vec<i64>,
     expected_generation: u64,
-) -> Result<RowMutationResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<RowMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).delete_rows(&context,&dataset_id,&row_ids,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
-    delete_rows_with_change_set_entry(state.inner(), &dataset_id, &row_ids, expected_generation)
+    delete_rows_with_change_set_entry(state.inner(), &dataset_id, &row_ids, expected_generation).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_columns_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     columns: Vec<ColumnDescriptor>,
     expected_generation: u64,
-) -> Result<ColumnMutationResult, AppError> {
+    context: Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<ColumnMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).delete_columns(&context,&dataset_id,&columns,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
-    delete_columns_with_change_set_entry(state.inner(), &dataset_id, &columns, expected_generation)
+    delete_columns_with_change_set_entry(state.inner(), &dataset_id, &columns, expected_generation).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
+// Preserve the flat Tauri IPC arguments while adding native ownership context.
+#[allow(clippy::too_many_arguments)]
 pub fn alter_column_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     old_name: String,
     new_name: String,
     new_type: String,
     expected_generation: Option<u64>,
-) -> Result<String, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<String>, AppError> {
+    if let Some(context) = context {
+        let generation=expected_generation.or_else(||context.dataset_generations.iter().find(|item|item.id==dataset_id).map(|item|item.generation)).ok_or_else(||AppError::InvalidParam("project_dataset_precondition_required".into()))?;
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).alter_column(&context,&dataset_id,&old_name,&new_name,&new_type,generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
     service.alter_column_with_change_set(
@@ -468,17 +553,25 @@ pub fn alter_column_with_change_set(
         &new_name,
         &new_type,
         expected_generation,
-    )
+    ).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn alter_columns_type_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     column_names: Vec<String>,
     new_type: String,
     expected_generation: Option<u64>,
-) -> Result<String, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<String>, AppError> {
+    if let Some(context) = context {
+        let generation=expected_generation.or_else(||context.dataset_generations.iter().find(|item|item.id==dataset_id).map(|item|item.generation)).ok_or_else(||AppError::InvalidParam("project_dataset_precondition_required".into()))?;
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).alter_column_types(&context,&dataset_id,&column_names,&new_type,generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
     service.alter_columns_type_with_change_set(
@@ -486,18 +579,25 @@ pub fn alter_columns_type_with_change_set(
         &column_names,
         &new_type,
         expected_generation,
-    )
+    ).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_dataset(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     new_name: String,
-) -> Result<(), AppError> {
+    context: Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<()>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).rename_dataset(&context,&dataset_id,&new_name)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.rename_dataset(&dataset_id, &new_name)
+    service.rename_dataset(&dataset_id, &new_name).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -532,14 +632,21 @@ pub fn add_column_with_change_set(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_columns_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     columns: Vec<ColumnDescriptor>,
     at_index: Option<i32>,
     expected_generation: u64,
-) -> Result<ColumnMutationResult, AppError> {
+    context: Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<ColumnMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).add_columns(&context,&dataset_id,&columns,at_index,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     add_columns_with_change_set_entry(
         state.inner(),
@@ -547,7 +654,7 @@ pub fn add_columns_with_change_set(
         &columns,
         at_index,
         expected_generation,
-    )
+    ).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -575,17 +682,26 @@ pub fn reorder_column(
     service.reorder_column(&dataset_id, from, to)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reorder_column_if_generation(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     from: usize,
     to: usize,
     expected_generation: u64,
-) -> Result<u64, AppError> {
+    context: Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<u64>, AppError> {
+    if let Some(context) = context {
+        let from=i32::try_from(from).map_err(|_|AppError::InvalidParam("column index is too large".into()))?;
+        let to=i32::try_from(to).map_err(|_|AppError::InvalidParam("column index is too large".into()))?;
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).reorder_columns(&context,&dataset_id,from,to,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.reorder_column_if_generation(&dataset_id, from, to, expected_generation)
+    service.reorder_column_if_generation(&dataset_id, from, to, expected_generation).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -647,8 +763,11 @@ pub fn paste_at_position(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
+// Preserve the flat Tauri IPC arguments while adding native ownership context.
+#[allow(clippy::too_many_arguments)]
 pub fn paste_at_position_with_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     start_row: usize,
@@ -657,7 +776,17 @@ pub fn paste_at_position_with_change_set(
     header_names: Option<Vec<String>>,
     col_types: Vec<String>,
     expected_generation: Option<u64>,
-) -> Result<crate::models::table::PasteChangeSetResult, AppError> {
+    row_ids:Option<Vec<i64>>,
+    column_ids:Option<Vec<String>>,
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<crate::models::table::PasteChangeSetResult>, AppError> {
+    if let Some(context) = context {
+        let expected_generation=expected_generation.or_else(||context.dataset_generations.iter().find(|item|item.id==dataset_id).map(|item|item.generation)).ok_or_else(||AppError::InvalidParam("project_dataset_precondition_required".into()))?;
+        let request=crate::models::project_persistence::ProjectPasteRequest{dataset_id,start_row,start_col,rows,header_names,col_types,expected_generation,row_ids,column_ids:column_ids.ok_or_else(||AppError::InvalidParam("project_columns_required".into()))?};
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).paste(&context,&request)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
     let change_set_id = service.paste_at_position_with_change_set(
@@ -669,17 +798,26 @@ pub fn paste_at_position_with_change_set(
         &col_types,
         expected_generation,
     )?;
-    Ok(crate::models::table::PasteChangeSetResult { change_set_id })
+    Ok(ProjectMutationResult::Legacy(crate::models::table::PasteChangeSetResult { change_set_id,generation:None,row_count:None,column_count:None }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_table_change_set(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     change_set_id: String,
     undo: bool,
-) -> Result<(), AppError> {
+    dataset_id:Option<String>,
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<()>, AppError> {
+    if let Some(context) = context {
+        let dataset_id=dataset_id.ok_or_else(||AppError::InvalidParam("project_history_dataset_required".into()))?;
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state).apply_change_set(&context,&dataset_id,&change_set_id,undo)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
-    DataService::new(&state).apply_change_set(&change_set_id, undo)
+    DataService::new(&state).apply_change_set(&change_set_id, undo).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -708,7 +846,10 @@ pub fn restore_snapshot(
 pub fn get_column_display_props(
     state: State<'_, AppState>,
     dataset_id: String,
+    epoch:Option<u64>,
 ) -> Result<Vec<ColumnDisplayProps>, AppError> {
+    if let Some(epoch)=epoch { return crate::services::project_native_service::NativeProjectService::new(&state).column_display_props(epoch,&dataset_id); }
+    if state.project_database.read().map_err(|error|AppError::Database(error.to_string()))?.is_some() { return Err(AppError::InvalidParam("project_epoch_required".into())); }
     let display = state
         .column_display
         .lock()
@@ -716,19 +857,28 @@ pub fn get_column_display_props(
     Ok(display.get(&dataset_id).cloned().unwrap_or_default())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_column_display_props(
     state: State<'_, AppState>,
     dataset_id: String,
     props: Vec<ColumnDisplayProps>,
-) -> Result<(), AppError> {
+    column_ids: Option<Vec<String>>,
+    context: Option<crate::models::project_persistence::ProjectWriteContext>,
+    app: tauri::AppHandle,
+) -> Result<crate::models::project_persistence::ProjectMutationResult<()>, AppError> {
+    if let Some(context) = context {
+        let column_ids=column_ids.ok_or_else(||AppError::InvalidParam("project_column_identities_required".into()))?;
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).set_column_display_props(&context,&dataset_id,&column_ids,&props)?;
+        if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let mut display = state
         .column_display
         .lock()
         .map_err(|e| AppError::Database(e.to_string()))?;
     display.insert(dataset_id, props);
-    Ok(())
+    Ok(crate::models::project_persistence::ProjectMutationResult::Legacy(()))
 }
 
 #[cfg(test)]
@@ -741,32 +891,13 @@ mod tests {
 
     #[test]
     fn data_commands_expose_compact_mutation_contracts() {
-        let source = include_str!("data_commands.rs");
-        let command = |name: &str| {
-            source
-                .split(&format!("pub fn {name}("))
-                .nth(1)
-                .expect("command declaration")
-                .split("#[tauri::command]")
-                .next()
-                .expect("command body")
-        };
-        let add_rows = command("add_rows");
-        let delete_rows = command("delete_rows_with_change_set");
-        let add_columns = command("add_columns_with_change_set");
-        let delete_columns = command("delete_columns_with_change_set");
-
-        assert!(add_rows.contains("before_row_id: Option<i64>"));
-        assert!(add_rows.contains("expected_generation: u64"));
-        assert!(add_rows.contains("Result<RowMutationResult, AppError>"));
-        assert!(delete_rows.contains("expected_generation: u64"));
-        assert!(delete_rows.contains("Result<RowMutationResult, AppError>"));
-        assert!(add_columns.contains("columns: Vec<ColumnDescriptor>"));
-        assert!(add_columns.contains("expected_generation: u64"));
-        assert!(add_columns.contains("Result<ColumnMutationResult, AppError>"));
-        assert!(delete_columns.contains("columns: Vec<ColumnDescriptor>"));
-        assert!(delete_columns.contains("expected_generation: u64"));
-        assert!(delete_columns.contains("Result<ColumnMutationResult, AppError>"));
+        use crate::models::{project_persistence::{ProjectMutationResult,ProjectWriteContext},table::ColumnDescriptor};
+        use crate::error::AppError;
+        // Assert the public native/legacy boundary at the Rust type level.
+        let _: for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,String,usize,Option<i64>,u64,Option<ProjectWriteContext>)->Result<ProjectMutationResult<RowMutationResult>,AppError> = super::add_rows;
+        let _: for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,String,Vec<i64>,u64,Option<ProjectWriteContext>)->Result<ProjectMutationResult<RowMutationResult>,AppError> = super::delete_rows_with_change_set;
+        let _: for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,String,Vec<ColumnDescriptor>,Option<i32>,u64,Option<ProjectWriteContext>)->Result<ProjectMutationResult<ColumnMutationResult>,AppError> = super::add_columns_with_change_set;
+        let _: for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,String,Vec<ColumnDescriptor>,u64,Option<ProjectWriteContext>)->Result<ProjectMutationResult<ColumnMutationResult>,AppError> = super::delete_columns_with_change_set;
     }
 
     #[test]
@@ -777,6 +908,8 @@ mod tests {
             row_count: 102,
             change_set_id: "rows-change".to_string(),
         };
+        let legacy = crate::models::project_persistence::ProjectMutationResult::Legacy(row.clone());
+        assert_eq!(serde_json::to_value(&legacy).unwrap(),serde_json::to_value(&row).unwrap(),"legacy IPC value shape must remain unchanged");
         let column = ColumnMutationResult {
             column_ids: vec!["column-new".to_string()],
             generation: 9,
@@ -793,6 +926,8 @@ mod tests {
                 "changeSetId": "rows-change",
             })
         );
+        let legacy_column=crate::models::project_persistence::ProjectMutationResult::Legacy(column.clone());
+        assert_eq!(serde_json::to_value(legacy_column).unwrap(),serde_json::to_value(&column).unwrap());
         assert_eq!(
             serde_json::to_value(column).expect("serialize column mutation result"),
             json!({

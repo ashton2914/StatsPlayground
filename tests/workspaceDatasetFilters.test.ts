@@ -4,14 +4,15 @@ import { readFileSync } from "node:fs";
 const workspace = readFileSync(new URL("../src/components/Workspace.tsx", import.meta.url), "utf8");
 const service = readFileSync(new URL("../src/services/projectService.ts", import.meta.url), "utf8");
 const projectTypes = readFileSync(new URL("../src/types/project.ts", import.meta.url), "utf8");
+const projectCommands = readFileSync(new URL("../src/applicationCommands/projectCommands.ts", import.meta.url), "utf8");
 const projectStore = readFileSync(new URL("../src/stores/useProjectStore.ts", import.meta.url), "utf8");
 
 assert.match(service, /datasetFilters:\s*DatasetFilterMap/);
 assert.match(projectTypes, /datasetFilters:\s*DatasetFilterMap/);
 assert.match(projectTypes, /datasetFilterMigrationConflicts:\s*string\[\]/);
 
-assert.match(workspace, /useDatasetFilterStore\.getState\(\)\.toProjectPayload\(\)/);
-assert.match(workspace, /datasetFilters,/);
+assert.match(projectCommands, /useDatasetFilterStore\.getState\(\)\.toProjectPayload\(\)/);
+assert.match(projectCommands, /datasetFilters:\s*useDatasetFilterStore\.getState\(\)\.toProjectPayload\(\)/);
 assert.match(workspace, /resetDatasetFilters\(\)/);
 assert.match(workspace, /loadDatasetFiltersFromProject\(result\.datasetFilters\)/);
 assert.match(workspace, /await dataService\.deleteDataset\(id\);[\s\S]*?removeDatasetFilters\(id\)/);

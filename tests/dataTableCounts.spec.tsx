@@ -164,7 +164,14 @@ test("does not release a shared prepared session adopted by a newer start", asyn
   await expect(component.getByLabel("Prepared session generations")).toHaveText("1,1");
 
   await scrollbar.press("Home");
-  await expect(component.getByLabel("Navigation starts")).toContainText("5500,0,500");
+  await expect.poll(async()=>{
+    const starts=(await component.getByLabel("Navigation starts").innerText()).split(",").map(Number);
+    const distant=starts.indexOf(5500);const home=starts.indexOf(0,distant+1);
+    return distant>=0&&home>distant&&starts.indexOf(500,home+1)>home;
+  }).toBe(true);
+  const firstRow=component.locator(".sp-row-hdr").filter({hasText:/^1$/}).locator("..");
+  await expect(firstRow.getByText("EV",{exact:true})).toBeVisible();
+  await expect(firstRow.getByText("0.5",{exact:true})).toBeVisible();
   await component.getByRole("button", { name: "Reload current revision" }).click();
   await expect(component.getByLabel("Prepared session generations")).toHaveText("1,1,1");
   await expect(component.getByLabel("Navigation session IDs")).toContainText("session-1");

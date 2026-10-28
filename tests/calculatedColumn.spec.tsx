@@ -437,3 +437,22 @@ test("keeps long localized labels and diagnostics contained within the 760px dia
   expect(diagnosticBox.x).toBeGreaterThanOrEqual(dialogBox.x);
   expect(diagnosticBox.x + diagnosticBox.width).toBeLessThanOrEqual(dialogBox.x + dialogBox.width);
 });
+
+test("native paste binds the visible row IDs and column layout before refreshing its window",async({mount,page})=>{
+ await mount(<CalculatedColumnHarness scenario="matrix" nativePersistence reverseRows/>);
+ const first=page.locator('[data-row="0"][data-col="0"]');const second=page.locator('[data-row="1"][data-col="0"]');
+ await expect(first).toHaveText("12");await expect(second).toHaveText("10");await first.click();await page.locator(".sp-spreadsheet").evaluate(element=>{const clipboardData=new DataTransfer();clipboardData.setData("text/plain","90\n80");element.dispatchEvent(new ClipboardEvent("paste",{clipboardData,bubbles:true,cancelable:true}));});
+ await expect.poll(async()=> (await readSnapshot(page))?.pasteCalls.length).toBe(1);
+ const call=(await readSnapshot(page))?.pasteCalls[0];expect(call?.rowIds).toEqual([2,1]);expect(call?.columnIds?.length).toBe(10);
+ await expect(first).toHaveText("90");await expect(second).toHaveText("80");await expect(page.locator('[data-row="0"][data-col="1"]')).toHaveText("3");await expect(page.locator('[data-row="1"][data-col="1"]')).toHaveText("2");
+});
+
+test("native paste resolves an unloaded row range before submitting physical IDs",async({mount,page})=>{
+ await mount(<CalculatedColumnHarness scenario="matrix" nativePersistence reverseRows unloadedTail/>);
+ const first=page.locator('[data-row="0"][data-col="0"]');
+ await expect(first).toHaveText("12");await first.click();
+ await page.locator(".sp-spreadsheet").evaluate(element=>{const clipboardData=new DataTransfer();clipboardData.setData("text/plain","90\n80\n70");element.dispatchEvent(new ClipboardEvent("paste",{clipboardData,bubbles:true,cancelable:true}));});
+ await expect.poll(async()=>(await readSnapshot(page))?.pasteCalls.length).toBe(1);
+ expect((await readSnapshot(page))?.pasteCalls[0]?.rowIds).toEqual([2,1,99]);
+ await expect(first).toHaveText("90");await expect(page.locator('[data-row="1"][data-col="0"]')).toHaveText("80");
+});

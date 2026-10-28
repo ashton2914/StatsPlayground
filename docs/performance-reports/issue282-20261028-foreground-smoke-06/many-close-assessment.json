@@ -1,0 +1,13 @@
+{
+  "qualified": false,
+  "failures": [
+    "release source/build/engine provenance required",
+    "at least 100 warm samples required"
+  ],
+  "sampleCount": 3,
+  "backendP95Ms": 120.791458,
+  "uiP95Ms": 176,
+  "backendMedianMs": 118.046959,
+  "uiMedianMs": 176,
+  "budgetMs": 500
+}

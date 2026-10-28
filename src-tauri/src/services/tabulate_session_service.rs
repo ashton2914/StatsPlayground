@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use duckdb::InterruptHandle;
@@ -42,7 +42,7 @@ pub(crate) struct TabulateSessionEntry {
     uuid: Uuid,
     pub(crate) request: TabulateSessionRequest,
     pub(crate) fingerprint: String,
-    pub(crate) engine: Mutex<DuckDbEngine>,
+    pub(crate) engine: Mutex<Option<DuckDbEngine>>,
     pub(crate) interrupt_handle: Arc<InterruptHandle>,
     released: AtomicBool,
     charged_bytes: AtomicUsize,
@@ -102,10 +102,14 @@ struct TabulateSessionRegistry {
 }
 
 struct SessionInner {
-    source: Mutex<DuckDbEngine>,
+    source: Mutex<Option<DuckDbEngine>>,
     registry: Mutex<TabulateSessionRegistry>,
     active_requests: Mutex<HashMap<String, TabulateActiveRequest>>,
     preparation: Mutex<()>,
+    prepare_gate: Mutex<()>,
+    shutdown_gate: Mutex<()>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    entries: Mutex<Vec<Weak<TabulateSessionEntry>>>,
     measured_bytes: AtomicUsize,
     closed: AtomicBool,
     policy: TabulateSessionPolicy,
@@ -193,10 +197,14 @@ impl TabulateSessionService {
     ) -> Result<Self, AppError> {
         Ok(Self {
             inner: Arc::new(SessionInner {
-                source: Mutex::new(engine.try_clone()?),
+                source: Mutex::new(Some(engine.try_clone()?)),
                 registry: Mutex::new(TabulateSessionRegistry::default()),
                 active_requests: Mutex::new(HashMap::new()),
                 preparation: Mutex::new(()),
+                prepare_gate: Mutex::new(()),
+                shutdown_gate: Mutex::new(()),
+                workers: Mutex::new(Vec::new()),
+                entries: Mutex::new(Vec::new()),
                 measured_bytes: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
                 policy,
@@ -209,6 +217,7 @@ impl TabulateSessionService {
         &self,
         request: &TabulateSessionRequest,
     ) -> Result<TabulateSessionStatus, AppError> {
+        let _prepare = lock(&self.inner.prepare_gate)?;
         let (entry, fresh) = self.begin_prepare(request)?;
         {
             let mut registry = lock(&self.inner.registry)?;
@@ -226,13 +235,19 @@ impl TabulateSessionService {
         if fresh {
             let service = self.clone();
             let worker_entry = Arc::clone(&entry);
-            if std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("tabulate-prepare".into())
                 .spawn(move || service.complete_prepare(&worker_entry))
-                .is_err()
             {
-                self.release(&entry.session_id)?;
-                return Err(AppError::Database("tabulate_prepare_failed".into()));
+                Ok(worker) => {
+                    let mut workers = lock(&self.inner.workers)?;
+                    workers.retain(|worker| !worker.is_finished());
+                    workers.push(worker);
+                }
+                Err(_) => {
+                    self.release(&entry.session_id)?;
+                    return Err(AppError::Database("tabulate_prepare_failed".into()));
+                }
             }
         }
         Ok(status)
@@ -244,7 +259,7 @@ impl TabulateSessionService {
     ) -> Result<(Arc<TabulateSessionEntry>, bool), AppError> {
         self.sweep()?;
         let source = lock(&self.inner.source)?;
-        source.validate_tabulate_session(request)?;
+        source.as_ref().ok_or_else(Self::unavailable)?.validate_tabulate_session(request)?;
         let stale = {
             let mut registry = lock(&self.inner.registry)?;
             let ids = registry
@@ -265,7 +280,7 @@ impl TabulateSessionService {
             self.cleanup(&entry)?;
         }
         let source = lock(&self.inner.source)?;
-        source.validate_tabulate_session(request)?;
+        source.as_ref().ok_or_else(Self::unavailable)?.validate_tabulate_session(request)?;
         let encoded = serde_json::to_vec(request)
             .map_err(|_| AppError::InvalidParam("tabulate_invalid_definition".into()))?;
         let fingerprint = format!("tabulate-v1:{:x}", Sha256::digest(encoded));
@@ -283,7 +298,7 @@ impl TabulateSessionService {
                 return Ok((Arc::clone(&record.entry), false));
             }
         }
-        let engine = source.try_clone()?;
+        let engine = source.as_ref().ok_or_else(Self::unavailable)?.try_clone()?;
         let count = registry
             .sessions
             .values()
@@ -311,10 +326,15 @@ impl TabulateSessionService {
             request: request.clone(),
             fingerprint: fingerprint.clone(),
             interrupt_handle: engine.conn().interrupt_handle(),
-            engine: Mutex::new(engine),
+            engine: Mutex::new(Some(engine)),
             released: AtomicBool::new(false),
             charged_bytes: AtomicUsize::new(0),
         });
+        {
+            let mut entries = lock(&self.inner.entries)?;
+            entries.retain(|entry| entry.strong_count() > 0);
+            entries.push(Arc::downgrade(&entry));
+        }
         registry.signatures.insert(fingerprint, session_id.clone());
         registry.sessions.insert(
             session_id,
@@ -357,7 +377,10 @@ impl TabulateSessionService {
     fn cleanup(&self, entry: &TabulateSessionEntry) -> Result<(), AppError> {
         let bytes = entry.charged_bytes.swap(0, Ordering::AcqRel);
         self.inner.measured_bytes.fetch_sub(bytes, Ordering::AcqRel);
-        lock(&entry.engine)?.drop_tabulate_member_indexes(&entry.uuid)
+        if let Some(engine) = lock(&entry.engine)?.as_ref() {
+            engine.drop_tabulate_member_indexes(&entry.uuid)?;
+        }
+        Ok(())
     }
 
     fn sweep(&self) -> Result<(), AppError> {
@@ -386,7 +409,7 @@ impl TabulateSessionService {
     pub fn status(&self, session_id: &str) -> Result<TabulateSessionStatus, AppError> {
         self.sweep()?;
         let entry = self.entry(session_id)?;
-        if lock(&self.inner.source)?
+        if lock(&self.inner.source)?.as_ref().ok_or_else(Self::unavailable)?
             .get_dataset_generation(&entry.request.dataset_id)
             .ok()
             != Some(entry.request.source_generation)
@@ -421,6 +444,17 @@ impl TabulateSessionService {
         self.materialize_table_with_check(request, |_| Ok(()))
     }
 
+    pub(crate) fn with_materialization_definition<T>(
+        &self, request: &crate::models::tabulate::TabulateMaterializeRequest,
+        apply:impl FnOnce(&TabulateSessionRequest,usize)->Result<T,AppError>,
+    )->Result<T,AppError> {
+        let query=self.begin_query(&request.session_id,request.source_generation,&request.fingerprint)?;
+        self.validate_window_identity(&query.entry)?;
+        let result=apply(&query.entry.request,self.inner.policy.max_measured_bytes)?;
+        self.validate_window_identity(&query.entry)?;
+        Ok(result)
+    }
+
     fn materialize_table_with_check(
         &self,
         request: &crate::models::tabulate::TabulateMaterializeRequest,
@@ -428,12 +462,13 @@ impl TabulateSessionService {
     ) -> Result<crate::models::table::DatasetMeta, AppError> {
         let query = self.begin_query(&request.session_id, request.source_generation, &request.fingerprint)?;
         let entry = &query.entry;
-        let engine = lock(&entry.engine)?;
+        let engine_guard = lock(&entry.engine)?;
+        let engine = engine_guard.as_ref().ok_or_else(Self::unavailable)?;
         self.validate_window_identity(entry)?;
         engine.materialize_tabulate_table(&entry.request, &entry.uuid, request, |engine| {
             before_commit(engine)?;
             self.validate_window_identity(entry)?;
-            if lock(&self.inner.source)?.get_dataset_generation(&entry.request.dataset_id).ok()
+            if lock(&self.inner.source)?.as_ref().ok_or_else(Self::unavailable)?.get_dataset_generation(&entry.request.dataset_id).ok()
                 != Some(entry.request.source_generation)
             {
                 return Err(AppError::InvalidParam("tabulate_stale_source".into()));
@@ -543,7 +578,8 @@ impl TabulateSessionService {
             request_id: request_id.to_owned(),
             cancelled,
         };
-        let engine = lock(&entry.engine)?;
+        let engine_guard = lock(&entry.engine)?;
+        let engine = engine_guard.as_ref().ok_or_else(Self::unavailable)?;
         let result = (|| {
             {
                 let mut requests = lock(&self.inner.active_requests)?;
@@ -554,7 +590,7 @@ impl TabulateSessionService {
                 registered.running = true;
             }
             self.validate_window_identity(&entry)?;
-            let result = query(&engine, &entry, &info, &active.cancelled)?;
+            let result = query(engine, &entry, &info, &active.cancelled)?;
             self.validate_window_identity(&entry)?;
             if engine
                 .get_dataset_generation(&entry.request.dataset_id)
@@ -571,7 +607,7 @@ impl TabulateSessionService {
             active.cancelled.load(Ordering::Acquire)
         };
         drop(active);
-        drop(engine);
+        drop(engine_guard);
         if was_cancelled {
             Err(AppError::Cancelled("tabulate_cancelled".into()))
         } else if entry.released.load(Ordering::Acquire) {
@@ -687,17 +723,46 @@ impl TabulateSessionService {
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), AppError> {
-        let entries = {
+        let _shutdown = lock(&self.inner.shutdown_gate)?;
+        let _prepare = lock(&self.inner.prepare_gate)?;
+        {
             let mut registry = lock(&self.inner.registry)?;
             self.inner.closed.store(true, Ordering::Release);
             let ids = registry.sessions.keys().cloned().collect::<Vec<_>>();
-            ids.iter()
-                .filter_map(|id| Self::remove(&mut registry, id))
-                .collect::<Vec<_>>()
-        };
-        for entry in entries {
-            self.cleanup(&entry)?;
+            for id in ids { Self::remove(&mut registry, &id); }
         }
+        let entries = lock(&self.inner.entries)?.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+        let interrupt = || {
+            for entry in &entries {
+                entry.released.store(true, Ordering::Release);
+                entry.interrupt_handle.interrupt();
+            }
+        };
+        let workers = std::mem::take(&mut *lock(&self.inner.workers)?);
+        while workers.iter().any(|worker| !worker.is_finished()) {
+            interrupt();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut worker_panicked = false;
+        for worker in workers { worker_panicked |= worker.join().is_err(); }
+        for entry in &entries {
+            // Repeated cancellation also covers a query registered just before SQL starts.
+            let mut engine = loop {
+                match entry.engine.try_lock() {
+                    Ok(engine) => break engine,
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        interrupt();
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(std::sync::TryLockError::Poisoned(_)) => return Err(AppError::Database("tabulate_session_lock_failed".into())),
+                }
+            };
+            let bytes = entry.charged_bytes.swap(0, Ordering::AcqRel);
+            self.inner.measured_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            engine.take();
+        }
+        lock(&self.inner.source)?.take();
+        if worker_panicked { return Err(AppError::Database("tabulate_prepare_failed".into())); }
         Ok(())
     }
 
@@ -760,9 +825,10 @@ impl TabulateSessionService {
             if entry.released.load(Ordering::Acquire) {
                 return Err(Self::unavailable());
             }
-            let measured = lock(&entry.engine)?.measure_tabulate_member_indexes(&entry.request)?;
+            let measured = lock(&entry.engine)?.as_ref().ok_or_else(Self::unavailable)?.measure_tabulate_member_indexes(&entry.request)?;
             self.admit_bytes(entry, measured.measured_bytes_estimate)?;
-            let engine = lock(&entry.engine)?;
+            let engine_guard = lock(&entry.engine)?;
+        let engine = engine_guard.as_ref().ok_or_else(Self::unavailable)?;
             if entry.released.load(Ordering::Acquire) {
                 return Err(Self::unavailable());
             }
@@ -773,7 +839,7 @@ impl TabulateSessionService {
             )
         })();
         let result = result.and_then(|info| {
-            if lock(&self.inner.source)?.get_dataset_generation(&entry.request.dataset_id)?
+            if lock(&self.inner.source)?.as_ref().ok_or_else(Self::unavailable)?.get_dataset_generation(&entry.request.dataset_id)?
                 != entry.request.source_generation
             {
                 return Err(AppError::InvalidParam("tabulate_stale_source".into()));
@@ -935,7 +1001,8 @@ mod tests {
         }
 
         fn assert_dropped(&self, entry: &TabulateSessionEntry) {
-            let engine = entry.engine.lock().expect("engine");
+            let engine_guard = entry.engine.lock().expect("engine");
+            let Some(engine) = engine_guard.as_ref() else { return; };
             let count: i64 = engine
                 .conn()
                 .query_row(
@@ -1777,7 +1844,8 @@ mod tests {
             let harness = totals_fixture();
             let status = harness.ready(&totals_definition(&harness));
             let entry = harness.service.entry(&status.session_id).unwrap();
-            let engine = entry.engine.lock().unwrap();
+            let engine_guard = entry.engine.lock().unwrap();
+        let engine = engine_guard.as_ref().unwrap();
             let request = totals_request(&status, TabulateTotalsKind::Grand);
             let service = harness.service.clone();
             let request_id = request.request_id.clone();
@@ -1800,7 +1868,7 @@ mod tests {
                     .unwrap();
                 None
             };
-            drop(engine);
+            drop(engine_guard);
             assert_window_error(
                 worker.join().unwrap(),
                 if release {
@@ -2307,7 +2375,8 @@ mod tests {
         let harness = SessionHarness::new(256 * 1024 * 1024);
         let status = harness.ready(&harness.request());
         let entry = harness.service.entry(&status.session_id).unwrap();
-        let engine = entry.engine.lock().unwrap();
+        let engine_guard = entry.engine.lock().unwrap();
+        let engine = engine_guard.as_ref().unwrap();
         let request = window_request(&status);
         let service = harness.service.clone();
         let worker_request = request.clone();
@@ -2318,7 +2387,7 @@ mod tests {
             "tabulate_request_active",
         );
         harness.service.cancel_request(&request.request_id).unwrap();
-        drop(engine);
+        drop(engine_guard);
         assert_window_error(worker.join().unwrap(), "tabulate_cancelled");
         assert!(harness
             .service
@@ -2376,7 +2445,8 @@ mod tests {
             let harness = SessionHarness::new(256 * 1024 * 1024);
             let status = harness.ready(&harness.request());
             let entry = harness.service.entry(&status.session_id).unwrap();
-            let engine = entry.engine.lock().unwrap();
+            let engine_guard = entry.engine.lock().unwrap();
+        let engine = engine_guard.as_ref().unwrap();
             let request = window_request(&status);
             let service = harness.service.clone();
             let worker_request = request.clone();
@@ -2399,7 +2469,7 @@ mod tests {
                     .unwrap();
                 None
             };
-            drop(engine);
+            drop(engine_guard);
             assert_window_error(
                 worker.join().unwrap(),
                 if release {
@@ -2430,6 +2500,7 @@ mod tests {
             .engine
             .lock()
             .unwrap()
+            .as_ref().unwrap()
             .drop_tabulate_member_indexes(&entry.uuid)
             .unwrap();
         let request = window_request(&status);
@@ -2445,6 +2516,7 @@ mod tests {
             .engine
             .lock()
             .unwrap()
+            .as_ref().unwrap()
             .prepare_tabulate_member_indexes(&entry.request, &entry.uuid, usize::MAX)
             .unwrap();
         assert!(harness.service.query_window(&request).is_ok());
@@ -2784,6 +2856,7 @@ mod tests {
             .engine
             .lock()
             .expect("engine")
+            .as_ref().unwrap()
             .prepare_tabulate_member_indexes(&request, &entry.uuid, usize::MAX)
             .expect("materialize");
         harness.service.release(&entry.session_id).expect("release");
@@ -2842,6 +2915,20 @@ mod tests {
                 .state,
             TabulateSessionState::Ready
         );
+    }
+
+    #[test]
+    fn project_v5_lifecycle_tabulate_shutdown_detaches_connections_for_retained_owners() {
+        let harness=SessionHarness::new(256*1024*1024);
+        let status=harness.ready(&harness.request());
+        let entry=harness.service.entry(&status.session_id).unwrap();
+        let retained=harness.service.clone();
+        let lease=retained.acquire_lease(&status.session_id).unwrap();
+        assert!(harness.source.storage_connection_count()>1);
+        harness.service.shutdown().unwrap();
+        assert_eq!(harness.source.storage_connection_count(),1,"retained service, entry and lease objects must not retain source connections after shutdown");
+        assert!(retained.status(&entry.session_id).is_err());
+        drop(lease);
     }
 
     #[test]
@@ -2905,7 +2992,7 @@ mod tests {
     fn release_removes_identity_before_waiting_for_engine_and_late_worker() {
         let harness = SessionHarness::new(256 * 1024 * 1024);
         let entry = harness.paused(&harness.request());
-        let engine = entry.engine.lock().expect("hold engine");
+        let engine_guard = entry.engine.lock().expect("hold engine");
         let releasing_service = harness.service.clone();
         let session_id = entry.session_id.clone();
         let release = std::thread::spawn(move || releasing_service.release(&session_id));
@@ -2921,7 +3008,7 @@ mod tests {
         let worker_service = harness.service.clone();
         let worker_entry = Arc::clone(&entry);
         let worker = std::thread::spawn(move || worker_service.complete_prepare(&worker_entry));
-        drop(engine);
+        drop(engine_guard);
         release.join().expect("release join").expect("release");
         worker.join().expect("worker join");
         harness.assert_dropped(&entry);

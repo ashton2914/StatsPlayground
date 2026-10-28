@@ -66,7 +66,7 @@ pub struct TableTransformRunState {
     pub error: Option<String>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TableTransformExecutionResult {
     pub definition_id: String,
@@ -79,6 +79,30 @@ pub struct TableTransformExecutionResult {
     pub error: Option<String>,
     pub binding: TableTransformProjectBinding,
     pub run_state: TableTransformRunState,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TableTransformCommandResult {
+    pub definition: TableTransformDefinition,
+    pub execution: TableTransformExecutionResult,
+    pub lineage_graph: ProjectLineageGraph,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedTableTransformBinding {
+    #[serde(flatten)]
+    pub binding: TableTransformProjectBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<TableTransformRunState>,
+    #[serde(default)]
+    pub schema_reports: Vec<TableTransformRoleSchemaReport>,
+}
+impl PersistedTableTransformBinding {
+    pub fn from_execution(execution: &TableTransformExecutionResult) -> Self {
+        Self { binding: execution.binding.clone(), last_run: Some(execution.run_state.clone()), schema_reports: execution.schema_reports.clone() }
+    }
 }
 
 pub struct TableTransformService<'a> {
@@ -181,6 +205,25 @@ impl<'a> TableTransformService<'a> {
         binding: &TableTransformProjectBinding,
         lineage: &mut ProjectLineageGraph,
     ) -> Result<TableTransformExecutionResult, AppError> {
+        self.run_with_transaction_owner(definition, binding, lineage, false)
+    }
+
+    pub(crate) fn run_in_transaction(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+        lineage: &mut ProjectLineageGraph,
+    ) -> Result<TableTransformExecutionResult, AppError> {
+        self.run_with_transaction_owner(definition, binding, lineage, true)
+    }
+
+    fn run_with_transaction_owner(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+        lineage: &mut ProjectLineageGraph,
+        caller_owns_transaction: bool,
+    ) -> Result<TableTransformExecutionResult, AppError> {
         let reports = self.validate_run_preconditions(definition, binding)?;
         let inputs = binding
             .inputs
@@ -200,12 +243,22 @@ impl<'a> TableTransformService<'a> {
 
         let temporary_id = Uuid::new_v4().to_string();
         let temporary_name = format!("{} refresh {temporary_id}", definition.output.name);
-        if let Err(error) = self.dispatch(
-            &temporary_id,
-            &temporary_name,
-            &definition.operation,
-            &inputs,
-        ) {
+        let staged = if caller_owns_transaction {
+            self.dispatch_in_transaction(
+                &temporary_id,
+                &temporary_name,
+                &definition.operation,
+                &inputs,
+            )
+        } else {
+            self.dispatch(
+                &temporary_id,
+                &temporary_name,
+                &definition.operation,
+                &inputs,
+            )
+        };
+        if let Err(error) = staged {
             let _ = self.engine.delete_dataset(&temporary_id);
             return Ok(self.result(
                 definition,
@@ -224,12 +277,22 @@ impl<'a> TableTransformService<'a> {
                 return Err(error);
             }
         };
-        let output = match self.engine.replace_dataset_atomically(
-            &definition.output.table_document_id,
-            &temporary_id,
-            &definition.output.name,
-            binding.output_generation,
-        ) {
+        let promoted = if caller_owns_transaction {
+            self.engine.replace_dataset_atomically_in_transaction(
+                &definition.output.table_document_id,
+                &temporary_id,
+                &definition.output.name,
+                binding.output_generation,
+            )
+        } else {
+            self.engine.replace_dataset_atomically(
+                &definition.output.table_document_id,
+                &temporary_id,
+                &definition.output.name,
+                binding.output_generation,
+            )
+        };
+        let output = match promoted {
             Ok(output) => output,
             Err(error) => {
                 let _ = self.engine.delete_dataset(&temporary_id);
@@ -255,6 +318,25 @@ impl<'a> TableTransformService<'a> {
         binding: &TableTransformProjectBinding,
         staging_id: &str,
     ) -> Result<DatasetMeta, AppError> {
+        self.stage_for_workflow_with_owner(definition, binding, staging_id, false)
+    }
+
+    pub(crate) fn stage_for_workflow_in_transaction(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+        staging_id: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        self.stage_for_workflow_with_owner(definition, binding, staging_id, true)
+    }
+
+    pub(crate) fn stage_for_workflow_with_owner(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+        staging_id: &str,
+        caller_owns_transaction: bool,
+    ) -> Result<DatasetMeta, AppError> {
         validate_table_transform_definition(definition)?;
         self.validate_binding(definition, binding)?;
         let inputs = binding
@@ -269,12 +351,21 @@ impl<'a> TableTransformService<'a> {
                 definition.id, report.role
             )));
         }
-        self.dispatch(
-            staging_id,
-            &format!("__workflow_stage_{}", definition.id),
-            &definition.operation,
-            &inputs,
-        )
+        if caller_owns_transaction {
+            self.dispatch_in_transaction(
+                staging_id,
+                &format!("__workflow_stage_{}", definition.id),
+                &definition.operation,
+                &inputs,
+            )
+        } else {
+            self.dispatch(
+                staging_id,
+                &format!("__workflow_stage_{}", definition.id),
+                &definition.operation,
+                &inputs,
+            )
+        }
     }
 
     fn validate_binding(
@@ -316,7 +407,7 @@ impl<'a> TableTransformService<'a> {
         Ok(())
     }
 
-    fn build_definition_from_draft(
+    pub(crate) fn build_definition_from_draft(
         &self,
         draft: &TableTransformDraft,
         inputs: &[TableTransformInputBinding],
@@ -402,6 +493,37 @@ impl<'a> TableTransformService<'a> {
                 })
             })
             .collect()
+    }
+
+    fn dispatch_in_transaction(
+        &self,
+        id: &str,
+        name: &str,
+        operation: &TableTransformOperation,
+        inputs: &HashMap<&str, &str>,
+    ) -> Result<DatasetMeta, AppError> {
+        if let TableTransformOperation::Update {
+            match_column,
+            update_columns,
+        } = operation
+        {
+            let left = inputs
+                .get("left")
+                .ok_or_else(|| invalid("missing left input"))?;
+            let right = inputs
+                .get("right")
+                .ok_or_else(|| invalid("missing right input"))?;
+            self.engine.copy_and_update_table_in_transaction(
+                id,
+                name,
+                left,
+                right,
+                match_column,
+                update_columns,
+            )
+        } else {
+            self.dispatch(id, name, operation, inputs)
+        }
     }
 
     fn dispatch(

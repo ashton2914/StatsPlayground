@@ -1,0 +1,8 @@
+{
+  "completed": false,
+  "hostTimeoutMs": 120000,
+  "ownedMainPid": 97707,
+  "sampledNewWebContentPid": 97712,
+  "ownedMainTerminated": true,
+  "ruling": "No completed scenario evidence. CPU sample may cover idle/setup; do not infer a text-layout or renderer bottleneck from it."
+}

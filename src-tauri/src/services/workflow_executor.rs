@@ -51,6 +51,14 @@ pub struct WorkflowRunCommitPacket {
     pub run: WorkflowRun,
 }
 
+struct NativeWorkflowPublication<'a> {
+    database:&'a crate::services::project_database::ProjectDatabase,
+    context:&'a crate::models::project_persistence::ProjectWriteContext,
+    request:&'a WorkflowRunRequest,
+    folder:&'a str,
+    receipt:Option<crate::models::project_persistence::ProjectCommit<WorkflowRunCommitPacket>>,
+}
+
 pub struct WorkflowExecutor<'a> {
     state: &'a AppState,
 }
@@ -130,9 +138,62 @@ impl<'a> WorkflowExecutor<'a> {
         run_id: String,
         started_at: String,
     ) -> Result<WorkflowRunCommitPacket, AppError> {
+        self.execute_succeeded_with_publication(request,run_id,started_at,None)
+    }
+
+    pub(crate) fn execute_native(
+        &self,database:&crate::services::project_database::ProjectDatabase,
+        context:&crate::models::project_persistence::ProjectWriteContext,
+        request:&WorkflowRunRequest,folder:&str,
+    )->Result<crate::models::project_persistence::ProjectCommit<WorkflowRunCommitPacket>,AppError> {
+        let run_id=Uuid::new_v4().to_string();let started_at=workflow_timestamp()?;
+        let mut publication=NativeWorkflowPublication{database,context,request,folder,receipt:None};
+        let outcome=self.execute_succeeded_with_publication(request.clone(),run_id.clone(),started_at.clone(),Some(&mut publication));
+        if let Some(receipt)=publication.receipt {return Ok(receipt);}
+        let packet=match outcome {
+            Ok(packet)=>packet,
+            Err(error@AppError::InvalidParam(_))|Err(error@AppError::Stats(_))=>WorkflowRunCommitPacket {
+                commit_id:run_id.clone(),documents:vec![],run:WorkflowRun {
+                    id:run_id,workflow_id:request.workflow.id.clone(),workflow_revision:request.workflow.revision,
+                    status:WorkflowRunStatus::Failed,started_at:Some(started_at),completed_at:Some(workflow_timestamp()?),
+                    input_bindings:request.input_bindings.clone(),output_bindings:request.output_bindings.clone(),
+                    schema_validation_report:None,node_results:vec![],errors:vec![WorkflowRunError{code:"workflowExecutionFailed".into(),message:error.to_string()}],
+                    parent_folder_id:None,seed:Some(request.seed),engine_version:Some(env!("CARGO_PKG_VERSION").into()),configuration_hash:None,input_fingerprints:vec![],output_fingerprints:vec![],determinism_baseline_run_id:None,
+                },
+            },
+            Err(error)=>return Err(error),
+        };
+        database.commit_with_effects(context,&("run_workflow",request,folder),|engine| {
+            use crate::models::project_persistence::*;
+            let key=format!("workflowRun:{}",packet.run.id);
+            crate::services::project_catalog::ProjectCatalog::new(engine).apply_patch(&ProjectRecordPatch{settings:vec![ProjectSettingWrite{key:key.clone(),expected_revision:None,value:serde_json::to_value(&packet).map_err(|e|AppError::InvalidParam(e.to_string()))?}],..Default::default()})?;
+            super::project_workflow_runs::record(engine,&packet)?;
+            Ok(crate::services::project_transaction::CommitEffects{value:packet.clone(),dataset_ids:vec![],document_ids:vec![],setting_ids:vec![key]})
+        })
+    }
+
+    fn execute_succeeded_with_publication(
+        &self,
+        request: WorkflowRunRequest,
+        run_id: String,
+        started_at: String,
+        native:Option<&mut NativeWorkflowPublication<'_>>,
+    ) -> Result<WorkflowRunCommitPacket, AppError> {
         let plan = plan_workflow(&request.workflow)?;
         let input_bindings = exact_input_bindings(&request)?;
         let output_bindings = exact_output_bindings(&request)?;
+        if native.is_some() {
+            let engine=self.state.db.lock().map_err(|error|AppError::Database(error.to_string()))?;
+            for declaration in &request.workflow.output_declarations {
+                if declaration.artifact_kind==ArtifactKind::Table {
+                    if let Some(id)=output_bindings.get(declaration.id.as_str()) {
+                        if crate::services::project_table_lifecycle::is_retired(&engine,id)? {
+                            return Err(AppError::InvalidParam("This output table was deleted. Undo its deletion before running the workflow again.".into()));
+                        }
+                    }
+                }
+            }
+        }
         let frozen_inputs = self.freeze_inputs(&request, &input_bindings)?;
         let configuration_hash = canonical_json_hash(
             &serde_json::to_value(&request.workflow.operations).map_err(|error| {
@@ -154,7 +215,7 @@ impl<'a> WorkflowExecutor<'a> {
                     })
             })
             .collect::<HashMap<_, _>>();
-        let _permit = self.state.save_coordinator.mutation_permit()?;
+        let _permit = if native.is_none() {Some(self.state.save_coordinator.mutation_permit()?)} else {None};
         let table_stage = {
             let engine = self
                 .state
@@ -455,7 +516,11 @@ impl<'a> WorkflowExecutor<'a> {
                 output_fingerprints,
                 determinism_baseline_run_id: None,
             };
-            if let Some(baseline) = determinism_baseline(&request.previous_runs, &run) {
+            let persisted_baseline=if let Some(publication)=native.as_ref() {
+                publication.database.with_engine(|engine|persisted_determinism_baseline(engine,&run))?
+            } else {None};
+            let baseline=if native.is_some() {persisted_baseline.as_ref()} else {determinism_baseline(&request.previous_runs,&run)};
+            if let Some(baseline) = baseline {
                 run.determinism_baseline_run_id = Some(baseline.id.clone());
                 if normalized_output_fingerprints(&baseline.output_fingerprints)
                     != normalized_output_fingerprints(&run.output_fingerprints)
@@ -484,13 +549,17 @@ impl<'a> WorkflowExecutor<'a> {
         let packet = match packet {
             Ok(packet) => packet,
             Err(error) => {
+                if let Some(publication)=native.as_ref() {
+                    publication.database.discard_staged_operation(publication.context.expected_epoch,&table_stage.run_id)?;
+                } else {
                 let engine = self
                     .state
                     .db
                     .lock()
                     .map_err(|lock_error| AppError::Database(lock_error.to_string()))?;
                 WorkflowTableExecutor::new(&engine, &self.state.save_coordinator)
-                    .cleanup(&table_stage.staging_ids);
+                    .cleanup(&table_stage.run_id, &table_stage.staging_ids);
+                }
                 self.state
                     .workflow_run_journal
                     .lock()
@@ -500,19 +569,31 @@ impl<'a> WorkflowExecutor<'a> {
             }
         };
         if packet.run.status != WorkflowRunStatus::Succeeded {
+            if let Some(publication)=native.as_ref() {
+                publication.database.discard_staged_operation(publication.context.expected_epoch,&table_stage.run_id)?;
+            } else {
             let engine = self
                 .state
                 .db
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
             WorkflowTableExecutor::new(&engine, &self.state.save_coordinator)
-                .cleanup(&table_stage.staging_ids);
+                .cleanup(&table_stage.run_id, &table_stage.staging_ids);
+            }
             self.state
                 .workflow_run_journal
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?
                 .remove(&run_id);
             return Ok(packet);
+        }
+        if let Some(publication)=native {
+            let result=publication.database.publish_project_workflow(publication.context,publication.request,&table_stage,&packet,publication.folder);
+            self.state.workflow_run_journal.lock().map_err(|error|AppError::Database(error.to_string()))?.remove(&run_id);
+            match result {
+                Ok(receipt)=>{publication.receipt=Some(receipt);return Ok(packet);},
+                Err(error)=>{publication.database.discard_staged_operation(publication.context.expected_epoch,&run_id)?;return Err(error);},
+            }
         }
         {
             let engine = self
@@ -601,6 +682,24 @@ fn normalized_output_fingerprints(
     normalized
 }
 
+/// Read one comparable committed run at a time; client-supplied run history is
+/// never an authority for a persistent project's determinism baseline.
+fn persisted_determinism_baseline(engine:&DuckDbEngine,candidate:&WorkflowRun)->Result<Option<WorkflowRun>,AppError> {
+    if !candidate.is_determinism_comparable() {return Ok(None);}
+    let source=super::project_workflow_runs::metadata_source(engine)?;
+    let mut statement=engine.conn().prepare(&format!("SELECT run_json FROM ({source}) runs
+        WHERE workflow_id=? AND workflow_revision=? AND json_extract_string(run_json,'$.status')='succeeded'
+        AND json_extract_string(run_json,'$.seed')=? AND json_extract_string(run_json,'$.engineVersion')=?
+        AND json_extract_string(run_json,'$.configurationHash')=?
+        ORDER BY json_extract_string(run_json,'$.completedAt') ASC NULLS FIRST,id"))?;
+    let mut rows=statement.query(duckdb::params![&candidate.workflow_id,candidate.workflow_revision,candidate.seed.map(|seed|seed.to_string()),&candidate.engine_version,&candidate.configuration_hash])?;
+    while let Some(row)=rows.next()? {
+        let run:WorkflowRun=serde_json::from_str(&row.get::<_,String>(0)?).map_err(|_|AppError::Database("project_workflow_run_invalid".into()))?;
+        if determinism_baseline(std::slice::from_ref(&run),candidate).is_some() {return Ok(Some(run));}
+    }
+    Ok(None)
+}
+
 fn normalized_output_bindings(bindings: &[WorkflowOutputBinding]) -> Vec<WorkflowOutputBinding> {
     let mut normalized = bindings.to_vec();
     normalized.sort_by(|left, right| {
@@ -635,6 +734,10 @@ fn determinism_baseline<'run>(
                 .cmp(&right.completed_at)
                 .then_with(|| left.id.cmp(&right.id))
         })
+}
+
+pub(crate) fn validate_native_bindings(request:&WorkflowRunRequest)->Result<(),AppError> {
+    exact_input_bindings(request)?;exact_output_bindings(request)?;Ok(())
 }
 
 fn exact_input_bindings(request: &WorkflowRunRequest) -> Result<HashMap<&str, String>, AppError> {
@@ -1194,7 +1297,9 @@ pub struct WorkflowTableExecutionResult {
     pub output_hashes: HashMap<String, String>,
 }
 
-struct WorkflowTableStage {
+pub(crate) struct WorkflowTableStage {
+    run_id: String,
+    frozen_inputs: Vec<FrozenTableInput>,
     staging_ids: Vec<String>,
     replacements: Vec<DatasetReplacement>,
     runtime_outputs: HashMap<String, FrozenTableInput>,
@@ -1228,11 +1333,25 @@ impl<'a> WorkflowTableExecutor<'a> {
         self.publish(stage)
     }
 
-    fn stage(
+    fn stage(&self,run_id:&str,steps:&[WorkflowTableStep],frozen_inputs:&[FrozenTableInput]) -> Result<WorkflowTableStage,AppError> {
+        if !self.engine.is_persistent_project() { return self.stage_with_transaction_owner(run_id,steps,frozen_inputs,false); }
+        self.engine.conn().execute_batch("BEGIN TRANSACTION")?;
+        let result=(|| {
+            let stage=self.stage_with_transaction_owner(run_id,steps,frozen_inputs,true)?;
+            for id in &stage.staging_ids {
+                self.engine.conn().execute("INSERT INTO _project_staging VALUES (?, ?)",duckdb::params![run_id,id])?;
+            }
+            Ok(stage)
+        })();
+        crate::services::table_delta_mutation::finish_transaction(self.engine,result)
+    }
+
+    fn stage_with_transaction_owner(
         &self,
         run_id: &str,
         steps: &[WorkflowTableStep],
         frozen_inputs: &[FrozenTableInput],
+        caller_owns_transaction: bool,
     ) -> Result<WorkflowTableStage, AppError> {
         let service = TableTransformService::new(self.engine);
         let mut operation_ids = HashSet::new();
@@ -1269,7 +1388,9 @@ impl<'a> WorkflowTableExecutor<'a> {
                     index,
                     Uuid::new_v4().simple()
                 );
-                service.stage_for_workflow(&step.definition, &binding, &staging_id)?;
+                if caller_owns_transaction {
+                    service.stage_for_workflow_in_transaction(&step.definition,&binding,&staging_id)?;
+                } else { service.stage_for_workflow(&step.definition,&binding,&staging_id)?; }
                 let staging_generation = self.engine.get_dataset_generation(&staging_id)?;
                 output_hashes.insert(
                     stable_id.clone(),
@@ -1321,10 +1442,12 @@ impl<'a> WorkflowTableExecutor<'a> {
         })();
 
         if let Err(error) = staged {
-            self.cleanup(&staging_ids);
+            if !caller_owns_transaction { self.cleanup(run_id, &staging_ids); }
             return Err(error);
         }
         Ok(WorkflowTableStage {
+            run_id: run_id.to_string(),
+            frozen_inputs: frozen_inputs.to_vec(),
             staging_ids,
             replacements,
             runtime_outputs,
@@ -1335,7 +1458,7 @@ impl<'a> WorkflowTableExecutor<'a> {
     fn publish(&self, stage: WorkflowTableStage) -> Result<WorkflowTableExecutionResult, AppError> {
         let outputs = self.engine.replace_datasets_atomically(&stage.replacements);
         if outputs.is_err() {
-            self.cleanup(&stage.staging_ids);
+            self.cleanup(&stage.run_id, &stage.staging_ids);
         }
         Ok(WorkflowTableExecutionResult {
             outputs: outputs?,
@@ -1343,10 +1466,95 @@ impl<'a> WorkflowTableExecutor<'a> {
         })
     }
 
-    fn cleanup(&self, staging_ids: &[String]) {
-        for staging_id in staging_ids {
-            let _ = self.engine.delete_dataset(staging_id);
+    fn cleanup(&self, run_id:&str, staging_ids: &[String]) {
+        if self.engine.is_persistent_project() {
+            if self.engine.conn().execute_batch("BEGIN TRANSACTION").is_ok() {
+                let result=crate::services::project_staging::discard_staged_operation_in_transaction(self.engine,run_id);
+                let _=crate::services::table_delta_mutation::finish_transaction(self.engine,result);
+            }
+        } else {
+            for staging_id in staging_ids { let _ = self.engine.delete_dataset(staging_id); }
         }
+    }
+}
+
+impl crate::services::project_database::ProjectDatabase {
+    /// Called only with server-computed stages and packets. The receipt is the
+    /// acknowledgement; no second frontend publication is required for v5.
+    pub(crate) fn publish_project_workflow(
+        &self, context:&crate::models::project_persistence::ProjectWriteContext,
+        request:&WorkflowRunRequest, stage:&WorkflowTableStage,
+        packet:&WorkflowRunCommitPacket, folder:&str,
+    ) -> Result<crate::models::project_persistence::ProjectCommit<WorkflowRunCommitPacket>,AppError> {
+        use duckdb::{params,OptionalExt};
+        use crate::models::project_persistence::*;
+        use crate::services::project_catalog::ProjectCatalog;
+        self.commit_with_effects(context,&("run_workflow",request,folder),|engine| {
+            if packet.commit_id!=packet.run.id || packet.commit_id!=stage.run_id
+                || packet.run.workflow_id!=request.workflow.id || packet.run.workflow_revision!=request.workflow.revision
+                || packet.run.status!=WorkflowRunStatus::Succeeded {
+                return Err(AppError::InvalidParam("project_workflow_packet_invalid".into()));
+            }
+            let prefix=format!("__workflow_stage_{}_",stage.run_id.replace('-',"_"));
+            if stage.staging_ids.iter().any(|id| !id.starts_with(&prefix))
+                || stage.replacements.len()!=stage.staging_ids.len()
+                || stage.replacements.iter().any(|item| !stage.staging_ids.contains(&item.temporary_id)) {
+                return Err(AppError::InvalidParam("project_workflow_stage_owner_invalid".into()));
+            }
+            for id in &stage.staging_ids {
+                let owner:String=engine.conn().query_row("SELECT operation_id FROM _project_staging WHERE table_id=?",[id],|row| row.get(0))?;
+                if owner!=stage.run_id { return Err(AppError::InvalidParam("project_workflow_stage_owner_invalid".into())); }
+            }
+            let outputs=packet.run.output_bindings.iter().map(|binding| binding.artifact_document_id.as_str()).collect::<HashSet<_>>();
+            if stage.replacements.iter().any(|item| !outputs.contains(item.stable_id.as_str())) {
+                return Err(AppError::InvalidParam("project_workflow_output_unbound".into()));
+            }
+            for input in &stage.frozen_inputs {
+                if engine.get_dataset_generation(&input.table_document_id)?!=input.generation
+                    || engine.workflow_table_content_hash(&input.table_document_id,input.generation)?!=input.content_hash {
+                    return Err(AppError::InvalidParam("project_workflow_input_stale".into()));
+                }
+            }
+            for id in &stage.staging_ids { crate::services::project_staging::discard_staged_history_in_transaction(engine,id)?; }
+            let tables=engine.replace_datasets_atomically_in_transaction(&stage.replacements)?;
+            for id in &stage.staging_ids { engine.conn().execute("DELETE FROM _project_staging WHERE table_id=? AND operation_id=?",params![id,&stage.run_id])?; }
+            let catalog=ProjectCatalog::new(engine);
+            for meta in &tables {
+                let published:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM _project_directory WHERE id=?)",[&meta.id],|row|row.get(0))?;
+                let marker=if published {catalog.publish_table(meta,folder)?;Uuid::new_v4().to_string()}
+                    else {catalog.publish_new_table(meta,folder)?.id};
+                engine.conn().execute("INSERT INTO _project_output_events VALUES (?, ?, 'workflow', ?)",params![marker,&meta.id,meta.generation])?;
+            }
+            let mut documents=Vec::new();
+            let mut ids=HashSet::new();
+            for document in &packet.documents {
+                let (id,name,kind,body,dependencies)=match document {
+                    WorkflowDocumentCommit::Graph {id,name,document,source_table_id,..} => (id,name,ProjectDocumentKind::Graph,document.clone(),vec![source_table_id.clone()]),
+                    WorkflowDocumentCommit::Analysis {id,name,document,source_table_id,..} => (id,name,ProjectDocumentKind::Analysis,document.clone(),vec![source_table_id.clone()]),
+                    WorkflowDocumentCommit::Tabulate {id,name,document,source_table_id,..} => (id,name,ProjectDocumentKind::Tabulate,document.clone(),vec![source_table_id.clone()]),
+                    WorkflowDocumentCommit::Report {id,name,markdown,dependency_ids,..} => {
+                        if report_dependency_ids(markdown)?!=*dependency_ids { return Err(AppError::InvalidParam("project_report_dependencies_invalid".into())); }
+                        let previous: Option<String>=engine.conn().query_row("SELECT body_json FROM _project_documents WHERE id=?",[id],|r| r.get(0)).optional()?;
+                        let created=previous.and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|body| body.get("createdAt").cloned());
+                        let completed=packet.run.completed_at.as_ref().or(packet.run.started_at.as_ref()).cloned().unwrap_or_default();
+                        (id,name,ProjectDocumentKind::Report,json!({"id":id,"name":name,"schemaVersion":1,"markdown":markdown,"createdAt":created.unwrap_or_else(|| json!(packet.run.started_at.as_ref().unwrap_or(&completed))),"updatedAt":completed}),dependency_ids.iter().map(|dependency| dependency.document_id.clone()).collect())
+                    }
+                };
+                if !outputs.contains(id.as_str()) || !ids.insert(id.clone()) { return Err(AppError::InvalidParam("project_workflow_document_unbound".into())); }
+                let old:Option<u64>=engine.conn().query_row("SELECT revision FROM _project_documents WHERE id=?",[id],|r| r.get(0)).optional()?;
+                let revision=old.unwrap_or(0).checked_add(1).ok_or_else(|| AppError::InvalidParam("project_revision_exhausted".into()))?;
+                documents.push(DocumentWrite {expected_revision:old,document:ProjectDocumentBody {summary:ProjectDocumentSummary {id:id.clone(),kind,name:name.clone(),folder:folder.into(),revision,dependencies,analysis_kind:None},schema_version:1,body}});
+            }
+            for document in &documents {
+                for dependency in &document.document.summary.dependencies {
+                    let exists:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM _project_directory WHERE id=?)",[dependency],|r| r.get(0))?;
+                    if !exists && !ids.contains(dependency) { return Err(AppError::InvalidParam("project_workflow_dependency_missing".into())); }
+                }
+            }
+            catalog.apply_patch(&ProjectRecordPatch {documents,settings:vec![ProjectSettingWrite {key:format!("workflowRun:{}",packet.run.id),expected_revision:None,value:serde_json::to_value(packet).map_err(|_| AppError::InvalidParam("project_workflow_packet_invalid".into()))?}],..Default::default()})?;
+            super::project_workflow_runs::record(engine,packet)?;
+            Ok(crate::services::project_transaction::CommitEffects {value:packet.clone(),dataset_ids:tables.iter().map(|meta| meta.id.clone()).collect(),document_ids:ids.into_iter().chain(tables.iter().map(|meta| meta.id.clone())).collect(),setting_ids:vec![format!("workflowRun:{}",packet.run.id)]})
+        })
     }
 }
 
@@ -1400,6 +1608,124 @@ mod tests {
             configuration["definition"]["analysis"]["fitAll"] = serde_json::json!(fit_all);
         }
         configuration
+    }
+
+    #[cfg(feature="project-v5")]
+    #[test]
+    fn project_v5_native_workflow_table_route_rolls_back_and_publishes_once() {
+        use crate::models::project_persistence::*;
+        use crate::services::project_database::ProjectDatabase;
+        use crate::services::project_native_service::NativeProjectService;
+        use crate::services::project_catalog::ProjectCatalog;
+        let root=tempfile::tempdir().unwrap();let path=root.path().join("native-table-run.spprj");let db=ProjectDatabase::create(&path,false).unwrap();
+        let step=db.with_engine(|engine|{seed(engine,"source",&[3,1,2]);ProjectCatalog::new(engine).publish_table(&engine.get_dataset_meta("source")?,"")?;Ok(sort_step(engine,"sort","source","native-output",0,"value"))}).unwrap();
+        let definition:WorkflowDefinition=serde_json::from_value(serde_json::json!({
+            "id":"native-table-workflow","name":"Native sort workflow","formatVersion":"1","revision":1,
+            "inputSlots":[{"id":"input","name":"Source","outputPort":{"id":"input:output","name":"output","payloadKind":"table"},"schemaContract":step.definition.input_slots[0].schema_contract}],
+            "operations":[{"id":"sort","kind":"tableTransform","schemaVersion":"1","configuration":step.definition,"inputPorts":[{"id":"sort:input","name":"source","payloadKind":"table"}],"outputPorts":[{"id":"sort:output","name":"output","payloadKind":"table"}]}],
+            "edges":[{"id":"input-sort","kind":"consumes","source":{"nodeId":"input","portId":"input:output"},"target":{"nodeId":"sort","portId":"sort:input"}},{"id":"sort-output","kind":"produces","source":{"nodeId":"sort","portId":"sort:output"},"target":{"nodeId":"output","portId":"output:input"}}],
+            "outputDeclarations":[{"id":"output","name":"Sorted","inputPort":{"id":"output:input","name":"input","payloadKind":"table"},"outputPort":{"id":"output:output","name":"output","payloadKind":"table"},"sourceEndpoint":{"nodeId":"sort","portId":"sort:output"},"artifactKind":"table"}]
+        })).unwrap();
+        db.shutdown().unwrap();let state=AppState::new().unwrap();let service=NativeProjectService::new(&state);let opened=service.open(&path,false).unwrap();let live=service.database(opened.epoch).unwrap();
+        let write=ProjectWriteContext{operation_id:"definition".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),dataset_generations:vec![],document_revisions:vec![]};
+        service.commit_records(&write,&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:None,document:ProjectDocumentBody{summary:ProjectDocumentSummary{id:definition.id.clone(),kind:ProjectDocumentKind::Workflow,name:definition.name.clone(),folder:String::new(),revision:1,dependencies:vec![],analysis_kind:None},schema_version:1,body:serde_json::to_value(&definition).unwrap()}}],..Default::default()}).unwrap();
+        let request=WorkflowRunRequest{workflow:definition.clone(),input_bindings:vec![WorkflowInputBinding{slot_id:"input".into(),table_document_id:"source".into()}],output_bindings:vec![WorkflowOutputBinding{declaration_id:"output".into(),artifact_document_id:"native-output".into()}],seed:7,previous_runs:vec![]};
+        let source_generation=live.with_engine(|engine|engine.get_dataset_generation("source")).unwrap();
+        let context=ProjectWriteContext{operation_id:"native-sort".into(),expected_revision:1,dataset_generations:vec![DatasetGeneration{id:"source".into(),generation:source_generation}],document_revisions:vec![DocumentRevision{id:definition.id,revision:1}],..write};
+        crate::services::project_transaction::inject_commit_failure_for_test(1);let error=service.run_workflow(&context,&request,"").unwrap_err().to_string();assert!(error.contains("injected_before_commit"),"{error}");
+        live.with_engine(|engine|{assert!(engine.get_dataset_meta("native-output").is_err());let staged:i64=engine.conn().query_row("SELECT COUNT(*) FROM _project_staging",[],|r|r.get(0))?;assert_eq!(staged,0);Ok(())}).unwrap();
+        crate::services::project_transaction::inject_commit_failure_for_test(2);assert!(service.run_workflow(&context,&request,"").unwrap_err().to_string().contains("injected_lost_ack"));let receipt=service.run_workflow(&context,&request,"").unwrap();assert_eq!(receipt.value.run.status,crate::services::workflow_domain::WorkflowRunStatus::Succeeded);assert_eq!(receipt.committed_revision,2);
+        live.with_engine(|engine|{assert_eq!(engine.query_table("native-output",0,10,None,None)?.rows.iter().map(|r|r[1].clone()).collect::<Vec<_>>(),vec![serde_json::json!(1),serde_json::json!(2),serde_json::json!(3)]);assert_eq!(engine.list_datasets()?.len(),2);Ok(())}).unwrap();
+        let output_generation=live.with_reader(opened.epoch,|engine|engine.get_dataset_generation("native-output")).unwrap();
+        let deleted=service.delete_dataset(&ProjectWriteContext{operation_id:"retire-native-output".into(),expected_revision:live.committed_revision().unwrap(),dataset_generations:vec![DatasetGeneration{id:"native-output".into(),generation:output_generation}],document_revisions:vec![],..context.clone()},"native-output").unwrap();
+        let retired=service.run_workflow(&ProjectWriteContext{operation_id:"rerun-retired-output".into(),expected_revision:deleted.committed_revision,..context.clone()},&request,"").unwrap();
+        assert_eq!(retired.value.run.status,crate::services::workflow_domain::WorkflowRunStatus::Failed);
+        assert!(retired.value.run.errors[0].message.contains("deleted"));assert!(retired.value.documents.is_empty());
+        live.with_reader(opened.epoch,|engine|{assert!(engine.get_dataset_meta("native-output").is_err());let retained:i64=engine.conn().query_row("SELECT SUM(value) FROM dataset_native_output",[],|row|row.get(0))?;assert_eq!(retained,6);let staging:i64=engine.conn().query_row("SELECT COUNT(*) FROM _project_staging",[],|row|row.get(0))?;assert_eq!(staging,0);Ok(())}).unwrap();
+        let event=service.table_lifecycle_event(opened.epoch,&deleted.changed_history_entries[0].id).unwrap();
+        let restored=service.apply_table_lifecycle(&ProjectWriteContext{operation_id:"restore-native-output".into(),expected_revision:live.committed_revision().unwrap(),dataset_generations:vec![],document_revisions:vec![],..context.clone()},&event.id,event.revision,true).unwrap();
+        let output_revision=live.with_reader(opened.epoch,|engine|Ok(ProjectCatalog::new(engine).summary("native-output")?.revision)).unwrap();
+        let mut rerun_context=ProjectWriteContext{operation_id:"rerun-restored-output".into(),expected_revision:restored.committed_revision,..context.clone()};
+        rerun_context.document_revisions.push(DocumentRevision{id:"native-output".into(),revision:output_revision});
+        rerun_context.dataset_generations.push(DatasetGeneration{id:"native-output".into(),generation:live.with_reader(opened.epoch,|engine|engine.get_dataset_generation("native-output")).unwrap()});
+        let rerun=service.run_workflow(&rerun_context,&request,"").unwrap();assert_eq!(rerun.value.run.status,crate::services::workflow_domain::WorkflowRunStatus::Succeeded);
+        drop(live);service.close(opened.epoch).unwrap();let reopened=service.open(&path,false).unwrap();assert_eq!(service.run_workflow(&ProjectWriteContext{expected_epoch:reopened.epoch,..context},&request,"").unwrap().value.run.id,receipt.value.run.id);service.close(reopened.epoch).unwrap();
+    }
+
+    #[test]
+    fn project_v5_outputs_recovery_discards_only_owned_staging() {
+        use crate::services::project_database::ProjectDatabase;
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("staging.spprj");
+        let db=ProjectDatabase::create(&path,false).unwrap();
+        let coordinator=SaveCoordinator::new();
+        let stages=db.with_engine(|e| {
+            seed(e,"source",&[3,1,2]);
+            let generation=e.get_dataset_generation("source")?;
+            let frozen=FrozenTableInput {table_document_id:"source".into(),generation,content_hash:e.workflow_table_content_hash("source",generation)?};
+            let mut stages=Vec::new();
+            for run in ["one","two"] {
+                stages.push(WorkflowTableExecutor::new(e,&coordinator).stage(run,&[sort_step(e,run,"source",&format!("output-{run}"),0,"value")],std::slice::from_ref(&frozen))?);
+            }
+            Ok(stages)
+        }).unwrap();
+        db.shutdown().unwrap();
+        let db=ProjectDatabase::open(&path,false).unwrap();
+        db.discard_staged_operation(db.epoch(),"one").unwrap();
+        db.with_reader(db.epoch(),|e| {
+            assert!(e.get_dataset_meta(&stages[0].staging_ids[0]).is_err());
+            assert!(e.get_dataset_meta(&stages[1].staging_ids[0]).is_ok());
+            assert_eq!(e.list_datasets()?.len(),1);
+            Ok(())
+        }).unwrap();
+        db.recover_staged_operations(db.epoch()).unwrap();
+        db.with_engine(|e| {
+            assert!(e.get_dataset_meta(&stages[1].staging_ids[0]).is_err());
+            e.conn().execute("INSERT INTO _project_staging VALUES ('evil','source')",[])?;
+            Ok(())
+        }).unwrap();
+        assert!(db.recover_staged_operations(db.epoch()).is_err());
+        db.with_reader(db.epoch(),|e| { assert_eq!(e.get_dataset_meta("source")?.row_count,3); Ok(()) }).unwrap();
+    }
+
+    #[test]
+    fn project_v5_outputs_workflow_lost_ack_replays_packet_without_duplicate_tables() {
+        use crate::services::project_database::ProjectDatabase;
+        use crate::models::project_persistence::ProjectWriteContext;
+        use super::WorkflowRunCommitPacket;
+        use serde_json::json;
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("workflow.spprj");
+        let db=ProjectDatabase::create(&path,false).unwrap();
+        let coordinator=SaveCoordinator::new();
+        let stage=db.with_engine(|e| {
+            seed(e,"source",&[3,1,2]);
+            let step=sort_step(e,"sort","source","output",0,"value");
+            let generation=e.get_dataset_generation("source")?;
+            WorkflowTableExecutor::new(e,&coordinator).stage("run",&[step],&[FrozenTableInput {table_document_id:"source".into(),generation,content_hash:e.workflow_table_content_hash("source",generation)?}])
+        }).unwrap();
+        db.with_reader(db.epoch(),|e| {
+            let count:u64=e.conn().query_row("SELECT count(*) FROM _project_staging WHERE operation_id='run'",[],|r| r.get(0))?;
+            assert_eq!(count,1);
+            assert_eq!(e.list_datasets()?.len(),1,"staging tables remain internal");
+            Ok(())
+        }).unwrap();
+        let request:WorkflowRunRequest=serde_json::from_value(json!({"workflow":{"id":"workflow","name":"Workflow","formatVersion":"1","revision":1},"inputBindings":[],"outputBindings":[{"declarationId":"output","artifactDocumentId":"output"}],"seed":1})).unwrap();
+        let packet:WorkflowRunCommitPacket=serde_json::from_value(json!({"commitId":"run","documents":[],"run":{"id":"run","workflowId":"workflow","workflowRevision":1,"status":"succeeded","outputBindings":[{"declarationId":"output","artifactDocumentId":"output"}]}})).unwrap();
+        let mut context=ProjectWriteContext {operation_id:"workflow-operation".into(),expected_project_id:db.header().unwrap().project_id,expected_epoch:db.epoch(),expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
+        crate::services::project_transaction::inject_commit_failure_for_test(2);
+        assert!(db.publish_project_workflow(&context,&request,&stage,&packet,"Outputs").is_err());
+        assert_eq!(db.committed_revision().unwrap(),1);
+        db.shutdown().unwrap();
+        let db=ProjectDatabase::open(&path,false).unwrap();
+        context.expected_epoch=db.epoch();
+        let replay=db.publish_project_workflow(&context,&request,&stage,&packet,"Outputs").unwrap();
+        assert_eq!(serde_json::to_value(&replay.value).unwrap(),serde_json::to_value(&packet).unwrap());
+        db.with_reader(db.epoch(),|e| {
+            assert_eq!(e.list_datasets()?.len(),2);
+            assert!(crate::services::project_catalog::ProjectCatalog::new(e).get_setting("workflowRun:run")?.is_some());
+            Ok(())
+        }).unwrap();
     }
 
     #[test]

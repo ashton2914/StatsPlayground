@@ -142,6 +142,8 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
     listDatasets: () => datasets,
     listTableTransforms: () => tableTransforms,
     listGraphs: () => graphs,
+    listGraphsNew: () => [],
+    listWorkflows: () => [],
     listReports: () => reports,
     listAnalyses: () => analyses,
     listTabulates: () => tabulates,
@@ -303,6 +305,22 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
     handlers.listProjectDocuments({ cursor: "missing-cursor", limit: 5 }),
     (error) => error instanceof CommandExecutionError && error.code === "invalid_input",
   );
+}
+
+{
+  const { createProjectPersistenceCoordinator } = await import("../src/projectPersistence/coordinator.ts");
+  const persistence = createProjectPersistenceCoordinator({ projectId: "native", epoch: 1, committedRevision: 12,
+    now: () => 0, newOperationId: () => "native-save", setTimer: () => 1, clearTimer: () => undefined,
+    transport: async () => { throw new Error("no pending writes"); },
+  });
+  const handlers = createProjectCommandHandlers(createDeps({
+    getPersistence: () => persistence,
+    buildSaveProjectRequest: () => { throw new Error("native save must not collect archive payloads"); },
+    saveProjectCommand: async () => { throw new Error("native save must not call archive writer"); },
+  }));
+  const result = await handlers.saveProjectCommand({});
+  assert.equal(result.hasProjectPath, true);
+  assert.equal(persistence.snapshot().committedRevision, 12);
 }
 
 console.log("application command project tests passed");

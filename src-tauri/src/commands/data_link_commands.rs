@@ -29,6 +29,41 @@ fn active_imports() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     ACTIVE_IMPORTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+struct ActiveSqliteRequest {
+    id: String,
+    cancellation: Arc<AtomicBool>,
+}
+impl ActiveSqliteRequest {
+    fn register(id: &str) -> Result<Self, AppError> {
+        if id.trim().is_empty() {
+            return Err(AppError::InvalidParam(
+                "Import request ID is required".into(),
+            ));
+        }
+        let mut imports = active_imports()
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        if imports.contains_key(id) {
+            return Err(AppError::InvalidParam(format!(
+                "Duplicate import request ID: {id}"
+            )));
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        imports.insert(id.into(), Arc::clone(&cancellation));
+        Ok(Self {
+            id: id.into(),
+            cancellation,
+        })
+    }
+}
+impl Drop for ActiveSqliteRequest {
+    fn drop(&mut self) {
+        if let Ok(mut imports) = active_imports().lock() {
+            imports.remove(&self.id);
+        }
+    }
+}
+
 fn validate_selections(selections: &[SqliteImportSelection]) -> Result<(), AppError> {
     if selections.is_empty() {
         return Err(AppError::InvalidParam(
@@ -124,7 +159,8 @@ pub async fn import_server_snapshot(
     credentials: ConnectionCredentials,
     object: SourceObjectRef,
     target_name: String,
-) -> Result<ImportSummary, AppError> {
+    context: Option<crate::models::project_persistence::ProjectWriteContext>,
+) -> Result<crate::models::project_persistence::ProjectMutationResult<ImportSummary>, AppError> {
     if target_name.trim().is_empty() {
         return Err(AppError::InvalidParam(
             "Target dataset name is required".into(),
@@ -132,6 +168,12 @@ pub async fn import_server_snapshot(
     }
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        if let Some(context)=context {
+            let commit=crate::services::project_native_service::NativeProjectService::new(state.inner())
+                .import_server(&context,definition,credentials,object,&target_name,|_,_|{},||false)?;
+            if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
+            return Ok(crate::models::project_persistence::ProjectMutationResult::Committed(commit));
+        }
         let _permit = crate::commands::io_commands::acquire_mutation_permit(state.inner())?;
         IoService::new(state.inner()).import_server_snapshot(
             definition,
@@ -140,7 +182,7 @@ pub async fn import_server_snapshot(
             target_name.trim(),
             |_, _| {},
             || false,
-        )
+        ).map(crate::models::project_persistence::ProjectMutationResult::Legacy)
     })
     .await
     .map_err(|_| AppError::Database("Database import worker failed".into()))?
@@ -211,7 +253,8 @@ pub async fn import_postgres_snapshot(
     credentials: ConnectionCredentials,
     object: SourceObjectRef,
     target_name: String,
-) -> Result<ImportSummary, AppError> {
+    context: Option<crate::models::project_persistence::ProjectWriteContext>,
+) -> Result<crate::models::project_persistence::ProjectMutationResult<ImportSummary>, AppError> {
     if target_name.trim().is_empty() {
         return Err(AppError::InvalidParam(
             "PostgreSQL target dataset name is required".to_string(),
@@ -219,6 +262,12 @@ pub async fn import_postgres_snapshot(
     }
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        if let Some(context)=context {
+            let commit=crate::services::project_native_service::NativeProjectService::new(state.inner())
+                .import_server(&context,definition,credentials,object,&target_name,|_,_|{},||false)?;
+            if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
+            return Ok(crate::models::project_persistence::ProjectMutationResult::Committed(commit));
+        }
         let _permit = crate::commands::io_commands::acquire_mutation_permit(state.inner())?;
         IoService::new(state.inner()).import_postgres_snapshot(
             definition,
@@ -227,7 +276,7 @@ pub async fn import_postgres_snapshot(
             target_name.trim(),
             |_, _| {},
             || false,
-        )
+        ).map(crate::models::project_persistence::ProjectMutationResult::Legacy)
     })
     .await
     .map_err(|_| AppError::Database("PostgreSQL import worker failed".to_string()))?
@@ -267,7 +316,35 @@ pub fn import_selected_sqlite(
     file_path: String,
     request_id: String,
     selections: Vec<SqliteImportSelection>,
-) -> Result<ImportSummary, AppError> {
+    context: Option<crate::models::project_persistence::ProjectWriteContext>,
+) -> Result<crate::models::project_persistence::ProjectMutationResult<ImportSummary>, AppError> {
+    if let Some(context) = context {
+        validate_selections(&selections)?;
+        let active = ActiveSqliteRequest::register(&request_id)?;
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state)
+            .import_sqlite(
+                &context,
+                &file_path,
+                &selections,
+                |table_name, table_index, table_total, rows_done, rows_total| {
+                    let _ = app.emit(
+                        "import-progress",
+                        ImportProgress {
+                            table_name: table_name.into(),
+                            table_index,
+                            table_total,
+                            rows_done,
+                            rows_total,
+                        },
+                    );
+                },
+                || active.cancellation.load(Ordering::Relaxed),
+            )?;
+        if app.emit("project-committed", &commit).is_err() {
+            eprintln!("project_commit_event_delivery_failed");
+        }
+        return Ok(crate::models::project_persistence::ProjectMutationResult::Committed(commit));
+    }
     validate_selections(&selections)?;
 
     if request_id.trim().is_empty() {
@@ -324,7 +401,7 @@ pub fn import_selected_sqlite(
     if let Ok(mut imports) = active_imports().lock() {
         imports.remove(&request_id);
     }
-    match result {
+    let summary = match result {
         Ok(summary) => Ok(summary),
         Err(AppError::Cancelled(error)) => Ok(ImportSummary {
             status: "cancelled".to_string(),
@@ -342,7 +419,8 @@ pub fn import_selected_sqlite(
             error: Some(error.to_string()),
             total_rows_written: 0,
         }),
-    }
+    };
+    summary.map(crate::models::project_persistence::ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -366,6 +444,20 @@ mod tests {
             target_name: target_name.to_string(),
             action: "create".to_string(),
         }
+    }
+
+    #[test]
+    fn native_sqlite_cancellation_registration_is_released_for_retry() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let active = ActiveSqliteRequest::register(&id).unwrap();
+        assert!(ActiveSqliteRequest::register(&id).is_err());
+        cancel_sqlite_import(id.clone()).unwrap();
+        assert!(active.cancellation.load(Ordering::Relaxed));
+        drop(active);
+        let retry = ActiveSqliteRequest::register(&id).unwrap();
+        assert!(!retry.cancellation.load(Ordering::Relaxed));
+        drop(retry);
+        assert!(!active_imports().lock().unwrap().contains_key(&id));
     }
 
     #[test]

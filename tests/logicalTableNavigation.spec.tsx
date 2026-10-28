@@ -710,3 +710,17 @@ test("runtime table diagnostics include transport and cache fields", async ({ mo
   await expect.poll(async () => (await diagnostics.textContent()) ?? "").toContain('"estimatedBytes"');
   await expect.poll(async () => (await diagnostics.textContent()) ?? "").toContain('"entryCount"');
 });
+
+test("neighbor prefetch leaves the newly visible foreground window a quiet interval",async({mount,page})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000}/>);
+ await expect(component.locator('td[data-row="0"][data-col="0"]')).toContainText("row-1-");
+ await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+200));
+ await component.getByTestId("reset-navigation-telemetry").click();
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A8001");await reference.press("Enter");
+ await page.clock.runFor(180);
+ await expect(component.locator('td[data-row="8000"][data-col="0"]')).toContainText("row-8001-");
+ const read=async()=>parseNavigationObservations(await component.getByTestId("nav-request-observations").textContent());
+ expect((await read()).filter(r=>r.kind==="prefetch"&&r.start>=8000)).toEqual([]);
+ await page.clock.runFor(350);
+ expect((await read()).some(r=>r.kind==="prefetch"&&r.start>=8000)).toBe(true);
+});

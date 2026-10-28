@@ -9,6 +9,7 @@ pub mod graph_new_data;
 pub mod hypothesis_test;
 pub mod mcp;
 pub mod project;
+pub mod project_persistence;
 pub mod save;
 pub mod stats;
 pub mod table;

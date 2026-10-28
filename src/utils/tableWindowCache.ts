@@ -85,6 +85,16 @@ function estimateRetainedBytes(result: TableWindowResult): number {
   return estimateValueBytes(result, new Set<object>());
 }
 
+/** Keep ordinary pages large, but avoid multi-megabyte transfers for wide/string rows.
+ * This sampling is a page-size hint; cache admission still measures the full payload. */
+export function tableWindowPageSize(rows: readonly unknown[][]): number {
+  let rowBytes = 0;
+  for (const row of rows.slice(0, 8)) {
+    rowBytes = Math.max(rowBytes, estimateValueBytes(row, new Set<object>()));
+  }
+  return rowBytes === 0 ? 500 : Math.max(64, Math.min(500, Math.floor(1024 * 1024 / rowBytes)));
+}
+
 export class TableWindowCache {
   private readonly entries = new Map<string, CacheEntry>();
   private readonly maxRows: number;
@@ -134,10 +144,11 @@ export class TableWindowCache {
       return false;
     }
 
+    const estimatedBytes = estimateRetainedBytes(result);
+    if (estimatedBytes > this.maxBytes) return false;
     this.invalidateGeneration(request.datasetId, request.generation);
 
     const key = buildEntryKey(request);
-    const estimatedBytes = estimateRetainedBytes(result);
     const previous = this.entries.get(key);
     if (previous) {
       this.removeEntry(previous.key);
@@ -155,7 +166,7 @@ export class TableWindowCache {
     this.rowCount += result.rows.length;
     this.byteCount += estimatedBytes;
     this.evictLeastRecentlyUsed();
-    return true;
+    return this.entries.has(key);
   }
 
   get(request: TableWindowCacheRequest): TableWindowResult | undefined {

@@ -1,3 +1,4 @@
+pub(crate) use crate::services::project_cell_mutation::update_cells_compact_in_transaction;
 use duckdb::types::Value;
 use duckdb::{params, params_from_iter, OptionalExt};
 
@@ -89,6 +90,165 @@ fn measure_mutation_stage<T>(stage: MutationPerfStage, run: impl FnOnce() -> T) 
     }
 }
 
+pub(crate) fn rename_column_compact_in_transaction(
+    engine:&DuckDbEngine,dataset_id:&str,old_name:&str,new_name:&str,expected_generation:u64,
+)->Result<String,AppError> {
+    validate_generation(engine,dataset_id,expected_generation)?;
+    let existing=engine.get_user_column_descriptors(dataset_id)?;
+    let column=existing.iter().find(|column|column.name==old_name).ok_or_else(||AppError::InvalidParam(format!("unknown column: {old_name}")))?;
+    if new_name.trim().is_empty()||new_name.eq_ignore_ascii_case("_row_id")||new_name.eq_ignore_ascii_case("_row_order")||old_name==new_name||existing.iter().any(|other|other.column_id!=column.column_id&&other.name.eq_ignore_ascii_case(new_name)) {return Err(AppError::InvalidParam("column name is empty, reserved, unchanged or already exists".into()));}
+    let id=uuid::Uuid::new_v4().to_string();let before=capture_history_schema(engine,dataset_id)?;
+    engine.rename_column_inner(dataset_id,old_name,new_name)?;
+    let after=capture_history_schema(engine,dataset_id)?;let columns=vec![UserColumnDescriptor {name:new_name.into(),..column.clone()}];
+    let archived=archived_column_definitions(engine,dataset_id,&columns)?;let next=next_generation(expected_generation)?;
+    record_column_delta_change_set(engine,&id,dataset_id,"rename_column",expected_generation,next,None,&columns,&archived,&before,&after)?;
+    copy_unchanged_anchors(engine,dataset_id,expected_generation,next)?;publish_generation(engine,dataset_id,next)?;
+    Ok(id)
+}
+
+fn replay_column_rename(engine:&DuckDbEngine,dataset:&str,id:&str,undo:bool)->Result<(),AppError> {
+    use crate::services::table_history_archive::HistorySchemaColumn;
+    let (before,after):(String,String)=engine.conn().query_row("SELECT before_schema_json,after_schema_json FROM _history_timeline WHERE change_set_id=? AND dataset_id=?",params![id,dataset],|row|Ok((row.get(0)?,row.get(1)?)))?;
+    let source:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&after} else {&before}).map_err(|error|AppError::Database(error.to_string()))?;
+    let target:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&before} else {&after}).map_err(|error|AppError::Database(error.to_string()))?;
+    let current:Vec<HistorySchemaColumn>=serde_json::from_str(&capture_history_schema(engine,dataset)?).map_err(|error|AppError::Database(error.to_string()))?;
+    if current!=source||source.len()!=target.len() {return Err(AppError::Database("column rename history does not match current schema".into()));}
+    let mut changed=0;
+    for (from,to) in source.iter().zip(&target) {
+        if from.column_id!=to.column_id||from.col_index!=to.col_index||from.duckdb_type!=to.duckdb_type||from.calculated_definition_json!=to.calculated_definition_json {return Err(AppError::Database("column rename changed unrelated metadata".into()));}
+        if from.name!=to.name {changed+=1;engine.rename_column_inner(dataset,&from.name,&to.name)?;}
+    }
+    if changed!=1 {return Err(AppError::Database("column rename must change exactly one column".into()));}Ok(())
+}
+
+pub(crate) fn promote_empty_column_in_transaction(
+    engine: &DuckDbEngine, dataset: &str, column_id: &str, sql_type: &str, expected: u64,
+) -> Result<String,AppError> {
+    validate_generation(engine,dataset,expected)?;
+    let column=engine.get_user_column_descriptors(dataset)?.into_iter().find(|c|c.column_id==column_id).ok_or_else(||AppError::InvalidParam("unknown column".into()))?;
+    engine.reject_calculated_column_writes(dataset,[column.name.as_str()])?;
+    let sql_type=engine.canonicalize_column_type_for_create(sql_type)?;
+    let table=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset));
+    let name=DuckDbEngine::quote_identifier(&column.name);
+    let has_data:bool=engine.conn().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {name} IS NOT NULL)"),[],|r|r.get(0))?;
+    if has_data||column.sql_type==sql_type {return Err(AppError::InvalidParam("empty_column_type_precondition_failed".into()));}
+    let before=capture_history_schema(engine,dataset)?;
+    engine.change_column_type_inner(dataset,&column.name,&sql_type)?;
+    crate::services::table_mutation_coordinator::validate_materialized_formula_types(engine,dataset)?;
+    let after=capture_history_schema(engine,dataset)?;
+    let changed=vec![UserColumnDescriptor {sql_type,..column}];
+    let archived=archived_column_definitions(engine,dataset,&changed)?;
+    let next=next_generation(expected)?;let id=uuid::Uuid::new_v4().to_string();
+    record_column_delta_change_set(engine,&id,dataset,"empty_column_type",expected,next,None,&changed,&archived,&before,&after)?;
+    copy_unchanged_anchors(engine,dataset,expected,next)?;publish_generation(engine,dataset,next)?;
+    Ok(id)
+}
+
+fn replay_empty_column_type(engine:&DuckDbEngine,dataset:&str,id:&str,undo:bool)->Result<(),AppError> {
+    use crate::services::table_history_archive::HistorySchemaColumn;
+    let (before,after):(String,String)=engine.conn().query_row("SELECT before_schema_json,after_schema_json FROM _history_timeline WHERE change_set_id=? AND dataset_id=?",params![id,dataset],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let source:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&after} else {&before}).map_err(|e|AppError::Database(e.to_string()))?;
+    let target:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&before} else {&after}).map_err(|e|AppError::Database(e.to_string()))?;
+    let current:Vec<HistorySchemaColumn>=serde_json::from_str(&capture_history_schema(engine,dataset)?).map_err(|e|AppError::Database(e.to_string()))?;
+    if current!=source||source.len()!=target.len() {return Err(AppError::Database("empty column type history does not match current schema".into()));}
+    let mut changed=0;
+    for (from,to) in source.iter().zip(&target) {
+        if from.column_id!=to.column_id||from.col_index!=to.col_index||from.name!=to.name||from.calculated_definition_json!=to.calculated_definition_json {return Err(AppError::Database("empty column type changed unrelated metadata".into()));}
+        if from.duckdb_type==to.duckdb_type {continue;}
+        changed+=1;
+        if from.calculated_definition_json.is_some() {return Err(AppError::Database("empty column type cannot change calculated output".into()));}
+        let sql_type=engine.canonicalize_column_type_for_create(&to.duckdb_type)?;
+        let table=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset));
+        let name=DuckDbEngine::quote_identifier(&from.name);
+        // The original column was entirely NULL. Undo uses ALTER's expression so
+        // no row UPDATE precedes subsequent schema changes in this transaction.
+        engine.conn().execute_batch(&format!("ALTER TABLE {table} ALTER COLUMN {name} SET DATA TYPE {sql_type} USING NULL::{sql_type}"))?;
+        engine.conn().execute("UPDATE _meta_columns SET col_type=? WHERE dataset_id=? AND column_id=?",params![&sql_type,dataset,&to.column_id])?;
+    }
+    if changed!=1 {return Err(AppError::Database("empty column type must change one column".into()));}
+    crate::services::table_mutation_coordinator::validate_materialized_formula_types(engine,dataset)
+}
+
+pub(crate) fn convert_calculated_compact_in_transaction(
+    engine:&DuckDbEngine,dataset_id:&str,column_id:&str,expected_generation:u64,
+)->Result<crate::models::calculated_column::CalculatedColumnMutationResult,AppError> {
+    validate_generation(engine,dataset_id,expected_generation)?;
+    let descriptor=engine.get_table_column_descriptors(dataset_id)?.into_iter().find(|column|column.column_id==column_id).and_then(|column|column.calculated).ok_or_else(||AppError::InvalidParam(format!("unknown calculated column id: {column_id}")))?;
+    let column=engine.get_user_column_descriptors(dataset_id)?.into_iter().find(|column|column.column_id==column_id).ok_or_else(||AppError::InvalidParam("unknown calculated column".into()))?;
+    let columns=vec![column];let archived=archived_column_definitions(engine,dataset_id,&columns)?;
+    let before=capture_history_schema(engine,dataset_id)?;
+    if !engine.delete_calculated_metadata_by_formula_id(dataset_id,&descriptor.formula_id)? {return Err(AppError::InvalidParam("unknown calculated formula".into()));}
+    let after=capture_history_schema(engine,dataset_id)?;
+    let next=next_generation(expected_generation)?;let id=uuid::Uuid::new_v4().to_string();
+    record_column_delta_change_set(engine,&id,dataset_id,"convert_calculated",expected_generation,next,None,&columns,&archived,&before,&after)?;
+    copy_unchanged_anchors(engine,dataset_id,expected_generation,next)?;
+    publish_generation(engine,dataset_id,next)?;
+    Ok(crate::models::calculated_column::CalculatedColumnMutationResult {column_id:column_id.into(),dataset_generation:next,change_set_id:id,calculated:None,diagnostics:vec![],warning_count:Default::default()})
+}
+
+fn replay_calculated_conversion(engine:&DuckDbEngine,dataset:&str,id:&str,undo:bool)->Result<(),AppError> {
+    use crate::services::table_history_archive::HistorySchemaColumn;
+    let (before,after):(String,String)=engine.conn().query_row("SELECT before_schema_json,after_schema_json FROM _history_timeline WHERE change_set_id=? AND dataset_id=?",params![id,dataset],|row|Ok((row.get(0)?,row.get(1)?)))?;
+    let source:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&after} else {&before}).map_err(|error|AppError::Database(error.to_string()))?;
+    let target:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&before} else {&after}).map_err(|error|AppError::Database(error.to_string()))?;
+    let current:Vec<HistorySchemaColumn>=serde_json::from_str(&capture_history_schema(engine,dataset)?).map_err(|error|AppError::Database(error.to_string()))?;
+    if current!=source||source.len()!=target.len() {return Err(AppError::Database("calculated conversion history does not match current schema".into()));}
+    let mut changed=0;
+    for (from,to) in source.iter().zip(&target) {
+        if from.column_id!=to.column_id||from.col_index!=to.col_index||from.name!=to.name||from.duckdb_type!=to.duckdb_type {return Err(AppError::Database("calculated conversion changed physical columns".into()));}
+        if from.calculated_definition_json==to.calculated_definition_json {continue;}
+        changed+=1;
+        match to.calculated_definition_json.as_deref() {
+            Some(value)=> {if from.calculated_definition_json.is_some() {return Err(AppError::Database("calculated conversion has invalid metadata transition".into()));}let archived:ArchivedCalculatedColumn=serde_json::from_str(value).map_err(|error|AppError::Database(error.to_string()))?;engine.upsert_archived_calculated_column(dataset,&to.column_id,&archived)?;},
+            None=> {engine.conn().execute("DELETE FROM _meta_calculated_columns WHERE dataset_id=? AND column_id=?",params![dataset,&to.column_id])?;}
+        }
+    }
+    if changed!=1 {return Err(AppError::Database("calculated conversion must change exactly one column".into()));}
+    Ok(())
+}
+
+pub(crate) fn reorder_columns_compact_in_transaction(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    from: i32,
+    to: i32,
+    expected_generation: u64,
+) -> Result<u64,AppError> {
+    validate_generation(engine,dataset_id,expected_generation)?;
+    let count=i32::try_from(engine.get_user_column_descriptors(dataset_id)?.len()).map_err(|_|AppError::InvalidParam("column count is too large".into()))?;
+    if count==0 {return Err(AppError::InvalidParam("dataset has no user columns".into()));}
+    let from=from.clamp(0,count-1);let to=to.clamp(0,count-1);
+    if from==to {return Err(AppError::InvalidParam("column reorder has no effect".into()));}
+    let before=capture_history_schema(engine,dataset_id)?;
+    engine.reorder_column_inner(dataset_id,from,to)?;
+    let after=capture_history_schema(engine,dataset_id)?;
+    let columns=engine.get_user_column_descriptors(dataset_id)?;
+    let archived=archived_column_definitions(engine,dataset_id,&columns)?;
+    let next=next_generation(expected_generation)?;
+    let id=uuid::Uuid::new_v4().to_string();
+    record_column_delta_change_set(engine,&id,dataset_id,"reorder_columns",expected_generation,next,None,&columns,&archived,&before,&after)?;
+    copy_unchanged_anchors(engine,dataset_id,expected_generation,next)?;
+    publish_generation(engine,dataset_id,next)?;
+    Ok(next)
+}
+
+fn replay_column_order(engine: &DuckDbEngine,dataset: &str,id: &str,undo: bool) -> Result<(),AppError> {
+    use crate::services::table_history_archive::HistorySchemaColumn;
+    let (before,after):(String,String)=engine.conn().query_row("SELECT before_schema_json,after_schema_json FROM _history_timeline WHERE change_set_id=? AND dataset_id=?",params![id,dataset],|row|Ok((row.get(0)?,row.get(1)?)))?;
+    let source:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&after} else {&before}).map_err(|_|AppError::Database("column order history is invalid".into()))?;
+    let target:Vec<HistorySchemaColumn>=serde_json::from_str(if undo {&before} else {&after}).map_err(|_|AppError::Database("column order history is invalid".into()))?;
+    let current=engine.get_user_column_descriptors(dataset)?;
+    let valid=source.len()==current.len()&&target.len()==current.len()&&source.iter().zip(&current).all(|(old,column)|old.column_id==column.column_id&&old.col_index==column.col_index&&old.name==column.name&&old.duckdb_type==column.sql_type);
+    let mut ids=std::collections::HashSet::new();
+    if !valid||target.iter().enumerate().any(|(index,column)|column.col_index!=index as i32||!ids.insert(&column.column_id)||!current.iter().any(|old|old.column_id==column.column_id&&old.name==column.name&&old.sql_type==column.duckdb_type)) {
+        return Err(AppError::Database("column order history does not match the current schema".into()));
+    }
+    let count=i32::try_from(current.len()).map_err(|_|AppError::Database("column order history is too large".into()))?;
+    engine.conn().execute("UPDATE _meta_columns SET col_index=col_index+? WHERE dataset_id=?",params![count+1000,dataset])?;
+    for column in target {engine.conn().execute("UPDATE _meta_columns SET col_index=? WHERE dataset_id=? AND column_id=?",params![column.col_index,dataset,column.column_id])?;}
+    Ok(())
+}
+
 pub(crate) fn add_columns_compact(
     engine: &DuckDbEngine,
     dataset_id: &str,
@@ -96,8 +256,25 @@ pub(crate) fn add_columns_compact(
     at_index: i32,
     expected_generation: u64,
 ) -> Result<ColumnMutationResult, AppError> {
-    let columns = validate_added_columns(engine, dataset_id, columns, at_index)?;
     engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result = add_columns_compact_in_transaction(
+        engine,
+        dataset_id,
+        columns,
+        at_index,
+        expected_generation,
+    );
+    finish_transaction(engine, result)
+}
+
+pub(crate) fn add_columns_compact_in_transaction(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    columns: &[UserColumnDescriptor],
+    at_index: i32,
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
+    let columns = validate_added_columns(engine, dataset_id, columns, at_index)?;
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
@@ -178,10 +355,67 @@ pub(crate) fn add_columns_compact(
             change_set_id,
         })
     })();
-    finish_transaction(engine, result)
+    result
+}
+
+/// Save only newly computed columns; the caller owns transaction and receipt publication.
+pub(crate) fn add_valued_columns_compact_in_transaction(
+    engine: &DuckDbEngine, dataset_id: &str,
+    columns: &[crate::engine::duckdb_engine::ValuedColumn], expected_generation: u64,
+) -> Result<(String, u64), AppError> {
+    if columns.is_empty() || columns.len() > MAX_MUTATED_COLUMNS {
+        return Err(AppError::InvalidParam("invalid valued column count".into()));
+    }
+    let names=engine.resolve_valued_column_names(dataset_id,&columns.iter().map(|column|column.name.clone()).collect::<Vec<_>>())?;
+    let first=engine.get_user_column_descriptors(dataset_id)?.len() as i32;
+    let descriptors=columns.iter().zip(names).enumerate().map(|(ordinal,(column,name))| {
+        let mut rows=std::collections::HashSet::new();
+        if column.values.iter().any(|(id,value)|!rows.insert(*id)||value.is_some_and(|v|!v.is_finite())) {
+            return Err(AppError::InvalidParam("valued columns contain duplicate row IDs or invalid values".into()));
+        }
+        Ok(UserColumnDescriptor{column_id:uuid::Uuid::new_v4().to_string(),col_index:first+ordinal as i32,name,sql_type:engine.canonicalize_column_type_for_create(&column.column_type)?})
+    }).collect::<Result<Vec<_>,AppError>>()?;
+    // Complete schema changes before any row writes (DuckDB cannot commit the reverse order).
+    let result=add_columns_compact_in_transaction(engine,dataset_id,&descriptors,first,expected_generation)?;
+    let table=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    let staging_name=format!("_valued_staging_{}",uuid::Uuid::new_v4().simple());
+    let staging=DuckDbEngine::quote_identifier(&staging_name);
+    engine.conn().execute(&format!("CREATE TABLE {staging} (_row_id BIGINT, value DOUBLE)"),[])?;
+    for (column,descriptor) in columns.iter().zip(&descriptors) {
+        {
+            let mut appender=engine.conn().appender(&staging_name)?;
+            for (row,value) in &column.values {
+                appender.append_row(duckdb::appender_params_from_iter([Value::BigInt(i64::try_from(*row).map_err(|_|AppError::InvalidParam("valued column row ID exceeds BIGINT".into()))?),value.map(Value::Double).unwrap_or(Value::Null)]))?;
+            }
+            appender.flush()?;
+        }
+        let missing:bool=engine.conn().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {staging} s ANTI JOIN {table} t ON s._row_id=t._row_id)"),[],|row|row.get(0))?;
+        if missing {return Err(AppError::InvalidParam("valued column references unknown row ID".into()));}
+        engine.conn().execute(&format!("UPDATE {table} AS t SET {}=s.value FROM {staging} s WHERE t._row_id=s._row_id",DuckDbEngine::quote_identifier(&descriptor.name)),[])?;
+        engine.conn().execute(&format!("DELETE FROM {staging}"),[])?;
+    }
+    engine.conn().execute(&format!("DROP TABLE {staging}"),[])?;
+    let snapshot_name=format!("_history_columns_{}",uuid::Uuid::parse_str(&result.change_set_id).map_err(|e|AppError::Database(e.to_string()))?.simple());
+    let projection=descriptors.iter().map(|column|DuckDbEngine::quote_identifier(&column.name)).collect::<Vec<_>>().join(", ");
+    engine.conn().execute(&format!("CREATE TABLE {} AS SELECT _row_id,{projection} FROM {table}",DuckDbEngine::quote_identifier(&snapshot_name)),[])?;
+    engine.conn().execute("UPDATE _history_delta_change_sets SET snapshot_table=?,operation='add_valued_columns' WHERE id=?",params![snapshot_name,&result.change_set_id])?;
+    engine.conn().execute("UPDATE _history_timeline SET operation='add_valued_columns' WHERE change_set_id=?",[&result.change_set_id])?;
+    Ok((result.change_set_id,result.generation))
 }
 
 pub(crate) fn delete_columns_compact(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    columns: &[UserColumnDescriptor],
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
+    engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result =
+        delete_columns_compact_in_transaction(engine, dataset_id, columns, expected_generation);
+    finish_transaction(engine, result)
+}
+
+pub(crate) fn delete_columns_compact_in_transaction(
     engine: &DuckDbEngine,
     dataset_id: &str,
     columns: &[UserColumnDescriptor],
@@ -194,7 +428,6 @@ pub(crate) fn delete_columns_compact(
     )?;
     let archived = archived_column_definitions(engine, dataset_id, &columns)?;
 
-    engine.conn().execute_batch("BEGIN TRANSACTION")?;
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
@@ -267,17 +500,27 @@ pub(crate) fn delete_columns_compact(
             change_set_id,
         })
     })();
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn apply_column_delta_change_set(
+    engine: &DuckDbEngine,
+    change_set_id: &str,
+    undo: bool,
+) -> Result<(), AppError> {
+    engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result = apply_column_delta_change_set_in_transaction(engine, change_set_id, undo);
     finish_transaction(engine, result)
 }
 
-pub(crate) fn apply_column_delta_change_set(
+pub(crate) fn apply_column_delta_change_set_in_transaction(
     engine: &DuckDbEngine,
     change_set_id: &str,
     undo: bool,
 ) -> Result<(), AppError> {
     let parsed_id = uuid::Uuid::parse_str(change_set_id)
         .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
-    engine.conn().execute_batch("BEGIN TRANSACTION")?;
     let result = (|| {
         let (dataset_id, operation, before_generation, after_generation, snapshot_table, applied):
             (String, String, u64, u64, Option<String>, bool) = engine.conn().query_row(
@@ -310,6 +553,15 @@ pub(crate) fn apply_column_delta_change_set(
         };
         validate_generation(engine, &dataset_id, expected_generation)?;
         let target_generation = next_generation(expected_generation)?;
+        if operation == "empty_column_type" {
+            replay_empty_column_type(engine,&dataset_id,change_set_id,undo)?;
+        } else if operation == "rename_column" {
+            replay_column_rename(engine,&dataset_id,change_set_id,undo)?;
+        } else if operation == "convert_calculated" {
+            replay_calculated_conversion(engine,&dataset_id,change_set_id,undo)?;
+        } else if operation == "reorder_columns" {
+            replay_column_order(engine,&dataset_id,change_set_id,undo)?;
+        } else {
         let (columns, archived) = load_column_deltas(engine, change_set_id)?;
         if columns.is_empty() {
             return Err(AppError::Database(
@@ -318,7 +570,7 @@ pub(crate) fn apply_column_delta_change_set(
         }
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
         let deleting =
-            (operation == "add_columns" && undo) || (operation == "delete_columns" && !undo);
+            (matches!(operation.as_str(),"add_columns"|"add_valued_columns") && undo) || (operation == "delete_columns" && !undo);
         if deleting {
             drop_columns(engine, &dataset_id, &table, &columns)?;
             updated_column_count(
@@ -335,7 +587,7 @@ pub(crate) fn apply_column_delta_change_set(
                 i64::try_from(columns.len())
                     .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
             )?;
-            if operation == "delete_columns" {
+            if matches!(operation.as_str(),"delete_columns"|"add_valued_columns") {
                 let snapshot_name = snapshot_table.ok_or_else(|| {
                     AppError::Database("deleted-column change set is missing its snapshot".into())
                 })?;
@@ -348,10 +600,11 @@ pub(crate) fn apply_column_delta_change_set(
                 restore_column_values(engine, &table, &snapshot_name, &columns)?;
             }
         }
-        if operation != "add_columns" && operation != "delete_columns" {
+        if !matches!(operation.as_str(),"add_columns"|"add_valued_columns"|"delete_columns") {
             return Err(AppError::Database(format!(
                 "unknown column delta operation: {operation}"
             )));
+        }
         }
         copy_unchanged_anchors(engine, &dataset_id, expected_generation, target_generation)?;
         publish_generation(engine, &dataset_id, target_generation)?;
@@ -377,7 +630,7 @@ pub(crate) fn apply_column_delta_change_set(
         advance_history_timeline(engine, &dataset_id, change_set_id, !undo, target_generation)?;
         Ok(())
     })();
-    finish_transaction(engine, result)
+    result
 }
 
 fn validate_added_columns(
@@ -798,12 +1051,29 @@ pub(crate) fn add_rows_compact(
     before_row_id: Option<i64>,
     expected_generation: u64,
 ) -> Result<RowMutationResult, AppError> {
+    engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result = add_rows_compact_in_transaction(
+        engine,
+        dataset_id,
+        count,
+        before_row_id,
+        expected_generation,
+    );
+    finish_transaction(engine, result)
+}
+
+pub(crate) fn add_rows_compact_in_transaction(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    count: usize,
+    before_row_id: Option<i64>,
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
     if count == 0 || count > MAX_ADDED_ROWS {
         return Err(AppError::InvalidParam(format!(
             "row count must be between 1 and {MAX_ADDED_ROWS}"
         )));
     }
-    engine.conn().execute_batch("BEGIN TRANSACTION")?;
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
@@ -832,6 +1102,7 @@ pub(crate) fn add_rows_compact(
                 Ok(inserted)
             },
         )?;
+        crate::services::table_mutation_coordinator::materialize_added_rows(engine,dataset_id,&inserted.iter().map(|row|row.0).collect::<Vec<_>>())?;
         let row_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
             updated_row_count(engine, dataset_id, count as i64)
         })?;
@@ -885,10 +1156,22 @@ pub(crate) fn add_rows_compact(
             change_set_id,
         })
     })();
-    finish_transaction(engine, result)
+    result
 }
 
 pub(crate) fn delete_rows_compact(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    row_ids: &[i64],
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
+    engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result =
+        delete_rows_compact_in_transaction(engine, dataset_id, row_ids, expected_generation);
+    finish_transaction(engine, result)
+}
+
+pub(crate) fn delete_rows_compact_in_transaction(
     engine: &DuckDbEngine,
     dataset_id: &str,
     row_ids: &[i64],
@@ -907,7 +1190,6 @@ pub(crate) fn delete_rows_compact(
             "row IDs must be unique positive integers".into(),
         ));
     }
-    engine.conn().execute_batch("BEGIN TRANSACTION")?;
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
@@ -991,15 +1273,25 @@ pub(crate) fn delete_rows_compact(
             change_set_id,
         })
     })();
-    finish_transaction(engine, result)
+    result
 }
 
+#[cfg(test)]
 pub(crate) fn apply_row_delta_change_set(
     engine: &DuckDbEngine,
     change_set_id: &str,
     undo: bool,
 ) -> Result<(), AppError> {
     engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result = apply_row_delta_change_set_in_transaction(engine, change_set_id, undo);
+    finish_transaction(engine, result)
+}
+
+pub(crate) fn apply_row_delta_change_set_in_transaction(
+    engine: &DuckDbEngine,
+    change_set_id: &str,
+    undo: bool,
+) -> Result<(), AppError> {
     let result = (|| {
         let (dataset_id, operation, before_generation, after_generation, snapshot_table, applied):
             (String, String, u64, u64, Option<String>, bool) = engine.conn().query_row(
@@ -1095,6 +1387,7 @@ pub(crate) fn apply_row_delta_change_set(
         } else if operation == "add_rows" {
             apply_rebalance_delta(engine, &table, &rebalance_delta, true)?;
             insert_added_rows(engine, &table, &rows)?;
+            crate::services::table_mutation_coordinator::materialize_added_rows(engine,&dataset_id,&rows.iter().map(|row|row.1).collect::<Vec<_>>())?;
             updated_row_count(
                 engine,
                 &dataset_id,
@@ -1185,7 +1478,7 @@ pub(crate) fn apply_row_delta_change_set(
         advance_history_timeline(engine, &dataset_id, change_set_id, !undo, target_generation)?;
         Ok(())
     })();
-    finish_transaction(engine, result)
+    result
 }
 
 fn validate_generation(
@@ -1413,7 +1706,7 @@ fn apply_rebalance_delta(
     Ok(())
 }
 
-fn finish_transaction<T>(
+pub(crate) fn finish_transaction<T>(
     engine: &DuckDbEngine,
     result: Result<T, AppError>,
 ) -> Result<T, AppError> {
@@ -2451,10 +2744,10 @@ mod tests {
             .next()
             .expect("production source");
         let deletion = production
-            .split("pub(crate) fn delete_rows_compact")
+            .split("pub(crate) fn delete_rows_compact_in_transaction(")
             .nth(1)
             .expect("compact delete")
-            .split("pub(crate) fn apply_row_delta_change_set")
+            .split("pub(crate) fn apply_row_delta_change_set(")
             .next()
             .expect("compact delete section");
 
@@ -2498,10 +2791,10 @@ mod tests {
             .next()
             .expect("production source");
         let addition = production
-            .split("pub(crate) fn add_rows_compact")
+            .split("pub(crate) fn add_rows_compact_in_transaction(")
             .nth(1)
             .expect("compact add")
-            .split("pub(crate) fn delete_rows_compact")
+            .split("pub(crate) fn delete_rows_compact_in_transaction(")
             .next()
             .expect("compact add section");
         assert!(!addition.to_ascii_lowercase().contains("max(\"_row_id\")"));

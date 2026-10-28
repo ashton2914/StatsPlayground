@@ -1,3 +1,4 @@
+import {invokeProjectExport} from "@/projectPersistence/exportRead";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
@@ -17,6 +18,9 @@ import type {
   WorkflowRunRequest,
   WorkflowRun,
 } from "@/types/workflow";
+
+import type { ProjectOperation } from "@/projectPersistence/coordinator";
+import type { ProjectCommit, ProjectWriteContext, ProjectOpenSummary, ProjectSettingRecord, CatalogPageRequest, CatalogPage, ProjectDocumentBody, HistoryPageRequest, ProjectHistoryPage, ProjectPersistenceStatus } from "@/types/projectPersistence";
 
 /** Optional folder payload accepted by the save_project command.
  *  Folder maps are manifest metadata now; they are not used to route archive
@@ -91,6 +95,33 @@ export interface SaveProgress {
 }
 
 export const projectService = {
+  preflightProjectMigration: (sourcePath:string,destinationPath?:string)=>invoke<import("@/projectPersistence/openWithMigration").ProjectMigrationPreflight>("preflight_project_migration",{sourcePath,destinationPath:destinationPath??null}),
+  cancelProjectMigration: (migrationId:string)=>invoke<boolean>("cancel_project_migration",{migrationId}),
+  checkpointProjectV5: (epoch:number,expectedRevision:number)=>invoke<boolean>("checkpoint_project_v5",{epoch,expectedRevision}),
+  projectV5Enabled: () => invoke<boolean>("project_v5_enabled"),
+  createProjectDraftV5: () => invoke<ProjectOpenSummary>("create_project_draft_v5"),
+  closeProjectV5: (epoch:number) => invoke<void>("close_project_v5",{epoch}),
+  listRecoverableProjectDrafts: () => invoke<Array<{projectId:string;displayName:string;recoveryId:string}>>("list_recoverable_project_drafts"),
+  recoverProjectDraftV5: (recoveryId:string) => invoke<ProjectOpenSummary>("recover_project_draft_v5",{recoveryId}),
+  snapshotProjectV5: (epoch:number,filePath:string,firstNaming:boolean) => invoke<{active:ProjectOpenSummary|null;error:string|null;destinationPublished:boolean}>("snapshot_project_v5",{epoch,filePath,firstNaming}),
+  openProjectV5: (filePath: string, readOnly = false) => invoke<ProjectOpenSummary>("open_project_v5", { filePath, readOnly }),
+  listProjectCatalog: (epoch: number, request: CatalogPageRequest) => invoke<CatalogPage>("list_project_catalog", { epoch, request }),
+  getProjectSetting: (epoch: number,key: string) => invoke<ProjectSettingRecord|null>("get_project_setting",{epoch,key}),
+  getProjectDocument: (epoch: number, id: string, expectedRevision: number) => invoke<ProjectDocumentBody>("get_project_document", { epoch, id, expectedRevision }),
+  listProjectHistory: (epoch: number, request: HistoryPageRequest) => invoke<ProjectHistoryPage>("list_project_history", { epoch, request }),
+  getHistoryFrontier: (epoch:number,undo:boolean)=>invoke<import("@/types/projectPersistence").ProjectHistoryFrontier>("get_project_history_frontier",{epoch,undo}),
+  getTableLifecycleEvent: (epoch:number,eventId:string)=>invoke<import("@/types/projectPersistence").ProjectTableLifecycleEvent>("get_project_table_lifecycle_event",{epoch,eventId}),
+  getProjectPersistenceStatus: (epoch: number) => invoke<ProjectPersistenceStatus>("get_project_persistence_status", { epoch }),
+  commitOperation: <T>(operation: ProjectOperation<T>, context: ProjectWriteContext): Promise<ProjectCommit<T>> => {
+    if (!operation.payload || typeof operation.payload !== "object" || Array.isArray(operation.payload)) {
+      return Promise.reject(new Error("Invalid project operation payload"));
+    }
+    const args = operation.command === "commit_project_records"
+      ? { patch: operation.payload, context }
+      : { ...operation.payload, context };
+    return invoke<ProjectCommit<T>>(operation.command, args);
+  },
+
   initProject: () =>
     invoke<ProjectInfo>("init_project"),
 
@@ -129,11 +160,36 @@ export const projectService = {
   extractWorkflow: (request: WorkflowExtractionRequest) =>
     invoke<WorkflowDefinition>("extract_workflow", { request }),
 
-  runWorkflow: (request: WorkflowRunRequest) =>
-    invoke<WorkflowRunCommitPacket>("run_workflow", { request }),
+  getWorkflowRunState: (epoch:number,workflowId:string,workflowRevision:number) =>
+    invoke<import("@/types/projectPersistence").ProjectWorkflowRunState>("get_project_workflow_run_state",{epoch,workflowId,workflowRevision}),
 
-  acknowledgeWorkflowCommit: (commitId: string) =>
-    invoke<void>("acknowledge_workflow_commit", { commitId }),
+  runWorkflow: async (request: WorkflowRunRequest):Promise<WorkflowRunCommitPacket> => {
+    const {useProjectStore}=await import("../stores/useProjectStore");
+    const persistence=useProjectStore.getState().persistence;
+    if(!persistence)return invoke<WorkflowRunCommitPacket>("run_workflow", { request });
+    const epoch=persistence.snapshot().epoch;
+    const {useProjectCatalogStore}=await import("../stores/useProjectCatalogStore");
+    const current=()=>{if(useProjectStore.getState().persistence!==persistence)throw new Error("Project changed before workflow run");};
+    while(useProjectCatalogStore.getState().epoch===epoch&&useProjectCatalogStore.getState().nextCursor) {
+      current();await useProjectCatalogStore.getState().loadNextPage();
+    }
+    current();
+    const {getProjectDirectorySummaries}=await import("../projectPersistence/documentAdapters");
+    const summaries=getProjectDirectorySummaries(epoch)??[];
+    const workflow=summaries.find(item=>item.id===request.workflow.id&&item.kind==="workflow");
+    if(!workflow)throw new Error("project_document_metadata_required");
+    const outputs=request.outputBindings.flatMap(binding=>summaries.filter(item=>item.id===binding.artifactDocumentId));
+    const ids=[...new Set([...request.inputBindings.map(input=>input.tableDocumentId),...outputs.filter(item=>item.kind==="table").map(item=>item.id)])];
+    const datasetGenerations=await Promise.all(ids.map(async id=>({id,generation:await invoke<number>("get_dataset_generation",{datasetId:id})})));
+    current();
+    const documentRevisions=[workflow,...outputs.filter(item=>item.id!==workflow.id)].map(item=>({id:item.id,revision:item.revision}));
+    return (await persistence.submit<WorkflowRunCommitPacket>({command:"run_workflow",payload:{request,folder:workflow.folder},datasetGenerations,documentRevisions})).value;
+  },
+
+  acknowledgeWorkflowCommit: async (commitId: string):Promise<void> => {
+    const {useProjectStore}=await import("../stores/useProjectStore");
+    if(!useProjectStore.getState().persistence)await invoke<void>("acknowledge_workflow_commit", { commitId });
+  },
 
   // ---- Single-table share helpers ----------------------------------------
   // .sptb = standalone table file. It can live by itself on disk and be
@@ -141,7 +197,7 @@ export const projectService = {
 
   /** Export one dataset to a `.sptb` file. */
   exportTable: (datasetId: string, filePath: string) =>
-    invoke<void>("export_table", { datasetId, filePath }),
+    invokeProjectExport("export_table", { datasetId, filePath }),
 
   /** Export multiple datasets as `.sptb` files packed into a `.zip`.
    *  `archivePaths` maps each dataset id to the file's path inside the zip
@@ -151,7 +207,7 @@ export const projectService = {
     outputPath: string,
     archivePaths?: Record<string, string>,
   ) =>
-    invoke<void>("export_tables_sptb_zip", {
+    invokeProjectExport("export_tables_sptb_zip", {
       datasetIds,
       outputPath,
       archivePaths: archivePaths ?? null,
@@ -160,8 +216,12 @@ export const projectService = {
   /** Import a `.sptb` file. Returns the new dataset id assigned in the
    *  project. Per issue #7 the `.sptb` body carries no folder info; the
    *  caller decides where to place the imported table (defaults to root). */
-  importTable: (filePath: string) =>
-    invoke<ImportTableResult>("import_table", { filePath }),
+  importTable: async (filePath: string):Promise<ImportTableResult> => {
+    const {useProjectStore}=await import("../stores/useProjectStore");
+    const owner=useProjectStore.getState().persistence;
+    if(!owner)return invoke<ImportTableResult>("import_table",{filePath});
+    return (await owner.submit<ImportTableResult>({command:"import_table",payload:{filePath}})).value;
+  },
 
   /** Import a `.spgh` file and return its graph builder body. */
   importGraph: (filePath: string) =>

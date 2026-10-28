@@ -1,4 +1,5 @@
 use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::AppError;
 
@@ -26,6 +27,7 @@ struct TestObserver {
 
 #[derive(Debug, Default)]
 pub struct SaveCoordinator {
+    native_context_required: AtomicBool,
     state: Mutex<CoordinatorState>,
     condvar: Condvar,
     #[cfg(test)]
@@ -37,12 +39,28 @@ impl SaveCoordinator {
         Self::default()
     }
 
+    pub(crate) fn require_native_context(&self) {
+        self.native_context_required.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn release_native_context(&self) {
+        self.native_context_required.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn ensure_legacy_project(&self) -> Result<(), AppError> {
+        if self.native_context_required.load(Ordering::Acquire) {
+            return Err(AppError::InvalidParam("project_native_write_context_required".into()));
+        }
+        Ok(())
+    }
+
     pub fn mutation_permit(&self) -> Result<MutationPermit<'_>, AppError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| AppError::Database("Save coordinator lock poisoned".to_string()))?;
 
+        self.ensure_legacy_project()?;
         if state.save_waiting || state.saving {
             return Err(AppError::ReadOnly(
                 "Project is read-only while a save is pending or active".to_string(),

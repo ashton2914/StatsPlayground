@@ -30,6 +30,22 @@ mod tests {
     use std::io::Read;
     use tempfile::TempDir;
 
+    #[test]
+    #[cfg(feature="project-v5")]
+    fn native_authorized_csv_export_uses_captured_epoch_and_refuses_stale_publication() {
+        use crate::{models::project_persistence::ProjectWriteContext,services::{project_database::ProjectDatabase,project_output::ProjectSqlOutput,project_native_service::NativeProjectService}};
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("native.spprj");let db=ProjectDatabase::create(&path,false).unwrap();
+        let context=ProjectWriteContext{operation_id:"seed".into(),request_digest:String::new(),expected_project_id:db.header().unwrap().project_id,expected_epoch:db.epoch(),expected_revision:0,document_revisions:vec![],dataset_generations:vec![]};
+        let created=db.materialize_project_sql(&context,&ProjectSqlOutput{name:"Native".into(),sql:"SELECT 918::BIGINT AS value".into(),folder:String::new()}).unwrap();db.shutdown().unwrap();
+        let state=AppState::new().unwrap();let native=NativeProjectService::new(&state);let opened=native.open(&path,false).unwrap();let io=IoService::new(&state);
+        let grant=io.authorize_output_root(dir.path().to_str().unwrap()).unwrap();
+        assert!(io.export_csv_authorized_at_epoch(&created.value.id,&grant.root_id,"missing-epoch.csv",false,None).is_err());assert!(!dir.path().join("missing-epoch.csv").exists());
+        io.export_csv_authorized_at_epoch(&created.value.id,&grant.root_id,"native.csv",false,Some(opened.epoch)).unwrap();assert_eq!(std::fs::read_to_string(dir.path().join("native.csv")).unwrap(),"value\n918\n");
+        let raced=io.export_csv_authorized_with_epoch_and_publish_hook(Some(opened.epoch),&grant.root_id,"closed-during-export.csv",false,|leaf| {std::fs::write(leaf,"value\n918\n")?;native.close(opened.epoch)?;Ok(())},||Ok(()));
+        assert!(raced.is_err());assert!(!dir.path().join("closed-during-export.csv").exists());
+        assert!(io.export_csv_authorized_at_epoch(&created.value.id,&grant.root_id,"stale.csv",false,Some(opened.epoch)).is_err());assert!(!dir.path().join("stale.csv").exists());
+    }
+
     fn seed_export_dataset(
         service: &DataService<'_>,
         name: &str,
@@ -943,6 +959,20 @@ impl<'a> IoService<'a> {
         })
     }
 
+    /// Native exports bind the captured reader session through staging and publication.
+    pub fn export_csv_authorized_at_epoch(&self,dataset_id:&str,root_id:&str,relative_path:&str,overwrite_confirmed:bool,epoch:Option<u64>)->Result<(),AppError> {
+        let Some(epoch)=epoch else {
+            let _transition=self.state.project_transition.lock().map_err(|_|AppError::Busy("project_transition_unavailable".into()))?;
+            if self.state.project_database.read().map_err(|error|AppError::Database(error.to_string()))?.is_some() {return Err(AppError::InvalidParam("project_epoch_required".into()));}
+            return self.export_csv_authorized(dataset_id,root_id,relative_path,overwrite_confirmed);
+        };
+        let database=crate::services::project_native_service::NativeProjectService::new(self.state).database(epoch)?;
+        self.export_csv_authorized_with_epoch_and_publish_hook(Some(epoch),root_id,relative_path,overwrite_confirmed,|staging_leaf| {
+            let path=staging_leaf.to_str().ok_or_else(||AppError::FileIO("temporary export path is not valid UTF-8".into()))?;
+            database.with_reader(epoch,|engine|engine.export_csv(dataset_id,path))
+        },||database.with_reader(epoch,|_|Ok(())))
+    }
+
     pub fn export_csv_authorized(
         &self,
         dataset_id: &str,
@@ -1001,6 +1031,11 @@ impl<'a> IoService<'a> {
         E: FnOnce(&Path) -> Result<(), AppError>,
         F: FnOnce() -> Result<(), AppError>,
     {
+        self.export_csv_authorized_with_epoch_and_publish_hook(None,root_id,relative_path,overwrite_confirmed,export_to_staging,before_publish)
+    }
+
+    fn export_csv_authorized_with_epoch_and_publish_hook<E,F>(&self,epoch:Option<u64>,root_id:&str,relative_path:&str,overwrite_confirmed:bool,export_to_staging:E,before_publish:F)->Result<(),AppError>
+    where E:FnOnce(&Path)->Result<(),AppError>,F:FnOnce()->Result<(),AppError> {
         let initial = self.resolve_authorized_output(root_id, relative_path)?;
         authorize_overwrite_status(&initial.status, overwrite_confirmed)?;
 
@@ -1015,6 +1050,8 @@ impl<'a> IoService<'a> {
         export_to_staging(&staging_leaf)?;
         verify_staged_export_leaf(&staging_leaf)?;
 
+        let _transition=if epoch.is_some(){Some(self.state.project_transition.lock().map_err(|_|AppError::Busy("project_transition_unavailable".into()))?)}else{None};
+        if let Some(epoch)=epoch {crate::services::project_native_service::NativeProjectService::new(self.state).database(epoch)?;}
         before_publish()?;
         let revalidated = self.resolve_authorized_output(root_id, relative_path)?;
         authorize_overwrite_status(&revalidated.status, overwrite_confirmed)?;

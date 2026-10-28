@@ -1,3 +1,4 @@
+import {projectDocumentNames} from "@/stores/documentStore";
 import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspaceLifecycle";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import type {
@@ -109,7 +110,7 @@ export function createReportCommandHandlers(
     listAnalyses: () => useAnalysisStore.getState().items,
     listTabulates: () => useTabulateStore.getState().items,
     nextReportName: () => useReportStore.getState().nextName(),
-    listReportNamesForAllocation: () => useReportStore.getState().items.map((item) => item.name),
+    listReportNamesForAllocation: () => projectDocumentNames(["report"], useReportStore.getState().items.map((item) => item.name)),
     createReportId: () => (
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()

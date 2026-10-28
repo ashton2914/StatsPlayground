@@ -1,0 +1,28 @@
+{
+  "name": "Legacy measurements",
+  "version": "1.0.0",
+  "datasets": [
+    {
+      "id": "table",
+      "name": "Measurements",
+      "sourceType": "csv",
+      "columns": [
+        {
+          "name": "Value",
+          "colType": "DOUBLE",
+          "width": 177
+        }
+      ],
+      "rows": [
+        [
+          1,
+          22
+        ],
+        [
+          2,
+          33
+        ]
+      ]
+    }
+  ]
+}

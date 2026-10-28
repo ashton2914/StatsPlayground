@@ -1,0 +1,12 @@
+{
+  "qualified": false,
+  "failures": [
+    "at least 100 warm samples required"
+  ],
+  "sampleCount": 50,
+  "backendP95Ms": 24.90975,
+  "uiP95Ms": 94,
+  "backendMedianMs": 8.198438,
+  "uiMedianMs": 58,
+  "budgetMs": 100
+}

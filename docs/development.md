@@ -356,3 +356,25 @@ MCP Server 面板提供“启动 VS Code”：选择一个已有本地目录，�
 The Skills page lists SP MCP Guide and Distribution Analyze under Build-in. Their source files live in `built-in-skills/` and are bundled into the app; the page and Launch VS Code publish the same content. The guide documents all current MCP tools with contract-checked examples. Distribution Analyze uses user-provided data and writes interpretations from returned statistical evidence.
 
 Launch VS Code synchronizes these skill folders into the selected workspace's `.github/skills/` before opening the editor. `.github/skills/.sp-built-in.json` records the hashes of files published by the app. Subsequent launches update unmodified managed files and preserve unrelated skills. If a managed file contains user edits, launching stops with its relative path so the user can back it up or move it. The preview lists the skill files that will be synchronized. Skill files contain no MCP credentials; the generated MCP configuration retains its separate credential protection.
+
+## 大型项目原生持久化（实验性 v5）
+
+v5 目前需要显式启用 `project-v5`，默认构建继续使用现有格式。v5 项目
+自动保存增量更改；Ctrl+S 等待已接受的更改完成持久化。状态栏显示等待、
+保存中、已保存或失败；失败时可以重试。只读项目不执行自动写入。旧格式
+通过显式转换生成新文件，原文件保留。Save As 是显式创建项目副本的操作。
+
+项目回归入口包含协调器、目录、生命周期、文档与表格适配器，以及实际原生
+数据库进程和界面检查；缺少原生测试程序时会失败，不会跳过。测试需要支持
+`node:sqlite` 的 Node.js（当前验证使用 Node.js 24）：
+
+```sh
+cargo build --manifest-path src-tauri/Cargo.toml --features project-v5,perf-harness --example project_persistence_contract
+STATSPG_PERSISTENCE_HARNESS="$PWD/src-tauri/target/debug/examples/project_persistence_contract" npm run test:project-persistence
+```
+
+设置了 `CARGO_TARGET_DIR` 时，将上述可执行文件路径指向该目录；Windows
+可执行文件带 `.exe` 后缀。Rust 回归、性能采集与平台验收分别执行，不能用
+界面模拟测试替代真实数据库或原生窗口验收。当前原生窗口和缓存校准证据来自
+macOS；尚未据此声明 Windows/Linux 的 v5 发布支持。性能采集方法与限制见
+[性能说明](performance.md)。

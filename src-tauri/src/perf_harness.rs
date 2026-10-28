@@ -569,9 +569,9 @@ struct OpenStageReport {
 
 #[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ProcessMemoryReport {
+pub(crate) struct ProcessMemoryReport {
     baseline_working_set_bytes: u64,
-    peak_working_set_bytes: u64,
+    pub(crate) peak_working_set_bytes: u64,
     delta_working_set_bytes: u64,
 }
 
@@ -652,7 +652,7 @@ extern "C" {
     ) -> i32;
 }
 
-fn process_memory_method() -> Option<&'static str> {
+pub(crate) fn process_memory_method() -> Option<&'static str> {
     #[cfg(windows)]
     {
         Some("GetProcessMemoryInfo working_set_size")
@@ -667,7 +667,7 @@ fn process_memory_method() -> Option<&'static str> {
     }
 }
 
-fn current_working_set_bytes() -> Option<u64> {
+pub(crate) fn current_working_set_bytes() -> Option<u64> {
     #[cfg(windows)]
     {
         let process = unsafe { GetCurrentProcess() };
@@ -741,7 +741,7 @@ fn current_working_set_bytes() -> Option<u64> {
     }
 }
 
-fn measure_peak_working_set_during<T>(run: impl FnOnce() -> T) -> (T, Option<ProcessMemoryReport>) {
+pub(crate) fn measure_peak_working_set_during<T>(run: impl FnOnce() -> T) -> (T, Option<ProcessMemoryReport>) {
     let Some(baseline) = current_working_set_bytes() else {
         let outcome = run();
         return (outcome, None);

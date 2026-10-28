@@ -582,6 +582,10 @@ impl<'a> ProjectService<'a> {
         Self { state }
     }
 
+    pub fn open_project_v5(&self,file_path:&str,read_only:bool) -> Result<crate::models::project_persistence::ProjectOpenSummary,AppError> {
+        crate::services::project_native_service::NativeProjectService::new(self.state).open(std::path::Path::new(file_path),read_only)
+    }
+
     /// Initialize a new in-memory project (no file on disk)
     pub fn init_project(&self) -> Result<ProjectInfo, AppError> {
         self.state.reset_db()?;
@@ -658,6 +662,7 @@ impl<'a> ProjectService<'a> {
         file_path: &str,
         progress_cb: Option<&dyn Fn(usize, usize, &str, usize, usize)>,
     ) -> Result<OpenProjectResult, AppError> {
+        self.state.save_coordinator.ensure_legacy_project()?;
         let open_started = std::time::Instant::now();
         let archive_started = std::time::Instant::now();
         let mut archive = spprj_archive::OpenProjectArchive::open(file_path)?;
@@ -992,7 +997,7 @@ impl<'a> ProjectService<'a> {
             .write()
             .map_err(|e| AppError::Database(e.to_string()))?;
         live_tabulate.shutdown()?;
-        *live_db = staged_db;
+        live_db.replace_temporary(staged_db)?;
         *live_navigation = staged_navigation;
         *live_tabulate = staged_tabulate;
         *live_display = staged_display;
@@ -1084,7 +1089,9 @@ impl<'a> ProjectService<'a> {
             &crate::services::save_coordinator::SaveGuard<'_>,
         ) -> Result<SaveWriteResult, AppError>,
     {
+        self.state.save_coordinator.ensure_legacy_project()?;
         let save_guard = self.state.save_coordinator.begin_save()?;
+        self.state.save_coordinator.ensure_legacy_project()?;
 
         let current_project = self
             .state
@@ -1199,23 +1206,22 @@ impl<'a> ProjectService<'a> {
     /// Build a `TableDoc` snapshot of a single dataset from the live DB +
     /// in-memory display props.
     pub fn compose_table_doc(&self, dataset_id: &str) -> Result<TableDoc, AppError> {
+        let native=self.state.project_database.read().map_err(|error|AppError::Database(error.to_string()))?.is_some();
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let display = self
-            .state
-            .column_display
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let display=if native {crate::services::project_column_settings::read(&db,dataset_id)?}else {
+            self.state.column_display.lock().map_err(|error|AppError::Database(error.to_string()))?.get(dataset_id).cloned().unwrap_or_default()
+        };
 
         let meta = db.get_dataset_meta(dataset_id)?;
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
         let archive_columns = db.get_archive_column_plans(dataset_id)?;
         let columns = project_archive_table_columns(
             &archive_columns,
-            display.get(dataset_id).map(Vec::as_slice),
+            Some(display.as_slice()),
         );
 
         // SELECT _row_id + every visible column. _row_id stays at index 0 in
@@ -1228,8 +1234,9 @@ impl<'a> ProjectService<'a> {
             )
             .collect::<Vec<_>>()
             .join(", ");
+        let order=if native {format!("{}, \"_row_id\"",crate::engine::duckdb_engine::NATURAL_ORDER_SQL)}else{"\"_row_id\"".into()};
         let query = format!(
-            "SELECT {} FROM \"{}\" ORDER BY \"_row_id\"",
+            "SELECT {} FROM \"{}\" ORDER BY {order}",
             select_cols, table_name
         );
         let mut stmt = db.conn().prepare(&query)?;
@@ -1445,7 +1452,7 @@ pub(crate) fn table_doc_to_archive_column_plans(
         .collect()
 }
 
-fn remap_imported_table_doc(doc: &TableDoc) -> Result<TableDoc, AppError> {
+pub(crate) fn remap_imported_table_doc(doc: &TableDoc) -> Result<TableDoc, AppError> {
     let new_dataset_id = uuid::Uuid::new_v4().to_string();
     if !table_doc_is_v3(&doc.version) {
         let mut remapped = doc.clone();
@@ -1765,7 +1772,7 @@ fn requires_archive_migration(version: &str) -> bool {
         .unwrap_or(true)
 }
 
-fn is_future_project_format(version: &str) -> bool {
+pub(crate) fn is_future_project_format(version: &str) -> bool {
     version
         .split('.')
         .next()
@@ -2069,7 +2076,7 @@ fn topological_calculated_outputs(
     ordered
 }
 
-fn normalize_visible_document_names(bundle: &mut ProjectBundle) -> Vec<DocumentNameMigration> {
+pub(crate) fn normalize_visible_document_names(bundle: &mut ProjectBundle) -> Vec<DocumentNameMigration> {
     let mut migrations = Vec::new();
 
     let mut table_names = std::collections::HashSet::new();
@@ -6441,5 +6448,33 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(file_path);
+    }
+}
+
+#[cfg(all(test,feature="project-v5"))]
+mod native_table_export_tests {
+    use super::*;
+    use crate::{models::project_persistence::{ProjectRecordPatch,ProjectSettingWrite},services::{project_database::ProjectDatabase,project_native_service::NativeProjectService,row_order_update_boundary::{begin_row_order_update,RowOrderUpdateKind}}};
+    #[test]
+    fn native_table_export_preserves_display_and_visible_row_order() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("native.spprj");let output=dir.path().join("data.sptb");
+        let db=ProjectDatabase::create(&path,false).unwrap();
+        let table=db.with_engine(|engine| {
+            let meta=engine.create_table_from_rows("export-table",&crate::models::table::CreateTableFromRowsRequest{name:"Data".into(),column_names:vec!["value".into()],column_types:vec!["BIGINT".into()],rows:vec![vec![serde_json::json!(11)],vec![serde_json::json!(22)]]})?;
+            crate::services::project_catalog::ProjectCatalog::new(engine).publish_table(&meta,"")?;Ok(meta)
+        }).unwrap();
+        db.with_engine(|engine| {
+            let props=vec![crate::models::table::ColumnDisplayProps{col_index:0,width:Some(177.0),format:None,extras:None}];
+            let value=crate::services::project_column_settings::replacement(engine,&table.id,&props)?;
+            crate::services::project_catalog::ProjectCatalog::new(engine).apply_patch(&ProjectRecordPatch{settings:vec![ProjectSettingWrite{key:format!("display:{}",table.id),expected_revision:None,value}],..Default::default()})?;
+            let physical=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&table.id));let mut order=begin_row_order_update(engine,&physical,RowOrderUpdateKind::GlobalUnbounded)?;
+            order.update_by_id(engine,&physical,1,Some(20))?;order.update_by_id(engine,&physical,2,Some(10))?;order.finish();engine.rebuild_natural_anchors(&table.id,table.generation)?;Ok(())
+        }).unwrap();db.shutdown().unwrap();
+        let state=AppState::new().unwrap();let native=NativeProjectService::new(&state);let opened=native.open(&path,false).unwrap();
+        let _lease=crate::services::project_export::acquire_export_project(&state,Some(opened.epoch)).unwrap();
+        ProjectService::new(&state).export_table(&table.id,output.to_str().unwrap()).unwrap();
+        let exported=spprj_archive::read_table_file(output.to_str().unwrap()).unwrap();
+        assert_eq!(exported.rows.iter().map(|row|row[0].as_i64().unwrap()).collect::<Vec<_>>(),vec![2,1]);
+        assert_eq!(exported.columns[0].width,Some(177.0));
     }
 }

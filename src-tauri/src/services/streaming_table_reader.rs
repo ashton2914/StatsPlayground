@@ -51,6 +51,28 @@ pub(crate) fn scan_table_header<R: Read>(reader: R) -> Result<TableHeaderScan, A
     ))
 }
 
+/// Compatibility metadata pass ignores row bodies instead of buffering them.
+pub(crate) fn scan_complete_table_header<R:Read>(reader:R)->Result<StreamedTableHeader,AppError> {
+    fn version_one()->String {"1".into()}
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all="camelCase")]
+    struct Header {
+        id:String,name:String,source_type:String,
+        #[serde(default="version_one")] version:String,
+        columns:Vec<TableColumn>,
+        #[serde(rename="rows")] _rows:IgnoredAny,
+    }
+    let header:Header=serde_json::from_reader(BufReader::new(reader)).map_err(json_file_error)?;
+    Ok(StreamedTableHeader{id:header.id,name:header.name,source_type:header.source_type,version:header.version,columns:header.columns})
+}
+
+/// The caller has scanned the full metadata header and owns rollback on mismatch.
+pub(crate) fn stream_table_rows_unordered<R:Read,S:TableBatchSink>(reader:R,expected:&StreamedTableHeader,sink:&mut S)->Result<usize,AppError> {
+    stream_table_rows_impl::<_,_,false>(reader,expected,sink,&mut TableStreamPerfMetrics::default(),true)
+}
+
+// The profiled build selects stream_table_rows_profiled; ordinary legacy restoration uses this path.
+#[cfg_attr(all(feature = "perf-harness", not(test)), allow(dead_code))]
 pub(crate) fn stream_table_rows<R: Read, S: TableBatchSink>(
     reader: R,
     expected: &StreamedTableHeader,
@@ -61,6 +83,7 @@ pub(crate) fn stream_table_rows<R: Read, S: TableBatchSink>(
         expected,
         sink,
         &mut TableStreamPerfMetrics::default(),
+        false,
     )
 }
 
@@ -70,7 +93,7 @@ pub(crate) fn stream_table_rows_profiled<R: Read, S: TableBatchSink>(
     sink: &mut S,
     metrics: &mut TableStreamPerfMetrics,
 ) -> Result<usize, AppError> {
-    stream_table_rows_impl::<_, _, true>(reader, expected, sink, metrics)
+    stream_table_rows_impl::<_, _, true>(reader, expected, sink, metrics, false)
 }
 
 fn stream_table_rows_impl<R: Read, S: TableBatchSink, const PROFILE: bool>(
@@ -78,6 +101,7 @@ fn stream_table_rows_impl<R: Read, S: TableBatchSink, const PROFILE: bool>(
     expected: &StreamedTableHeader,
     sink: &mut S,
     metrics: &mut TableStreamPerfMetrics,
+    allow_unordered_header:bool,
 ) -> Result<usize, AppError> {
     let mut sink_error = None;
     let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
@@ -86,6 +110,7 @@ fn stream_table_rows_impl<R: Read, S: TableBatchSink, const PROFILE: bool>(
         sink,
         sink_error: &mut sink_error,
         metrics,
+        allow_unordered_header,
     });
 
     if let Some(error) = sink_error {
@@ -164,6 +189,7 @@ impl<'de> Visitor<'de> for HeaderScanVisitor<'_> {
 }
 
 struct TableStreamVisitor<'a, S, const PROFILE: bool> {
+    allow_unordered_header:bool,
     expected: &'a StreamedTableHeader,
     sink: &'a mut S,
     sink_error: &'a mut Option<AppError>,
@@ -201,6 +227,7 @@ impl<'de, S: TableBatchSink, const PROFILE: bool> Visitor<'de>
                     if row_count.is_some() {
                         return Err(A::Error::duplicate_field("rows"));
                     }
+                    if !self.allow_unordered_header {
                     let actual = StreamedTableHeader {
                         id: id.clone().ok_or_else(|| A::Error::missing_field("id"))?,
                         name: name
@@ -217,6 +244,7 @@ impl<'de, S: TableBatchSink, const PROFILE: bool> Visitor<'de>
                             .ok_or_else(|| A::Error::missing_field("columns"))?,
                     };
                     verify_header::<A::Error>(&actual, self.expected)?;
+                    }
                     if let Err(error) = self.sink.begin_table(self.expected) {
                         *self.sink_error = Some(error);
                         return Err(A::Error::custom("table sink failed"));
@@ -234,6 +262,16 @@ impl<'de, S: TableBatchSink, const PROFILE: bool> Visitor<'de>
             }
         }
 
+        if self.allow_unordered_header {
+            let actual=StreamedTableHeader {
+                id:id.ok_or_else(||A::Error::missing_field("id"))?,
+                name:name.ok_or_else(||A::Error::missing_field("name"))?,
+                source_type:source_type.ok_or_else(||A::Error::missing_field("sourceType"))?,
+                version:version.unwrap_or_else(||"1".into()),
+                columns:columns.ok_or_else(||A::Error::missing_field("columns"))?,
+            };
+            verify_header::<A::Error>(&actual,self.expected)?;
+        }
         row_count.ok_or_else(|| A::Error::missing_field("rows"))
     }
 }

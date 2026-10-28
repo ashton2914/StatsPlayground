@@ -1,0 +1,30 @@
+{
+  "sourceTreeHash": "fa2ccc624a2cdeb46218933cf9f89d612e2232cc",
+  "qualification": false,
+  "failedCase": "regular2m",
+  "sampleId": 249,
+  "completedEditSamples": 50,
+  "error": "Project UI visible state timed out",
+  "backendMs": 32.955084,
+  "nativeIntervalsNs": [
+    [
+      158083,
+      6783208
+    ],
+    [
+      10371372167,
+      10390508667
+    ],
+    [
+      10394687958,
+      10401881417
+    ]
+  ],
+  "focusedAtStart": true,
+  "focusedAtFinish": false,
+  "visibilityAtStart": "visible",
+  "visibilityAtFinish": "visible",
+  "frameCount": 901,
+  "maxFrameWaitMs": 35,
+  "ruling": "Failed foreground/visible-readiness observation. Preserve entire partial run; no latency qualification and no data-loss inference. One fresh complete same-source run uses new roots and identical budgets/counts."
+}

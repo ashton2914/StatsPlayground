@@ -11,6 +11,18 @@ pub mod state;
 #[doc(hidden)]
 pub mod perf_harness;
 
+#[cfg(all(feature = "project-v5", feature = "perf-harness"))]
+#[doc(hidden)]
+pub mod project_persistence_harness;
+
+#[cfg(all(feature = "project-v5", feature = "perf-harness"))]
+#[doc(hidden)]
+pub mod perf_project_v5;
+
+#[cfg(all(feature = "project-v5", feature = "perf-harness"))]
+#[doc(hidden)]
+pub mod perf_project_v5_ui;
+
 use state::AppState;
 use tauri::Manager;
 
@@ -50,6 +62,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::project_ui_probe_commands::project_ui_probe_configuration,
+            commands::project_ui_probe_commands::project_ui_probe_begin,
+            commands::project_ui_probe_commands::project_ui_probe_finish,
+            commands::project_ui_probe_commands::project_ui_probe_publish,
             commands::calculated_column_commands::validate_calculated_column,
             commands::calculated_column_commands::upsert_calculated_column,
             commands::calculated_column_commands::convert_calculated_column_to_values,
@@ -85,6 +101,7 @@ pub fn run() {
             commands::data_commands::query_table,
             commands::data_commands::query_table_window,
             commands::data_commands::query_table_navigation_window,
+            commands::data_commands::query_table_navigation_row_ids,
             commands::data_commands::prepare_table_navigation_benchmark,
             commands::data_commands::prepare_table_query_session,
             commands::data_commands::get_table_query_session_status,
@@ -163,6 +180,32 @@ pub fn run() {
             commands::project_commands::init_project,
             commands::project_commands::create_project,
             commands::project_commands::open_project,
+            commands::project_commands::open_project_v5,
+            commands::project_commands::preflight_project_migration,
+            commands::project_commands::migrate_project_v5,
+            commands::project_commands::cancel_project_migration,
+            commands::project_commands::create_project_draft_v5,
+            commands::project_commands::list_recoverable_project_drafts,
+            commands::project_commands::recover_project_draft_v5,
+            commands::project_commands::close_project_v5,
+            commands::project_commands::checkpoint_project_v5,
+            commands::project_commands::snapshot_project_v5,
+            commands::project_commands::project_v5_enabled,
+            commands::project_commands::list_project_catalog,
+            commands::project_commands::get_project_document,
+            commands::project_commands::get_project_setting,
+            commands::project_commands::list_project_history,
+            commands::project_commands::get_project_workflow_run_state,
+            commands::project_commands::get_project_table_lifecycle_event,
+            commands::project_commands::get_project_history_frontier,
+            commands::project_commands::apply_project_table_lifecycle,
+            commands::project_commands::capture_project_data_snapshot,
+            commands::project_commands::list_project_data_snapshots,
+            commands::project_commands::restore_project_data_snapshot,
+            commands::project_commands::delete_project_data_snapshot,
+            commands::project_commands::commit_project_records,
+            commands::project_commands::resolve_project_operation,
+            commands::project_commands::get_project_persistence_status,
             commands::project_commands::save_project,
             commands::project_commands::get_current_project,
             commands::project_commands::extract_workflow,

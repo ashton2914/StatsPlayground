@@ -1,0 +1,13 @@
+{
+  "qualified": false,
+  "failures": [
+    "release source/build/engine provenance required",
+    "UI latency exceeds budget"
+  ],
+  "sampleCount": 100,
+  "backendP95Ms": 176.149917,
+  "uiP95Ms": 244,
+  "backendMedianMs": 167.5270835,
+  "uiMedianMs": 228,
+  "budgetMs": 200
+}

@@ -1,4 +1,5 @@
-use tauri::State;
+use tauri::{Emitter,State};
+use crate::models::project_persistence::{ProjectWriteContext,ProjectMutationResult};
 
 use crate::commands::data_commands::acquire_mutation_permit;
 use crate::error::AppError;
@@ -58,23 +59,37 @@ pub fn validate_calculated_column(
     service.validate(&map_request(&request))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn upsert_calculated_column(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     request: UpsertCalculatedColumnRequest,
-) -> Result<CalculatedColumnMutationResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<CalculatedColumnMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).upsert_calculated_column(&context,&map_upsert_request(&request))?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = CalculatedColumnService::new(&state);
-    service.upsert(&map_upsert_request(&request))
+    service.upsert(&map_upsert_request(&request)).map(ProjectMutationResult::Legacy)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn convert_calculated_column_to_values(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     column_id: String,
     expected_generation: u64,
-) -> Result<CalculatedColumnMutationResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<CalculatedColumnMutationResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).convert_calculated_column_to_values(&context,&dataset_id,&column_id,expected_generation)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let descriptor = resolve_calculated_descriptor(state.inner(), &dataset_id, &column_id)?;
     let service = CalculatedColumnService::new(&state);
@@ -84,12 +99,12 @@ pub fn convert_calculated_column_to_values(
             formula_id: descriptor.formula_id.clone(),
             expected_generation: Some(expected_generation),
         })?;
-    Ok(CalculatedColumnMutationResult {
+    Ok(ProjectMutationResult::Legacy(CalculatedColumnMutationResult {
         column_id: output_column_id,
         dataset_generation,
         change_set_id,
         calculated: None,
         diagnostics: Vec::new(),
         warning_count: Default::default(),
-    })
+    }))
 }

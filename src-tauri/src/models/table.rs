@@ -40,7 +40,7 @@ pub struct AddedRowsResult {
     pub generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowMutationResult {
     pub row_ids: Vec<i64>,
@@ -49,7 +49,7 @@ pub struct RowMutationResult {
     pub change_set_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnMutationResult {
     pub column_ids: Vec<String>,
@@ -354,6 +354,12 @@ pub struct CellUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct PasteChangeSetResult {
     pub change_set_id: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub generation:Option<u64>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub row_count:Option<i64>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub column_count:Option<i32>,
 }
 
 /// Paginated result of an arbitrary read-only SQL query.

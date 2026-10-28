@@ -49,7 +49,9 @@ pub fn export_csv(
     state: State<'_, AppState>,
     dataset_id: String,
     output_path: String,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     export_csv_entry(state.inner(), &dataset_id, &output_path)
 }
 
@@ -87,9 +89,10 @@ pub fn export_csv_authorized(
     root_id: String,
     relative_path: String,
     overwrite_confirmed: bool,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
     let service = IoService::new(&state);
-    service.export_csv_authorized(&dataset_id, &root_id, &relative_path, overwrite_confirmed)
+    service.export_csv_authorized_at_epoch(&dataset_id, &root_id, &relative_path, overwrite_confirmed,epoch)
 }
 
 #[tauri::command(async)]
@@ -117,13 +120,15 @@ pub fn import_sqlite(
 }
 
 #[tauri::command(async)]
-pub fn export_sqlite(state: State<'_, AppState>, output_path: String) -> Result<(), AppError> {
+pub fn export_sqlite(state: State<'_, AppState>, output_path: String, epoch:Option<u64>) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = IoService::new(&state);
     service.export_sqlite(&output_path)
 }
 
 #[tauri::command(async)]
-pub fn export_csv_zip(state: State<'_, AppState>, output_path: String) -> Result<(), AppError> {
+pub fn export_csv_zip(state: State<'_, AppState>, output_path: String, epoch:Option<u64>) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = IoService::new(&state);
     service.export_csv_zip(&output_path)
 }
@@ -137,7 +142,9 @@ pub fn export_csv_zip_subset(
     output_path: String,
     dataset_ids: Option<Vec<String>>,
     archive_paths: Option<HashMap<String, String>>,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = IoService::new(&state);
     let paths = archive_paths.unwrap_or_default();
     service.export_csv_zip_subset(&output_path, dataset_ids.as_deref(), &paths)
@@ -152,7 +159,9 @@ pub fn export_sqlite_subset(
     output_path: String,
     dataset_ids: Option<Vec<String>>,
     name_overrides: Option<HashMap<String, String>>,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = IoService::new(&state);
     let overrides = name_overrides.unwrap_or_default();
     service.export_sqlite_subset(&output_path, dataset_ids.as_deref(), &overrides)

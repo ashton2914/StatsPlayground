@@ -11,10 +11,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 perf-harness = []
+project-v5 = []
 
 [[example]]
 name = "performance_baseline"
 required-features = ["perf-harness"]
+
+[[example]]
+name = "project_persistence_contract"
+required-features = ["project-v5", "perf-harness"]
+
+[[example]]
+name = "project_persistence_v5"
+required-features = ["project-v5", "perf-harness"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

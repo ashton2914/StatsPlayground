@@ -1,0 +1,576 @@
+{
+  "qualified": false,
+  "failures": [
+    "48091eca-4a29-41af-8080-e4f3a96decad/edit: UI latency exceeds budget",
+    "d4927237-da82-414a-b8f7-16bb0812f6d8/scroll: UI latency exceeds budget",
+    "d4927237-da82-414a-b8f7-16bb0812f6d8/edit: UI latency exceeds budget"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 24.231542,
+        "uiP95Ms": 58,
+        "backendMedianMs": 23.161875,
+        "uiMedianMs": 55,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 32.324667,
+        "uiP95Ms": 62,
+        "backendMedianMs": 26.9903125,
+        "uiMedianMs": 48,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 9.985584,
+        "uiP95Ms": 64,
+        "backendMedianMs": 9.4238125,
+        "uiMedianMs": 60,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 8.922125,
+        "uiP95Ms": 50,
+        "backendMedianMs": 7.3163125,
+        "uiMedianMs": 49,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 32.316125,
+        "uiP95Ms": 83,
+        "backendMedianMs": 29.794562,
+        "uiMedianMs": 82,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 31.634125,
+        "uiP95Ms": 64,
+        "backendMedianMs": 28.6487705,
+        "uiMedianMs": 61,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 23.775667,
+        "uiP95Ms": 56,
+        "backendMedianMs": 22.521125,
+        "uiMedianMs": 54,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 29.1105,
+        "uiP95Ms": 62,
+        "backendMedianMs": 26.275271,
+        "uiMedianMs": 47,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 10.498584,
+        "uiP95Ms": 64,
+        "backendMedianMs": 10.114041,
+        "uiMedianMs": 61,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 8.853292,
+        "uiP95Ms": 52,
+        "backendMedianMs": 7.7302495,
+        "uiMedianMs": 49,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 34.594626,
+        "uiP95Ms": 84,
+        "backendMedianMs": 31.6841045,
+        "uiMedianMs": 82,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "19da88d0-9dbe-4d18-bf0e-cd9b2cb706a9",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 39.693916,
+        "uiP95Ms": 63,
+        "backendMedianMs": 33.1907505,
+        "uiMedianMs": 60,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 24.648625,
+        "uiP95Ms": 45,
+        "backendMedianMs": 22.588291,
+        "uiMedianMs": 39,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 34.683,
+        "uiP95Ms": 64,
+        "backendMedianMs": 26.9651455,
+        "uiMedianMs": 49,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 11.50175,
+        "uiP95Ms": 64,
+        "backendMedianMs": 10.805916499999999,
+        "uiMedianMs": 61,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 8.963875,
+        "uiP95Ms": 50,
+        "backendMedianMs": 7.7605415,
+        "uiMedianMs": 49,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 37.181375,
+        "uiP95Ms": 99,
+        "backendMedianMs": 34.407104000000004,
+        "uiMedianMs": 82,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "61fa952f-cd5d-41fa-9782-0d8bda3f6dd6",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 58.444833,
+        "uiP95Ms": 77,
+        "backendMedianMs": 47.7161245,
+        "uiMedianMs": 61,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "48091eca-4a29-41af-8080-e4f3a96decad",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 116.203292,
+        "uiP95Ms": 142,
+        "backendMedianMs": 111.0492085,
+        "uiMedianMs": 131,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "48091eca-4a29-41af-8080-e4f3a96decad",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 11.968666,
+        "uiP95Ms": 154,
+        "backendMedianMs": 11.3624165,
+        "uiMedianMs": 137,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "48091eca-4a29-41af-8080-e4f3a96decad",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 10.590792,
+        "uiP95Ms": 81,
+        "backendMedianMs": 9.1522915,
+        "uiMedianMs": 57,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "48091eca-4a29-41af-8080-e4f3a96decad",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 44.016834,
+        "uiP95Ms": 206,
+        "backendMedianMs": 42.11525,
+        "uiMedianMs": 192,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "48091eca-4a29-41af-8080-e4f3a96decad",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 39.580334,
+        "uiP95Ms": 124,
+        "backendMedianMs": 36.857479,
+        "uiMedianMs": 105.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "d4927237-da82-414a-b8f7-16bb0812f6d8",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 33.492959,
+        "uiP95Ms": 64,
+        "backendMedianMs": 28.168687,
+        "uiMedianMs": 59.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "d4927237-da82-414a-b8f7-16bb0812f6d8",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 36.796208,
+        "uiP95Ms": 161,
+        "backendMedianMs": 35.28075,
+        "uiMedianMs": 158,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "d4927237-da82-414a-b8f7-16bb0812f6d8",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 56.782542,
+        "uiP95Ms": 149,
+        "backendMedianMs": 39.137562,
+        "uiMedianMs": 132,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "d4927237-da82-414a-b8f7-16bb0812f6d8",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 94.340084,
+        "uiP95Ms": 248,
+        "backendMedianMs": 69.77825,
+        "uiMedianMs": 231,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "d4927237-da82-414a-b8f7-16bb0812f6d8",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 36.874333,
+        "uiP95Ms": 64,
+        "backendMedianMs": 32.840354,
+        "uiMedianMs": 60,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

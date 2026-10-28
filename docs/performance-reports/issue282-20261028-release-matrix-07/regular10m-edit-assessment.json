@@ -1,0 +1,18 @@
+{
+  "qualified": false,
+  "failures": [
+    "at least 100 warm samples required",
+    "sample 29: foreground UI phase proof unavailable or inconsistent",
+    "sample 35: foreground UI phase proof unavailable or inconsistent",
+    "sample 45: foreground UI phase proof unavailable or inconsistent",
+    "sample 55: foreground UI phase proof unavailable or inconsistent",
+    "sample 61: foreground UI phase proof unavailable or inconsistent",
+    "sample 89: foreground UI phase proof unavailable or inconsistent"
+  ],
+  "sampleCount": 90,
+  "backendP95Ms": 52.52975,
+  "uiP95Ms": 116,
+  "backendMedianMs": 32.003313,
+  "uiMedianMs": 96,
+  "budgetMs": 200
+}

@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/cache-window-smoke-fixtures-03/long.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-cache-window-smoke-03/long-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-cache-window-smoke-03/long",
+  "sourceTreeHash": "541708e937959b22456e2eaa8da30af24bfaf153",
+  "tier": "long-strings",
+  "samples": 2,
+  "cacheMode": "warm"
+}

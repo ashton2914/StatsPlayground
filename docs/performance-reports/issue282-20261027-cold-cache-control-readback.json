@@ -1,0 +1,8 @@
+{
+  "fixture": "operation-owned300k fixture",
+  "nocacheFlagBeforeExplicitRestore": 0,
+  "nocacheFlagReadbackAfterRestore": 0,
+  "restoredCaching": true,
+  "methodSource": "https://raw.githubusercontent.com/apple/darwin-xnu/main/bsd/kern/kern_descrip.c",
+  "explanation": "F_GLOBAL_NOCACHE returns previous vnode nocache flag. Disable1/restore0 was restored correctly. The calibration still did not establish cold physical reads and remains unqualified."
+}

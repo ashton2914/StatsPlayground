@@ -173,11 +173,11 @@ const projectServiceSource = readFileSync(
 );
 assert.match(
   projectServiceSource,
-  /refresh_project_lineage_graph\(&mut bundle\)\?/,
+  /refresh_project_lineage_graph\((?:&mut )?bundle\)\?/,
 );
 assert.match(
   projectServiceSource,
-  /requires_archive_migration\(&bundle\.manifest\.version\) \|\| graph_requires_migration/,
+  /requires_archive_migration\(&bundle\.manifest\.version\)\s*\|\|\s*graph_requires_migration/,
 );
 
 console.log("workflow project contracts passed");
