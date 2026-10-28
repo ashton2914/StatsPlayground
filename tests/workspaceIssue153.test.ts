@@ -65,7 +65,7 @@ assert.equal(source.includes("<TableExportDialog"), true, "Workspace should rend
 
 const pickerTitleStart = source.indexOf("const tableExportPickerTitle = useCallback");
 assert.notEqual(pickerTitleStart, -1, "missing tableExportPickerTitle");
-const pickerTitleEnd = source.indexOf("\n\n  const handleTableExport", pickerTitleStart);
+const pickerTitleEnd = source.indexOf("\n\n  const handleExportTables", pickerTitleStart);
 assert.notEqual(pickerTitleEnd, -1, "missing tableExportPickerTitle boundary");
 const pickerTitleHelper = source.slice(pickerTitleStart, pickerTitleEnd);
 assert.equal(
@@ -74,16 +74,16 @@ assert.equal(
   "tableExportPickerTitle should use format-specific locale keys",
 );
 
-const exportHandlerStart = source.indexOf("const handleTableExport = async (plan: TableExportPlan): Promise<boolean> => {");
+const exportHandlerStart = source.indexOf("const handleExportTables = async (plan: TableExportPlan) => {");
 assert.notEqual(exportHandlerStart, -1, "missing handleTableExport");
-const exportHandlerEnd = source.indexOf("\n\n  // ---- Folder mutation helpers", exportHandlerStart);
+const exportHandlerEnd = source.indexOf("\n\n  const waitForCommandConfirmation", exportHandlerStart);
 assert.notEqual(exportHandlerEnd, -1, "missing handleTableExport boundary");
 const exportHandler = source.slice(exportHandlerStart, exportHandlerEnd);
 for (const token of [
   "open({ directory: true",
   "tableExportPickerTitle(plan.format)",
   "join(",
-  "ioService.exportCsv",
+  ".exportCsv(plan, outputPath)",
   "ioService.exportCsvZipSubset",
   "ioService.exportSqliteSubset",
   "projectService.exportTable",

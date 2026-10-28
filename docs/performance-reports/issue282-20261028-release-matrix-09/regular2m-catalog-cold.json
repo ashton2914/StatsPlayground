@@ -1,0 +1,452 @@
+{
+  "cache": {
+    "method": "owned-file msync(MS_SYNC|MS_INVALIDATE) immediately before sample, mincore confirms zero resident pages; independent App process",
+    "mode": "cold",
+    "osCache": "confirmed-cold"
+  },
+  "fixture": {
+    "columns": 20,
+    "id": "6c651832-0edc-42e2-b13c-1b70d54b3fb0",
+    "rows": 2000000,
+    "seed": 282,
+    "tier": "regular"
+  },
+  "profiling": {
+    "artifact": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-09/regular2m-profile.json",
+    "method": "DuckDB EXPLAIN (ANALYZE, FORMAT JSON) using canonical navigation SQL and actual bound values; separate untimed probe",
+    "sourceRowsScanned": [
+      122880,
+      122880,
+      33920
+    ],
+    "verifiedNoFullScan": true
+  },
+  "samples": [
+    {
+      "backendAggregateMs": 24.079958,
+      "backendIntervalsNs": [
+        [
+          1419292,
+          25499250
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.079958,
+      "backendOverlapMs": 0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 251146240,
+        "inode": 72334741,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 15329,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 15329
+      },
+      "diskReadBytes": 3555328,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "nativeWindowFocusMethod": "Tauri window.is_focused at native begin and finish; DOM input focus is separate diagnostic evidence",
+      "nativeWindowFocusedAtFinish": true,
+      "nativeWindowFocusedAtStart": true,
+      "processId": 11413,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              30,
+              31
+            ],
+            [
+              31,
+              47
+            ]
+          ],
+          "operationFinishedMs": 30,
+          "readyObservedMs": 30,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 155254784,
+      "rssBytes": 155860992,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1022,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.382583,
+      "backendIntervalsNs": [
+        [
+          1791375,
+          27173958
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.382583,
+      "backendOverlapMs": 0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 251146240,
+        "inode": 72334741,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 15329,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 233
+      },
+      "diskReadBytes": 3555328,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "nativeWindowFocusMethod": "Tauri window.is_focused at native begin and finish; DOM input focus is separate diagnostic evidence",
+      "nativeWindowFocusedAtFinish": true,
+      "nativeWindowFocusedAtStart": true,
+      "processId": 11436,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              32,
+              33
+            ],
+            [
+              33,
+              47
+            ]
+          ],
+          "operationFinishedMs": 31,
+          "readyObservedMs": 32,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 154402816,
+      "rssBytes": 157483008,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1022,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.151958,
+      "backendIntervalsNs": [
+        [
+          3090500,
+          28242458
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.151958,
+      "backendOverlapMs": 0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 251146240,
+        "inode": 72334741,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 15329,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 233
+      },
+      "diskReadBytes": 3555328,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "nativeWindowFocusMethod": "Tauri window.is_focused at native begin and finish; DOM input focus is separate diagnostic evidence",
+      "nativeWindowFocusedAtFinish": true,
+      "nativeWindowFocusedAtStart": true,
+      "processId": 11448,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              32,
+              34
+            ],
+            [
+              34,
+              42
+            ]
+          ],
+          "operationFinishedMs": 32,
+          "readyObservedMs": 32,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 155877376,
+      "rssBytes": 156811264,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1022,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 42,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.326625,
+      "backendIntervalsNs": [
+        [
+          1438583,
+          25765208
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.326625,
+      "backendOverlapMs": 0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 251146240,
+        "inode": 72334741,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 15329,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 233
+      },
+      "diskReadBytes": 3555328,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "nativeWindowFocusMethod": "Tauri window.is_focused at native begin and finish; DOM input focus is separate diagnostic evidence",
+      "nativeWindowFocusedAtFinish": true,
+      "nativeWindowFocusedAtStart": true,
+      "processId": 11470,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              29,
+              30
+            ],
+            [
+              30,
+              42
+            ]
+          ],
+          "operationFinishedMs": 29,
+          "readyObservedMs": 29,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 155369472,
+      "rssBytes": 156286976,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1022,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 42,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.066875,
+      "backendIntervalsNs": [
+        [
+          2328458,
+          26395333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.066875,
+      "backendOverlapMs": 0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 251146240,
+        "inode": 72334741,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 15329,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 233
+      },
+      "diskReadBytes": 3555328,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "nativeWindowFocusMethod": "Tauri window.is_focused at native begin and finish; DOM input focus is separate diagnostic evidence",
+      "nativeWindowFocusedAtFinish": true,
+      "nativeWindowFocusedAtStart": true,
+      "processId": 11484,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              30,
+              31
+            ],
+            [
+              31,
+              44
+            ]
+          ],
+          "operationFinishedMs": 29,
+          "readyObservedMs": 30,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 155975680,
+      "rssBytes": 156958720,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1022,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    }
+  ],
+  "scenario": "catalog",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+    "engineVersion": "v1.5.5",
+    "nativeTimingVersion": 2,
+    "profile": "release",
+    "storageVersion": "64",
+    "treeHash": "dd76cb32bc150d708b34d80a0800bff5344ee31b",
+    "uiObservationVersion": 2,
+    "uiProbeBuild": true
+  },
+  "uiMethod": "real App exact visible state followed by two animation frames; not compositor presentation timing",
+  "verification": {
+    "passed": true
+  }
+}

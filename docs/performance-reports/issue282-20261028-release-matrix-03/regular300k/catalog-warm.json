@@ -1,0 +1,5140 @@
+{
+  "cache": {
+    "method": "same-process real App operations; OS cache not purged",
+    "mode": "warm"
+  },
+  "fixture": {
+    "columns": 20,
+    "id": "98402a58-cf8e-475a-85b5-4bcf3cb5fbe7",
+    "rows": 300000,
+    "seed": 282,
+    "tier": "regular"
+  },
+  "profiling": {
+    "artifact": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-03/regular300k-profile.json",
+    "method": "DuckDB EXPLAIN (ANALYZE, FORMAT JSON) using canonical navigation SQL and actual bound values; separate untimed probe",
+    "sourceRowsScanned": [
+      122880,
+      122880,
+      54240
+    ],
+    "verifiedNoFullScan": true
+  },
+  "samples": [
+    {
+      "backendAggregateMs": 20.27475,
+      "backendIntervalsNs": [
+        [
+          2747834,
+          23022584
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 20.27475,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 156647424,
+      "rssBytes": 157286400,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1023,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 39.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.873292,
+      "backendIntervalsNs": [
+        [
+          690541,
+          27563833
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.873292,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 206209024,
+      "rssBytes": 206635008,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 6,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 20.078833,
+      "backendIntervalsNs": [
+        [
+          743000,
+          20821833
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 20.078833,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 221036544,
+      "rssBytes": 221282304,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 11,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 43.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 21.137458,
+      "backendIntervalsNs": [
+        [
+          667250,
+          21804708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 21.137458,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 225771520,
+      "rssBytes": 226000896,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 16,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.097875,
+      "backendIntervalsNs": [
+        [
+          741792,
+          25839667
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.097875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 230637568,
+      "rssBytes": 230850560,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 21,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 22.33875,
+      "backendIntervalsNs": [
+        [
+          705875,
+          23044625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 22.33875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232669184,
+      "rssBytes": 232865792,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 26,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.2295,
+      "backendIntervalsNs": [
+        [
+          1424208,
+          24653708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.2295,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 233324544,
+      "rssBytes": 233521152,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 31,
+      "scenario": "catalog",
+      "transferredBytes": 1024,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.792,
+      "backendIntervalsNs": [
+        [
+          777333,
+          30569333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.792,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 234225664,
+      "rssBytes": 234438656,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 36,
+      "scenario": "catalog",
+      "transferredBytes": 1025,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.515708,
+      "backendIntervalsNs": [
+        [
+          803500,
+          25319208
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.515708,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 234782720,
+      "rssBytes": 234979328,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 41,
+      "scenario": "catalog",
+      "transferredBytes": 1025,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.916291,
+      "backendIntervalsNs": [
+        [
+          729834,
+          24646125
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.916291,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235470848,
+      "rssBytes": 235667456,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 46,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 22.825084,
+      "backendIntervalsNs": [
+        [
+          751875,
+          23576959
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 22.825084,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235585536,
+      "rssBytes": 235782144,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 51,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 49.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 20.90075,
+      "backendIntervalsNs": [
+        [
+          712750,
+          21613500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 20.90075,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235765760,
+      "rssBytes": 235978752,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 56,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.976916,
+      "backendIntervalsNs": [
+        [
+          651750,
+          26628666
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.976916,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235765760,
+      "rssBytes": 235995136,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 61,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.270041,
+      "backendIntervalsNs": [
+        [
+          641584,
+          26911625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.270041,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235847680,
+      "rssBytes": 236044288,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 66,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 22.697125,
+      "backendIntervalsNs": [
+        [
+          705416,
+          23402541
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 22.697125,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 235978752,
+      "rssBytes": 236175360,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 71,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.156375,
+      "backendIntervalsNs": [
+        [
+          713875,
+          23870250
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.156375,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236109824,
+      "rssBytes": 236322816,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 76,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.101916,
+      "backendIntervalsNs": [
+        [
+          750792,
+          23852708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.101916,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236224512,
+      "rssBytes": 236421120,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 81,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 21.218417,
+      "backendIntervalsNs": [
+        [
+          712250,
+          21930667
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 21.218417,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236322816,
+      "rssBytes": 236552192,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 86,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.943666,
+      "backendIntervalsNs": [
+        [
+          740334,
+          27684000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.943666,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236388352,
+      "rssBytes": 236601344,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 91,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.059292,
+      "backendIntervalsNs": [
+        [
+          763375,
+          23822667
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.059292,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236437504,
+      "rssBytes": 236650496,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 96,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.296833,
+      "backendIntervalsNs": [
+        [
+          796875,
+          25093708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.296833,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236568576,
+      "rssBytes": 236765184,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 101,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 22.580708,
+      "backendIntervalsNs": [
+        [
+          795209,
+          23375917
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 22.580708,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236650496,
+      "rssBytes": 236847104,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 106,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.025,
+      "backendIntervalsNs": [
+        [
+          706541,
+          27731541
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.025,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236748800,
+      "rssBytes": 236945408,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 111,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.787,
+      "backendIntervalsNs": [
+        [
+          676583,
+          24463583
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.787,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 236945408,
+      "rssBytes": 237142016,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 116,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.721417,
+      "backendIntervalsNs": [
+        [
+          706958,
+          24428375
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.721417,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237027328,
+      "rssBytes": 237223936,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 121,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.64525,
+      "backendIntervalsNs": [
+        [
+          647583,
+          24292833
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.64525,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237158400,
+      "rssBytes": 237355008,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 126,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.5695,
+      "backendIntervalsNs": [
+        [
+          663208,
+          25232708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.5695,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237256704,
+      "rssBytes": 237453312,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 131,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.638667,
+      "backendIntervalsNs": [
+        [
+          672041,
+          24310708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.638667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237273088,
+      "rssBytes": 237469696,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 136,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.042041,
+      "backendIntervalsNs": [
+        [
+          642292,
+          24684333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.042041,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237338624,
+      "rssBytes": 237535232,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 141,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.682292,
+      "backendIntervalsNs": [
+        [
+          682708,
+          24365000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.682292,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237371392,
+      "rssBytes": 237568000,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 146,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 43.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.776083,
+      "backendIntervalsNs": [
+        [
+          688500,
+          25464583
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.776083,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237568000,
+      "rssBytes": 237780992,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 151,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.800375,
+      "backendIntervalsNs": [
+        [
+          727708,
+          26528083
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.800375,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237633536,
+      "rssBytes": 237862912,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 156,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.672458,
+      "backendIntervalsNs": [
+        [
+          2991917,
+          28664375
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.672458,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237633536,
+      "rssBytes": 237830144,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 161,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.11175,
+      "backendIntervalsNs": [
+        [
+          817625,
+          25929375
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.11175,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237731840,
+      "rssBytes": 237944832,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 166,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 49.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.632792,
+      "backendIntervalsNs": [
+        [
+          711250,
+          24344042
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.632792,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237813760,
+      "rssBytes": 238010368,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 171,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.240167,
+      "backendIntervalsNs": [
+        [
+          702708,
+          24942875
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.240167,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237846528,
+      "rssBytes": 238059520,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 176,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.2615,
+      "backendIntervalsNs": [
+        [
+          670166,
+          24931666
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.2615,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237895680,
+      "rssBytes": 238092288,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 181,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.431084,
+      "backendIntervalsNs": [
+        [
+          739375,
+          25170459
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.431084,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 237944832,
+      "rssBytes": 238141440,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 186,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.303875,
+      "backendIntervalsNs": [
+        [
+          668791,
+          24972666
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.303875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238026752,
+      "rssBytes": 238239744,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 191,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.438333,
+      "backendIntervalsNs": [
+        [
+          718209,
+          25156542
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.438333,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238059520,
+      "rssBytes": 238256128,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 196,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.8765,
+      "backendIntervalsNs": [
+        [
+          701666,
+          27578166
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.8765,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238141440,
+      "rssBytes": 238338048,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 201,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.510834,
+      "backendIntervalsNs": [
+        [
+          901708,
+          27412542
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.510834,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238190592,
+      "rssBytes": 238387200,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 206,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.400208,
+      "backendIntervalsNs": [
+        [
+          744375,
+          29144583
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.400208,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238223360,
+      "rssBytes": 238419968,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 211,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.852791,
+      "backendIntervalsNs": [
+        [
+          756709,
+          27609500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.852791,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238288896,
+      "rssBytes": 238501888,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 216,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.064917,
+      "backendIntervalsNs": [
+        [
+          684250,
+          27749167
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.064917,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238403584,
+      "rssBytes": 238632960,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 221,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.566166,
+      "backendIntervalsNs": [
+        [
+          695334,
+          26261500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.566166,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238436352,
+      "rssBytes": 238780416,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 226,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.124834,
+      "backendIntervalsNs": [
+        [
+          691083,
+          28815917
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.124834,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238780416,
+      "rssBytes": 238977024,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 231,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.537208,
+      "backendIntervalsNs": [
+        [
+          684959,
+          25222167
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.537208,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238845952,
+      "rssBytes": 239058944,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 236,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.955625,
+      "backendIntervalsNs": [
+        [
+          667500,
+          27623125
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.955625,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 238944256,
+      "rssBytes": 239140864,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 241,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 23.412334,
+      "backendIntervalsNs": [
+        [
+          638458,
+          24050792
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 23.412334,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 239042560,
+      "rssBytes": 239239168,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 246,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.671625,
+      "backendIntervalsNs": [
+        [
+          743292,
+          29414917
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.671625,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 239501312,
+      "rssBytes": 239697920,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 251,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.023667,
+      "backendIntervalsNs": [
+        [
+          740750,
+          29764417
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.023667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 239550464,
+      "rssBytes": 239747072,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 256,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 47.263291,
+      "backendIntervalsNs": [
+        [
+          762042,
+          48025333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 47.263291,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 239599616,
+      "rssBytes": 239796224,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 261,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.175125,
+      "backendIntervalsNs": [
+        [
+          757375,
+          31932500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.175125,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 239681536,
+      "rssBytes": 239894528,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 266,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 63.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.59075,
+      "backendIntervalsNs": [
+        [
+          686875,
+          31277625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.59075,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 240386048,
+      "rssBytes": 240615424,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 271,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 65.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.444,
+      "backendIntervalsNs": [
+        [
+          688167,
+          32132167
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.444,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 240451584,
+      "rssBytes": 240648192,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 276,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.126875,
+      "backendIntervalsNs": [
+        [
+          684917,
+          29811792
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.126875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 240517120,
+      "rssBytes": 240713728,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 281,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 59.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 25.6125,
+      "backendIntervalsNs": [
+        [
+          1322083,
+          26934583
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 25.6125,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232112128,
+      "rssBytes": 232325120,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 286,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 45.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.671084,
+      "backendIntervalsNs": [
+        [
+          664916,
+          27336000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.671084,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232177664,
+      "rssBytes": 232587264,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 291,
+      "scenario": "catalog",
+      "transferredBytes": 1027,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.277459,
+      "backendIntervalsNs": [
+        [
+          719666,
+          28997125
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.277459,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232456192,
+      "rssBytes": 232652800,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 296,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.465375,
+      "backendIntervalsNs": [
+        [
+          704917,
+          28170292
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.465375,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232505344,
+      "rssBytes": 232718336,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 301,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.251917,
+      "backendIntervalsNs": [
+        [
+          668125,
+          27920042
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.251917,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232554496,
+      "rssBytes": 232751104,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 306,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.415584,
+      "backendIntervalsNs": [
+        [
+          711125,
+          28126709
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.415584,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232587264,
+      "rssBytes": 232800256,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 311,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.301209,
+      "backendIntervalsNs": [
+        [
+          717791,
+          27019000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.301209,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232636416,
+      "rssBytes": 232849408,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 316,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 44.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.654,
+      "backendIntervalsNs": [
+        [
+          964417,
+          28618417
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.654,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232718336,
+      "rssBytes": 232931328,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 321,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.51675,
+      "backendIntervalsNs": [
+        [
+          705875,
+          28222625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.51675,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232783872,
+      "rssBytes": 232980480,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 326,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 35.072542,
+      "backendIntervalsNs": [
+        [
+          657667,
+          35730209
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 35.072542,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232882176,
+      "rssBytes": 233078784,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 331,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.15325,
+      "backendIntervalsNs": [
+        [
+          668291,
+          28821541
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.15325,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 232947712,
+      "rssBytes": 233144320,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 336,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 24.412583,
+      "backendIntervalsNs": [
+        [
+          744458,
+          25157041
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.412583,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 251740160,
+      "rssBytes": 251936768,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 341,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.372833,
+      "backendIntervalsNs": [
+        [
+          770375,
+          32143208
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.372833,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 251904000,
+      "rssBytes": 252133376,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 346,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 65.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.220208,
+      "backendIntervalsNs": [
+        [
+          721542,
+          28941750
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.220208,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252067840,
+      "rssBytes": 252264448,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 351,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.664625,
+      "backendIntervalsNs": [
+        [
+          647667,
+          28312292
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.664625,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252149760,
+      "rssBytes": 252346368,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 356,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.348291,
+      "backendIntervalsNs": [
+        [
+          734417,
+          29082708
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.348291,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252166144,
+      "rssBytes": 252428288,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 361,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 26.384708,
+      "backendIntervalsNs": [
+        [
+          668625,
+          27053333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 26.384708,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252362752,
+      "rssBytes": 252575744,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 366,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 46.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.324708,
+      "backendIntervalsNs": [
+        [
+          658458,
+          30983166
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.324708,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252428288,
+      "rssBytes": 252624896,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 371,
+      "scenario": "catalog",
+      "transferredBytes": 1027,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.827458,
+      "backendIntervalsNs": [
+        [
+          666292,
+          28493750
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.827458,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252444672,
+      "rssBytes": 252641280,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 376,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.945,
+      "backendIntervalsNs": [
+        [
+          722500,
+          31667500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.945,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252510208,
+      "rssBytes": 252723200,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 381,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.979959,
+      "backendIntervalsNs": [
+        [
+          714666,
+          28694625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.979959,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 252542976,
+      "rssBytes": 252739584,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 386,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 47.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.516833,
+      "backendIntervalsNs": [
+        [
+          682459,
+          30199292
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.516833,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 253198336,
+      "rssBytes": 253427712,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 391,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.683709,
+      "backendIntervalsNs": [
+        [
+          897666,
+          29581375
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.683709,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 253280256,
+      "rssBytes": 253476864,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 396,
+      "scenario": "catalog",
+      "transferredBytes": 1026,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.093667,
+      "backendIntervalsNs": [
+        [
+          679917,
+          28773584
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.093667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 253296640,
+      "rssBytes": 253493248,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 401,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.280667,
+      "backendIntervalsNs": [
+        [
+          684875,
+          29965542
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.280667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 253345792,
+      "rssBytes": 253558784,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 406,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.702791,
+      "backendIntervalsNs": [
+        [
+          689959,
+          32392750
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.702791,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 253476864,
+      "rssBytes": 253689856,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 411,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.310958,
+      "backendIntervalsNs": [
+        [
+          682500,
+          27993458
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.310958,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 254918656,
+      "rssBytes": 255115264,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 416,
+      "scenario": "catalog",
+      "transferredBytes": 1027,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 49.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.043459,
+      "backendIntervalsNs": [
+        [
+          781458,
+          29824917
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.043459,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 255049728,
+      "rssBytes": 255262720,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 421,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 32.324667,
+      "backendIntervalsNs": [
+        [
+          718125,
+          33042792
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 32.324667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 255918080,
+      "rssBytes": 256131072,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 426,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.209167,
+      "backendIntervalsNs": [
+        [
+          708500,
+          31917667
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.209167,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 256163840,
+      "rssBytes": 256393216,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 431,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 27.973375,
+      "backendIntervalsNs": [
+        [
+          735916,
+          28709291
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 27.973375,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 256868352,
+      "rssBytes": 257064960,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 436,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 49.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 36.123125,
+      "backendIntervalsNs": [
+        [
+          761042,
+          36884167
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 36.123125,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257032192,
+      "rssBytes": 257228800,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 441,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 65.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.385334,
+      "backendIntervalsNs": [
+        [
+          724291,
+          31109625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.385334,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257081344,
+      "rssBytes": 257294336,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 446,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.242875,
+      "backendIntervalsNs": [
+        [
+          692084,
+          31934959
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.242875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257130496,
+      "rssBytes": 257359872,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 451,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 31.615917,
+      "backendIntervalsNs": [
+        [
+          627458,
+          32243375
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 31.615917,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257179648,
+      "rssBytes": 257523712,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 456,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.929542,
+      "backendIntervalsNs": [
+        [
+          631458,
+          29561000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.929542,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257359872,
+      "rssBytes": 257589248,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 461,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 63.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.527875,
+      "backendIntervalsNs": [
+        [
+          707541,
+          31235416
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.527875,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257409024,
+      "rssBytes": 257622016,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 466,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 32.418667,
+      "backendIntervalsNs": [
+        [
+          608333,
+          33027000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 32.418667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257490944,
+      "rssBytes": 257703936,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 471,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.206959,
+      "backendIntervalsNs": [
+        [
+          633250,
+          30840209
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.206959,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257523712,
+      "rssBytes": 257720320,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 476,
+      "scenario": "catalog",
+      "transferredBytes": 1028,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 28.650708,
+      "backendIntervalsNs": [
+        [
+          707750,
+          29358458
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 28.650708,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257572864,
+      "rssBytes": 257769472,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 481,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 61.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 32.477917,
+      "backendIntervalsNs": [
+        [
+          761500,
+          33239417
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 32.477917,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257622016,
+      "rssBytes": 257835008,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 486,
+      "scenario": "catalog",
+      "transferredBytes": 1030,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 60.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 30.340792,
+      "backendIntervalsNs": [
+        [
+          671458,
+          31012250
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 30.340792,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257654784,
+      "rssBytes": 257916928,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 491,
+      "scenario": "catalog",
+      "transferredBytes": 1029,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 62.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 29.838667,
+      "backendIntervalsNs": [
+        [
+          682333,
+          30521000
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 29.838667,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 79653,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 257736704,
+      "rssBytes": 257949696,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 496,
+      "scenario": "catalog",
+      "transferredBytes": 1033,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 49.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    }
+  ],
+  "scenario": "catalog",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+    "engineVersion": "v1.5.5",
+    "nativeTimingVersion": 2,
+    "profile": "release",
+    "storageVersion": "64",
+    "treeHash": "6d5b04b7646276cf49a4e890832af3e10e59444e",
+    "uiProbeBuild": true
+  },
+  "uiMethod": "real App exact visible state followed by two animation frames; not compositor presentation timing",
+  "verification": {
+    "passed": true
+  }
+}

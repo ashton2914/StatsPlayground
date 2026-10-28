@@ -197,4 +197,15 @@ function result(
   assert.equal(cache.entryCount, 1, "generation invalidation should leave only the current-generation entries behind");
 }
 
+{
+  const cache = new TableWindowCache({maxRows:5000,maxBytes:8192});
+  const wide = result(0,1);
+  wide.rows=[[1,"🧪".repeat(4096)]];
+  cache.pin(request(0,1));
+  assert.equal(cache.put(request(0,1),wide),false,"a single wide UTF-16 cell must not exceed the byte budget despite a tiny row count");
+  assert.equal(cache.retainedRows,0);
+  assert.equal(cache.estimatedBytes,0);
+  assert.equal(cache.put(request(0,1),result(0,1)),true,"oversized admission must not poison subsequent normal windows");
+}
+
 console.log("table-window-cache regression passed");

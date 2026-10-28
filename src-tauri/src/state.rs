@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::engine::duckdb_engine::DuckDbEngine;
+use crate::engine::shared_database::SharedDatabase;
 use crate::error::AppError;
 use crate::mcp::broker::McpCommandBroker;
 use crate::mcp::server::McpServerRuntime;
@@ -26,7 +27,10 @@ pub struct WorkflowRunJournalEntry {
 pub struct AppState {
     pub graph_new: crate::services::graph_new_service::GraphNewRuntime,
     pub graph_new_epoch: AtomicU64,
-    pub db: Mutex<DuckDbEngine>,
+    pub db: SharedDatabase,
+    pub(crate) project_transition: Mutex<()>,
+    pub(crate) project_migrations: crate::services::project_migration_request::MigrationRequests,
+    pub(crate) project_database: RwLock<Option<Arc<crate::services::project_database::ProjectDatabase>>>,
     pub table_navigation: RwLock<Arc<TableNavigationService>>,
     pub tabulate_sessions: RwLock<Arc<TabulateSessionService>>,
     pub project: RwLock<Option<ProjectInfo>>,
@@ -48,7 +52,10 @@ impl AppState {
         Ok(Self {
             graph_new: Default::default(),
             graph_new_epoch: AtomicU64::new(0),
-            db: Mutex::new(engine),
+            db: SharedDatabase::temporary(engine),
+            project_transition: Mutex::new(()),
+            project_migrations: Default::default(),
+            project_database: RwLock::new(None),
             table_navigation: RwLock::new(Arc::new(table_navigation)),
             tabulate_sessions: RwLock::new(Arc::new(tabulate_sessions)),
             project: RwLock::new(None),
@@ -85,7 +92,7 @@ impl AppState {
             .write()
             .map_err(|e| AppError::Database(e.to_string()))?;
         tabulate_sessions.shutdown()?;
-        *db = replacement_engine;
+        db.replace_temporary(replacement_engine)?;
         *table_navigation = Arc::new(replacement_navigation);
         *tabulate_sessions = Arc::new(replacement_tabulate);
         self.graph_new_epoch.fetch_add(1, Ordering::AcqRel);

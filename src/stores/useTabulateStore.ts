@@ -1,3 +1,4 @@
+import { createNamedDocumentHelpers, projectDocumentNames, createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 import { create } from "zustand";
 import type { TabulateItem } from "../types/tabulate.ts";
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -27,7 +28,9 @@ function maxTabulateSuffix(items: readonly TabulateItem[]): number {
   }, 0);
 }
 
-export const useTabulateStore = create<TabulateStore>((set, get) => ({
+export const useTabulateStore = create<TabulateStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("tabulate", rawSet, get, (state) => state.items);
+return ({
   items: [],
   counter: 0,
   addItem: (item) =>
@@ -61,12 +64,13 @@ export const useTabulateStore = create<TabulateStore>((set, get) => ({
         items: state.items.filter((item) => item.id !== id),
       }));
     },
-  loadFromProject: (items) => set({ items, counter: maxTabulateSuffix(items) }),
-  reset: () => set({ items: [], counter: 0 }),
+  loadFromProject: (items) => withoutDocumentPersistence(() => set({ items, counter: maxTabulateSuffix(items) })),
+  reset: () => withoutDocumentPersistence(() => set({ items: [], counter: 0 })),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    const nextCounter = get().counter + 1;
+    const nextCounter = Math.max(get().counter, createNamedDocumentHelpers("Tabulate").maxSuffix(projectDocumentNames(["tabulate"], []).map(name => ({name})))) + 1;
     set({ counter: nextCounter });
     return `Tabulate ${nextCounter}`;
   },
-}));
+});
+});

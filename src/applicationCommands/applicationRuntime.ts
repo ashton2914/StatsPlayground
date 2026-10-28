@@ -1,9 +1,11 @@
+import {prepareNativeDocumentAccess} from "@/projectPersistence/catalogAccess";
+import {extractReportDependencies} from "@/utils/reportParser";
 import {
   createProjectCommandHandlers,
   type ProjectCommandDependencies,
 } from "@/applicationCommands/projectCommands";
 import { createIoCommandHandlers, type IoCommandDependencies } from "@/applicationCommands/ioCommands";
-import { createApplicationCommandRuntime } from "@/applicationCommands/runtime";
+import { createApplicationCommandRuntime, CommandExecutionError } from "@/applicationCommands/runtime";
 import { createTableCommandHandlers, type TableCommandDependencies } from "@/applicationCommands/tableCommands";
 import {
   createTableTransformCommandHandlers,
@@ -36,6 +38,7 @@ export interface ApplicationRuntimeDependencies {
   initialRevision?: number;
   policy?: CommandPolicy;
   revision?: {
+    isAuthoritative?: () => boolean;
     get: () => number;
     set: (revision: number) => void;
   };
@@ -87,6 +90,15 @@ export function createApplicationRuntime(
   });
   const runtime = createApplicationCommandRuntime<ApplicationCommandRegistry>({
     initialRevision: dependencies.initialRevision,
+    captureMutationGuard: () => {
+      const {persistence:owner,project}=useProjectStore.getState();
+      return () => {
+        const current=useProjectStore.getState();
+        if(current.persistence!==owner||(!owner&&current.project!==project)) {
+          throw new CommandExecutionError("cancelled","Project changed before command publication");
+        }
+      };
+    },
     policy: dependencies.policy ?? createDefaultCommandPolicy({
       inspectCsvExportTarget: async (input) => {
         const result = await ioHandlers.inspectTableExportCsvTarget(input);
@@ -128,6 +140,16 @@ export function createApplicationRuntime(
     ...dependencies.tabulate,
   });
 
+  async function persistDocumentOutcome<T>(outcome: T): Promise<T> {
+    const persistence = dependencies.project?.getPersistence
+      ? dependencies.project.getPersistence() : useProjectStore.getState().persistence;
+    if (persistence) {
+      const through = persistence.captureBarrier();
+      await persistence.flushThrough(through);
+    }
+    return outcome;
+  }
+
   runtime.register(
     "project.inspect",
     async (input) => ({
@@ -151,7 +173,7 @@ export function createApplicationRuntime(
   runtime.register(
     "table.create",
     async (input, context) => {
-      const outcome = await tableHandlers.createTable(input, { beginCommit: () => context.beginCommit() });
+      const outcome = await tableHandlers.createTable(input, { beginCommit: () => context.beginCommit(), assertCurrent: () => context.assertCurrent?.() });
       return {
         changed: true,
         data: outcome.result,
@@ -167,6 +189,7 @@ export function createApplicationRuntime(
       const outcome = await tableTransformHandlers.create(input, {
         signal: context.signal,
         beginCommit: () => context.beginCommit(),
+        assertCurrent: () => context.assertCurrent?.(),
       });
       return {
         changed: true,
@@ -183,6 +206,7 @@ export function createApplicationRuntime(
       const outcome = await tableTransformHandlers.run(input, {
         signal: context.signal,
         beginCommit: () => context.beginCommit(),
+        assertCurrent: () => context.assertCurrent?.(),
       });
       return {
         changed: true,
@@ -199,6 +223,7 @@ export function createApplicationRuntime(
       const outcome = await sqlHandlers.createTable(input, {
         signal: context.signal,
         beginCommit: () => context.beginCommit(),
+        assertCurrent: () => context.assertCurrent?.(),
       });
       return {
         changed: true,
@@ -211,18 +236,22 @@ export function createApplicationRuntime(
 
   runtime.register(
     "analysis.create",
-    async (input, context) => ({
+    async (input, context) => {
+      await prepareNativeDocumentAccess({datasetIds:[input.sourceDatasetId]});
+      return ({
       changed: true,
-      data: await analysisHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      data: await persistDocumentOutcome(await analysisHandlers.create(input, { beginCommit: () => context.beginCommit() })),
       warnings: [],
-    }),
+    });
+    },
     { mode: "mutation", risk: "low" },
   );
 
   runtime.register(
     "analysis.update",
     async (input, context) => {
-      const outcome = analysisHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      await prepareNativeDocumentAccess({documentIds:[input.analysisId]});
+      const outcome = await persistDocumentOutcome(analysisHandlers.update(input, { beginCommit: () => context.beginCommit() }));
       return {
         changed: outcome.changed,
         data: outcome.data,
@@ -234,28 +263,35 @@ export function createApplicationRuntime(
 
   runtime.register(
     "analysis.run",
-    async (input, context) => ({
+    async (input, context) => {
+      await prepareNativeDocumentAccess({documentIds:[input.analysisId]});
+      return ({
       changed: false,
       data: await analysisHandlers.run(input, { signal: context.signal }),
       warnings: [],
-    }),
+    });
+    },
     { mode: "read", risk: "low" },
   );
 
   runtime.register(
     "graph.create",
-    async (input, context) => ({
+    async (input, context) => {
+      await prepareNativeDocumentAccess({datasetIds:[input.sourceDatasetId]});
+      return ({
       changed: true,
-      data: graphHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      data: await persistDocumentOutcome(graphHandlers.create(input, { beginCommit: () => context.beginCommit() })),
       warnings: [],
-    }),
+    });
+    },
     { mode: "mutation", risk: "low" },
   );
 
   runtime.register(
     "graph.update",
     async (input, context) => {
-      const outcome = graphHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      await prepareNativeDocumentAccess({documentIds:[input.graphId],datasetIds:[input.definition.sourceDatasetId]});
+      const outcome = await persistDocumentOutcome(graphHandlers.update(input, { beginCommit: () => context.beginCommit() }));
       return {
         changed: outcome.changed,
         data: outcome.data,
@@ -267,18 +303,23 @@ export function createApplicationRuntime(
 
   runtime.register(
     "report.create",
-    async (input, context) => ({
+    async (input, context) => {
+      await prepareNativeDocumentAccess();
+      return ({
       changed: true,
-      data: reportHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      data: await persistDocumentOutcome(reportHandlers.create(input, { beginCommit: () => context.beginCommit() })),
       warnings: [],
-    }),
+    });
+    },
     { mode: "mutation", risk: "low" },
   );
 
   runtime.register(
     "report.update",
     async (input, context) => {
-      const outcome = reportHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      const embeds=extractReportDependencies(input.markdown);
+      await prepareNativeDocumentAccess({documentIds:[input.reportId,...embeds.filter(item=>item.kind!=="table").map(item=>item.documentId)],datasetIds:embeds.filter(item=>item.kind==="table").map(item=>item.documentId)});
+      const outcome = await persistDocumentOutcome(reportHandlers.update(input, { beginCommit: () => context.beginCommit() }));
       return {
         changed: outcome.changed,
         data: outcome.data,
@@ -290,17 +331,21 @@ export function createApplicationRuntime(
 
   runtime.register(
     "tabulate.create",
-    async (input, context) => ({
+    async (input, context) => {
+      await prepareNativeDocumentAccess({datasetIds:[input.sourceDatasetId]});
+      return ({
       changed: true,
-      data: await tabulateHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      data: await persistDocumentOutcome(await tabulateHandlers.create(input, { beginCommit: () => context.beginCommit() })),
       warnings: [],
-    }),
+    });
+    },
     { mode: "mutation", risk: "low" },
   );
 
   runtime.register(
     "tabulate.run",
     async (input, context) => {
+      await prepareNativeDocumentAccess({documentIds:[input.tabulateId]});
       const outcome = await tabulateHandlers.run(input, { signal: context.signal });
       return {
         changed: false,
@@ -314,6 +359,7 @@ export function createApplicationRuntime(
   runtime.register(
     "tabulate.exportTable",
     async (input, context) => {
+      await prepareNativeDocumentAccess({documentIds:[input.tabulateId]});
       const outcome = await tabulateHandlers.exportTable(input, {
         signal: context.signal,
         beginCommit: () => context.beginCommit(),
@@ -404,6 +450,7 @@ export function createApplicationRuntime(
 }
 
 const projectRevisionAdapter = {
+  isAuthoritative: () => Boolean(useProjectStore.getState().persistence),
   get: () => useProjectStore.getState().projectRevision,
   set: (revision: number) => useProjectStore.getState().setRevision(revision),
 };

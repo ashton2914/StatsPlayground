@@ -1,0 +1,121 @@
+{
+  "cache": {
+    "method": "owned-file msync(MS_SYNC|MS_INVALIDATE) immediately before sample, mincore confirms zero resident pages; independent App process",
+    "mode": "cold",
+    "osCache": "confirmed-cold"
+  },
+  "fixture": {
+    "columns": 20,
+    "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+    "rows": 10000000,
+    "seed": 282,
+    "tier": "regular"
+  },
+  "profiling": {
+    "artifact": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-06/regular10m-profile.json",
+    "method": "DuckDB EXPLAIN (ANALYZE, FORMAT JSON) using canonical navigation SQL and actual bound values; separate untimed probe",
+    "sourceRowsScanned": [
+      122880,
+      122880,
+      46720
+    ],
+    "verifiedNoFullScan": true
+  },
+  "samples": [
+    {
+      "backendAggregateMs": 24.067,
+      "backendIntervalsNs": [
+        [
+          1479541,
+          25546541
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 24.067,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "coldCache": {
+        "device": 16777233,
+        "fileBytes": 1222651904,
+        "inode": 72274045,
+        "method": "owned-file MAP_SHARED + msync(MS_SYNC|MS_INVALIDATE), then mincore resident-bit census; preparation excluded from operation timing",
+        "pageSize": 16384,
+        "pages": 74625,
+        "residentPagesAfter": 0,
+        "residentPagesBefore": 216
+      },
+      "diskReadBytes": 3276800,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 1,
+      "nativeCallsPending": 0,
+      "processId": 77393,
+      "retention": {
+        "activeViewports": 0,
+        "aggregateBytes": 0,
+        "aggregateRows": 0,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              30,
+              32
+            ],
+            [
+              32,
+              48
+            ]
+          ],
+          "operationFinishedMs": 30,
+          "readyObservedMs": 30,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": null,
+        "viewportRows": null
+      },
+      "rssBaselineBytes": 154828800,
+      "rssBytes": 155779072,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 1,
+      "scenario": "catalog",
+      "transferredBytes": 1025,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 48.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 0,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    }
+  ],
+  "scenario": "catalog",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+    "engineVersion": "v1.5.5",
+    "nativeTimingVersion": 2,
+    "profile": "release",
+    "storageVersion": "64",
+    "treeHash": "fa2ccc624a2cdeb46218933cf9f89d612e2232cc",
+    "uiObservationVersion": 1,
+    "uiProbeBuild": true
+  },
+  "uiMethod": "real App exact visible state followed by two animation frames; not compositor presentation timing",
+  "verification": {
+    "passed": true
+  }
+}

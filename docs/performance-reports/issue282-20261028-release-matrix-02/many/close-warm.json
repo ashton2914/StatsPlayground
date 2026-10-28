@@ -1,0 +1,38 @@
+{
+  "cache": {
+    "method": "same-process real App operations; OS cache not purged",
+    "mode": "warm"
+  },
+  "fixture": {
+    "columns": 20,
+    "id": "b9556d8f-12f5-46bd-a2f3-6c0429e60a68",
+    "rows": 300000,
+    "seed": 282,
+    "tier": "many-documents"
+  },
+  "profiling": {
+    "artifact": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-02/many-profile.json",
+    "method": "DuckDB EXPLAIN (ANALYZE, FORMAT JSON) using canonical navigation SQL and actual bound values; separate untimed probe",
+    "sourceRowsScanned": [
+      122880,
+      122880,
+      54240
+    ],
+    "verifiedNoFullScan": true
+  },
+  "samples": [],
+  "scenario": "close",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+    "engineVersion": "v1.5.5",
+    "profile": "release",
+    "storageVersion": "64",
+    "treeHash": "f151e9d27e10b51a8c574c051c3cc453e5f6e614",
+    "uiProbeBuild": true
+  },
+  "uiMethod": "real App exact visible state followed by two animation frames; not compositor presentation timing",
+  "verification": {
+    "passed": false
+  }
+}

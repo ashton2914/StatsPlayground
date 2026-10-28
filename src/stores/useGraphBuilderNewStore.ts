@@ -1,3 +1,4 @@
+import { projectDocumentNames, createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 import { defaultLineOptions } from "@/components/graphBuilder/shared/graphLayerOptionContracts";
 import { createGraphNewLayer, migratedGraphNewLayers, normalizeGraphNewLayers, legacyRenderOptions } from "@/components/graphBuilderNew/graphNewLayers";
 import type { GraphNewLayer } from "@/types/graphBuilderNew";
@@ -68,7 +69,7 @@ function normalizeHiddenOverlayGroupIds(
   return ids;
 }
 
-function normalizeDocument(
+export function normalizeGraphNewDocument(
   item: PersistedGraphBuilderNewDocument,
 ): GraphBuilderNewDocument {
   if (item.version !== 1 && item.version !== 2 && item.version !== 3) {
@@ -92,7 +93,9 @@ function normalizeDocument(
   };
 }
 
-export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((set, get) => {
+export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("graphNew", rawSet, get, (state) => state.items);
+
   let runtimeEpoch = 0;
   const update = (id: string, change: (item: GraphBuilderNewDocument) => Partial<GraphBuilderNewDocument>) => {
     const item = get().items.find((candidate) => candidate.id === id);
@@ -120,7 +123,7 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((set, get) =
     items: [], sessions: [],
     open: (datasetId, datasetGeneration) => {
       assertProjectMutable(useProjectStore.getState().readOnly);
-      const names = new Set(get().items.map(({ name }) => name.trim().normalize("NFC").toLowerCase()));
+      const names = new Set(projectDocumentNames(["graphNew"], get().items.map(item => item.name)).map(name => name.trim().normalize("NFC").toLowerCase()));
       let number = 1;
       while (names.has(`graph builder-new ${number}`)) number += 1;
       const documentId = crypto.randomUUID();
@@ -148,19 +151,19 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((set, get) =
     renameItem: (id, name) => update(id, (item) => {
       const error = validateNativeGraphBasename(name);
       if (error) throw new ProjectNameValidationError(error);
-      const allocated = allocateProjectBasename(`${name}.spgn`, ".spgn", get().items.map((candidate) => candidate.name), item.name);
+      const allocated = allocateProjectBasename(`${name}.spgn`, ".spgn", projectDocumentNames(["graphNew"], get().items.map(candidate => candidate.name)), item.name);
       const allocatedError = validateNativeGraphBasename(allocated);
       if (allocatedError) throw new ProjectNameValidationError(allocatedError);
       return { name: allocated };
     }),
     deleteItem: (id) => remove((item) => item.id === id),
     deleteByDataset: (datasetId) => remove((item) => item.datasetId === datasetId),
-    loadFromProject: (items) => {
-      const copies = items.map(normalizeDocument);
+    loadFromProject: (items) => withoutDocumentPersistence(() => {
+      const copies = items.map(normalizeGraphNewDocument);
       if (new Set(copies.map(({ id }) => id)).size !== copies.length) throw new Error("graph_new_duplicate_document_id");
       set({ items: copies, sessions: [] });
-    },
-    reset: () => set({ items: [], sessions: [] }),
+    }),
+    reset: () => withoutDocumentPersistence(() => set({ items: [], sessions: [] })),
     setColumns: (id, xColumnId, yColumnId) => update(id, (item) => ({
       xColumnId, yColumnId, camera: item.xColumnId === xColumnId && item.yColumnId === yColumnId ? item.camera : null,
     })),

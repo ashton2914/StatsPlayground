@@ -1,0 +1,724 @@
+{
+  "input": {
+    "analyses": [],
+    "analysisFolders": {},
+    "distributions": [
+      {
+        "id": "distribution",
+        "name": "Distribution",
+        "sourceDatasetId": "table",
+        "responses": [
+          {
+            "name": "Y",
+            "type": "continuous"
+          }
+        ],
+        "weight": null,
+        "frequency": null,
+        "by": [],
+        "nestedSubgroup": null,
+        "analysis": {
+          "confidenceLevel": 0.99,
+          "specLimits": {
+            "Y": {
+              "lsl": 1,
+              "target": 2,
+              "usl": 3
+            }
+          },
+          "fitDistributions": [
+            "normal"
+          ],
+          "fitAll": false
+        },
+        "graphs": {
+          "overview": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Y",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "histogram",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.overview.histogram"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.overview.fittedCurves"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "boxPlot": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Y",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "boxplot",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.boxPlot"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "ecdf": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Y",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.ecdf"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "normalQuantile": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "Y",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "points",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.points"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.reference"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.lower"
+                    }
+                  },
+                  {
+                    "kind": "line",
+                    "enabled": true,
+                    "options": {
+                      "elementId": "distribution.normalQuantile.upper"
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          }
+        },
+        "createdAt": "2026-10-23T00:00:00.000Z"
+      }
+    ],
+    "distributionFolders": {
+      "distribution": "Analyses/Distribution"
+    },
+    "fitYByX": [
+      {
+        "id": "fit-y",
+        "name": "Fit Y by X",
+        "sourceDatasetId": "table",
+        "response": {
+          "name": "Y",
+          "type": "continuous"
+        },
+        "factor": {
+          "name": "X",
+          "type": "continuous"
+        },
+        "personality": "bivariate",
+        "graph": {
+          "mode": "2d",
+          "modeStates": {
+            "twoD": {
+              "encoding": {
+                "x": {
+                  "name": "X",
+                  "type": "continuous"
+                },
+                "y": {
+                  "name": "Y",
+                  "type": "continuous"
+                }
+              },
+              "multiX": [],
+              "multiY": [],
+              "elements": [
+                {
+                  "kind": "points",
+                  "enabled": true
+                },
+                {
+                  "kind": "fitline",
+                  "enabled": true,
+                  "options": {
+                    "fitType": "polynomial",
+                    "degree": 1,
+                    "showFitCI": true
+                  }
+                }
+              ],
+              "smootherLambda": 0.4
+            },
+            "threeD": {
+              "encoding": {},
+              "elements": [
+                {
+                  "kind": "scatter3d",
+                  "enabled": true
+                }
+              ],
+              "smootherLambda": 0.4
+            },
+            "multivariate": {
+              "columns": [],
+              "chartType": "correlationMatrix",
+              "correlationMethod": "pearson"
+            }
+          },
+          "filters": [],
+          "sampling": {
+            "mode": "full"
+          }
+        },
+        "createdAt": "2026-10-23T00:00:00.000Z"
+      }
+    ],
+    "fitYByXFolders": {
+      "fit-y": "Analyses/Fit"
+    },
+    "fitModels": [
+      {
+        "id": "fit-model",
+        "name": "Fit Model",
+        "sourceDatasetId": "table",
+        "response": {
+          "name": "Y",
+          "type": "continuous"
+        },
+        "construct": {
+          "kind": "manual"
+        },
+        "terms": [
+          {
+            "kind": "main",
+            "columnNames": [
+              "X"
+            ]
+          }
+        ],
+        "centeringMethod": "mean",
+        "createdAt": "2026-10-23T00:00:00.000Z"
+      }
+    ],
+    "fitModelFolders": {
+      "fit-model": "Analyses/Model"
+    }
+  },
+  "expected": {
+    "analyses": [
+      {
+        "schemaVersion": 1,
+        "documentType": "analysis",
+        "id": "distribution",
+        "name": "Distribution",
+        "analysisKind": "distribution",
+        "configRevision": 1,
+        "source": {
+          "datasetId": "table"
+        },
+        "definition": {
+          "kind": "distribution",
+          "responses": [
+            {
+              "name": "Y",
+              "type": "continuous"
+            }
+          ],
+          "weight": null,
+          "frequency": null,
+          "by": [],
+          "nestedSubgroup": null,
+          "analysis": {
+            "confidenceLevel": 0.99,
+            "specLimits": {},
+            "fitDistributions": [
+              "normal"
+            ],
+            "fitAll": false
+          },
+          "graphs": {
+            "overview": {
+              "mode": "2d",
+              "modeStates": {
+                "twoD": {
+                  "encoding": {
+                    "x": {
+                      "name": "Y",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "elements": [
+                    {
+                      "kind": "histogram",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.overview.histogram"
+                      }
+                    },
+                    {
+                      "kind": "line",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.overview.fittedCurves"
+                      }
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "threeD": {
+                  "encoding": {},
+                  "elements": [
+                    {
+                      "kind": "scatter3d",
+                      "enabled": true
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "multivariate": {
+                  "columns": [],
+                  "chartType": "correlationMatrix",
+                  "correlationMethod": "pearson"
+                }
+              },
+              "filters": [],
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "boxPlot": {
+              "mode": "2d",
+              "modeStates": {
+                "twoD": {
+                  "encoding": {
+                    "x": {
+                      "name": "Y",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "elements": [
+                    {
+                      "kind": "boxplot",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.boxPlot"
+                      }
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "threeD": {
+                  "encoding": {},
+                  "elements": [
+                    {
+                      "kind": "scatter3d",
+                      "enabled": true
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "multivariate": {
+                  "columns": [],
+                  "chartType": "correlationMatrix",
+                  "correlationMethod": "pearson"
+                }
+              },
+              "filters": [],
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "ecdf": {
+              "mode": "2d",
+              "modeStates": {
+                "twoD": {
+                  "encoding": {
+                    "x": {
+                      "name": "Y",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "elements": [
+                    {
+                      "kind": "line",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.ecdf"
+                      }
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "threeD": {
+                  "encoding": {},
+                  "elements": [
+                    {
+                      "kind": "scatter3d",
+                      "enabled": true
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "multivariate": {
+                  "columns": [],
+                  "chartType": "correlationMatrix",
+                  "correlationMethod": "pearson"
+                }
+              },
+              "filters": [],
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "normalQuantile": {
+              "mode": "2d",
+              "modeStates": {
+                "twoD": {
+                  "encoding": {
+                    "x": {
+                      "name": "Y",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "elements": [
+                    {
+                      "kind": "points",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.normalQuantile.points"
+                      }
+                    },
+                    {
+                      "kind": "line",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.normalQuantile.reference"
+                      }
+                    },
+                    {
+                      "kind": "line",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.normalQuantile.lower"
+                      }
+                    },
+                    {
+                      "kind": "line",
+                      "enabled": true,
+                      "options": {
+                        "elementId": "distribution.normalQuantile.upper"
+                      }
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "threeD": {
+                  "encoding": {},
+                  "elements": [
+                    {
+                      "kind": "scatter3d",
+                      "enabled": true
+                    }
+                  ],
+                  "smootherLambda": 0.4
+                },
+                "multivariate": {
+                  "columns": [],
+                  "chartType": "correlationMatrix",
+                  "correlationMethod": "pearson"
+                }
+              },
+              "filters": [],
+              "sampling": {
+                "mode": "full"
+              }
+            }
+          }
+        },
+        "presentation": {
+          "schemaVersion": 1,
+          "layout": "distribution-v1"
+        },
+        "createdAt": "2026-10-23T00:00:00.000Z",
+        "updatedAt": "2026-10-23T00:00:00.000Z"
+      },
+      {
+        "schemaVersion": 1,
+        "documentType": "analysis",
+        "id": "fit-y",
+        "name": "Fit Y by X",
+        "analysisKind": "fitYByX",
+        "configRevision": 1,
+        "source": {
+          "datasetId": "table"
+        },
+        "definition": {
+          "kind": "fitYByX",
+          "response": {
+            "name": "Y",
+            "type": "continuous"
+          },
+          "factor": {
+            "name": "X",
+            "type": "continuous"
+          },
+          "personality": "bivariate",
+          "confidenceLevel": 0.95
+        },
+        "presentation": {
+          "schemaVersion": 1,
+          "layout": "fit-y-by-x-v1",
+          "graph": {
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {
+                  "x": {
+                    "name": "X",
+                    "type": "continuous"
+                  },
+                  "y": {
+                    "name": "Y",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "elements": [
+                  {
+                    "kind": "points",
+                    "enabled": true
+                  },
+                  {
+                    "kind": "fitline",
+                    "enabled": true,
+                    "options": {
+                      "fitType": "polynomial",
+                      "degree": 1,
+                      "showFitCI": true
+                    }
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [
+                  {
+                    "kind": "scatter3d",
+                    "enabled": true
+                  }
+                ],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            }
+          }
+        },
+        "createdAt": "2026-10-23T00:00:00.000Z",
+        "updatedAt": "2026-10-23T00:00:00.000Z"
+      },
+      {
+        "schemaVersion": 1,
+        "documentType": "analysis",
+        "id": "fit-model",
+        "name": "Fit Model",
+        "analysisKind": "fitModel",
+        "configRevision": 1,
+        "source": {
+          "datasetId": "table"
+        },
+        "definition": {
+          "kind": "fitModel",
+          "response": {
+            "name": "Y",
+            "type": "continuous"
+          },
+          "construct": {
+            "kind": "manual"
+          },
+          "terms": [
+            {
+              "kind": "main",
+              "columnNames": [
+                "X"
+              ]
+            }
+          ],
+          "centeringMethod": "mean",
+          "confidenceLevel": 0.95
+        },
+        "presentation": {
+          "schemaVersion": 1,
+          "layout": "fit-model-v1"
+        },
+        "createdAt": "2026-10-23T00:00:00.000Z",
+        "updatedAt": "2026-10-23T00:00:00.000Z"
+      }
+    ],
+    "analysisFolders": {
+      "distribution": "Analyses/Distribution",
+      "fit-y": "Analyses/Fit",
+      "fit-model": "Analyses/Model"
+    },
+    "migratedCount": 3,
+    "migrationWarnings": []
+  }
+}

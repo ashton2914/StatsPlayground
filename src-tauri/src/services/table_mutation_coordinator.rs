@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use duckdb::params;
@@ -8,10 +9,32 @@ use crate::models::calculated_column::{
     ArchivedCalculatedColumn, CalculatedColumnDefinitionV1, CalculatedOutputTypeV1,
 };
 use crate::services::calculated_column_expression::{
-    compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
+    compile_materialized_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
     TypedCalculatedOutput,
 };
 use crate::services::table_history_archive::{capture_history_schema, record_history_timeline};
+
+#[cfg(test)]
+thread_local! {
+    static FULL_BEFORE_TABLE_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_full_before_table_copy_counter() {
+    FULL_BEFORE_TABLE_COPIES.with(|counter| counter.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn full_before_table_copy_counter() -> usize {
+    FULL_BEFORE_TABLE_COPIES.with(std::cell::Cell::get)
+}
+
+#[cfg(all(not(test), feature="perf-harness"))]
+static FULL_BEFORE_TABLE_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(not(test), feature="perf-harness"))]
+pub(crate) fn reset_full_before_table_copy_counter(){FULL_BEFORE_TABLE_COPIES.store(0,std::sync::atomic::Ordering::Relaxed);}
+#[cfg(all(not(test), feature="perf-harness"))]
+pub(crate) fn full_before_table_copy_counter()->usize {FULL_BEFORE_TABLE_COPIES.load(std::sync::atomic::Ordering::Relaxed)}
 
 pub(crate) struct TableMutationEffects<T> {
     pub value: T,
@@ -35,12 +58,36 @@ pub(crate) fn execute_table_mutation<T>(
     expected_generation: Option<u64>,
     operation: impl FnOnce(&DuckDbEngine) -> Result<TableMutationEffects<T>, AppError>,
 ) -> Result<T, AppError> {
+    engine.conn().execute_batch("BEGIN TRANSACTION")?;
+    let result = execute_table_mutation_in_transaction(engine, dataset_id, expected_generation, operation);
+    crate::services::table_delta_mutation::finish_transaction(engine, result)
+}
+
+pub(crate) fn execute_table_mutation_in_transaction<T>(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    expected_generation: Option<u64>,
+    operation: impl FnOnce(&DuckDbEngine) -> Result<TableMutationEffects<T>, AppError>,
+) -> Result<T, AppError> {
+    execute_table_mutation_scoped_in_transaction(engine,dataset_id,expected_generation,None,operation)
+}
+
+pub(crate) fn execute_column_mutation_in_transaction<T>(
+    engine:&DuckDbEngine,dataset_id:&str,expected_generation:Option<u64>,column_ids:Option<BTreeSet<String>>,
+    operation:impl FnOnce(&DuckDbEngine)->Result<TableMutationEffects<T>,AppError>,
+)->Result<T,AppError> {
+    execute_table_mutation_scoped_in_transaction(engine,dataset_id,expected_generation,column_ids,operation)
+}
+
+fn execute_table_mutation_scoped_in_transaction<T>(
+    engine:&DuckDbEngine,dataset_id:&str,expected_generation:Option<u64>,column_ids:Option<BTreeSet<String>>,
+    operation:impl FnOnce(&DuckDbEngine)->Result<TableMutationEffects<T>,AppError>,
+)->Result<T,AppError> {
     let change_set_id = uuid::Uuid::new_v4().to_string();
     let suffix = change_set_id.replace('-', "_");
     let full_before_table =
         DuckDbEngine::quote_identifier(&format!("_history_full_before_{suffix}"));
 
-    engine.conn().execute_batch("BEGIN TRANSACTION")?;
     let result = (|| -> Result<T, AppError> {
         let generation = engine.get_dataset_generation(dataset_id)?;
         if let Some(expected_generation) = expected_generation {
@@ -56,12 +103,16 @@ pub(crate) fn execute_table_mutation<T>(
         let dataset_table =
             DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
 
-        engine.conn().execute(
-            &format!(
-                "CREATE TABLE {full_before_table} AS SELECT * FROM {dataset_table} ORDER BY \"_row_id\""
-            ),
-            [],
-        )?;
+        let projection=if let Some(ids)=column_ids.as_ref() {
+            std::iter::once("\"_row_id\"".to_string()).chain(before_columns.iter().filter(|(id,_)|ids.contains(*id)).map(|(_,column)|DuckDbEngine::quote_identifier(&column.name))).collect::<Vec<_>>().join(", ")
+        } else {
+            #[cfg(test)]
+            FULL_BEFORE_TABLE_COPIES.with(|counter| counter.set(counter.get().saturating_add(1)));
+            #[cfg(all(not(test), feature="perf-harness"))]
+            FULL_BEFORE_TABLE_COPIES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+            "*".into()
+        };
+        engine.conn().execute(&format!("CREATE TABLE {full_before_table} AS SELECT {projection} FROM {dataset_table} ORDER BY \"_row_id\""),[])?;
 
         let effects = operation(engine)?;
         let definitions_by_output = ready_definitions_by_output(engine, dataset_id)?;
@@ -75,22 +126,12 @@ pub(crate) fn execute_table_mutation<T>(
             dataset_id,
             &definitions_by_output,
             &affected_outputs,
+            None,
         )?;
         let after_columns = column_history_by_id(engine, dataset_id)?;
         let after_schema_json = capture_history_schema(engine, dataset_id)?;
 
-        let mut tracked_column_ids = before_columns
-            .keys()
-            .chain(after_columns.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        tracked_column_ids.extend(
-            before_columns
-                .values()
-                .chain(after_columns.values())
-                .filter(|column| column.calculated.is_some())
-                .map(|column| column.column_id.clone()),
-        );
+        let mut tracked_column_ids = if let Some(ids)=column_ids.as_ref() {ids.clone()} else {before_columns.keys().chain(after_columns.keys()).cloned().collect::<BTreeSet<_>>()};
         tracked_column_ids.extend(affected_outputs);
         let prefer_before_history_order = effects
             .recompute_column_ids
@@ -116,7 +157,7 @@ pub(crate) fn execute_table_mutation<T>(
             effects.change_set_id.as_deref().unwrap_or(&change_set_id),
             dataset_id,
             "full",
-            "legacy_full",
+            if column_ids.is_some() {"column_values"} else {"legacy_full"},
             generation,
             generation + 1,
             &before_schema_json,
@@ -134,19 +175,11 @@ pub(crate) fn execute_table_mutation<T>(
         Ok(effects.value)
     })();
 
-    match result {
-        Ok(value) => {
-            engine.conn().execute_batch("COMMIT")?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = engine.conn().execute_batch("ROLLBACK");
-            let _ = engine
-                .conn()
-                .execute(&format!("DROP TABLE IF EXISTS {full_before_table}"), []);
-            Err(error)
-        }
-    }
+    result
+}
+
+pub(crate) fn has_affected_calculated_outputs(engine: &DuckDbEngine, dataset_id: &str, changed: &BTreeSet<String>) -> Result<bool, AppError> {
+    Ok(!affected_output_ids(changed, &ready_definitions_by_output(engine, dataset_id)?).is_empty())
 }
 
 fn ready_definitions_by_output(
@@ -163,6 +196,45 @@ fn ready_definitions_by_output(
             ArchivedCalculatedColumn::Preserved { .. } => None,
         })
         .collect())
+}
+
+pub(crate) fn mutation_column_ids(engine:&DuckDbEngine,dataset_id:&str,changed:&BTreeSet<String>)->Result<BTreeSet<String>,AppError> {
+    let mut ids=changed.clone();ids.extend(affected_output_ids(changed,&ready_definitions_by_output(engine,dataset_id)?));Ok(ids)
+}
+
+pub(crate) type FormulaRowSets = BTreeMap<String,Arc<BTreeSet<i64>>>;
+
+pub(crate) fn affected_formula_rows(engine:&DuckDbEngine,dataset:&str,changed:&FormulaRowSets)->Result<FormulaRowSets,AppError> {
+    let definitions=ready_definitions_by_output(engine,dataset)?;
+    let mut known=changed.clone();let mut derived=FormulaRowSets::new();
+    let mut unions=BTreeMap::<Vec<usize>,Arc<BTreeSet<i64>>>::new();
+    for id in affected_output_ids(&changed.keys().cloned().collect(),&definitions) {
+        let definition=definitions.get(&id).ok_or_else(||AppError::Database("calculated definition is missing".into()))?;
+        let sets=definition.dependency_column_ids.iter().filter_map(|dependency|known.get(dependency)).collect::<Vec<_>>();
+        let Some(first)=sets.first() else {continue;};
+        let rows=if sets.iter().all(|set|Arc::ptr_eq(first,set)||first.as_ref()==set.as_ref()) {Arc::clone(first)} else {
+            let mut key=sets.iter().map(|set|Arc::as_ptr(set) as usize).collect::<Vec<_>>();key.sort_unstable();key.dedup();
+            Arc::clone(unions.entry(key).or_insert_with(||Arc::new(sets.iter().flat_map(|set|set.iter().copied()).collect())))
+        };
+        known.insert(id.clone(),Arc::clone(&rows));derived.insert(id,rows);
+    }
+    Ok(derived)
+}
+
+pub(crate) fn materialize_formula_rows(engine:&DuckDbEngine,dataset:&str,rows:&FormulaRowSets)->Result<(),AppError> {
+    if rows.is_empty() {return Ok(());}
+    let definitions=ready_definitions_by_output(engine,dataset)?;
+    let ordered=affected_output_ids(&rows.keys().cloned().collect(),&definitions);
+    materialize_outputs(engine,dataset,&definitions,&ordered,Some(rows))
+}
+
+pub(crate) fn materialize_added_rows(engine:&DuckDbEngine,dataset:&str,row_ids:&[i64])->Result<(),AppError> {
+    if row_ids.is_empty() {return Ok(());}
+    let definitions=ready_definitions_by_output(engine,dataset)?;
+    let rows=Arc::new(row_ids.iter().copied().collect::<BTreeSet<_>>());
+    let sets=definitions.keys().map(|id|(id.clone(),Arc::clone(&rows))).collect::<FormulaRowSets>();
+    let ordered=affected_output_ids(&definitions.keys().cloned().collect(),&definitions);
+    materialize_outputs(engine,dataset,&definitions,&ordered,Some(&sets))
 }
 
 fn affected_output_ids(
@@ -223,11 +295,19 @@ fn affected_output_ids(
     ordered
 }
 
+/// Validate ready formula bindings after a NULL-only source type change, with no row writes.
+pub(crate) fn validate_materialized_formula_types(engine:&DuckDbEngine,dataset:&str)->Result<(),AppError> {
+    let definitions=ready_definitions_by_output(engine,dataset)?;
+    let outputs=definitions.keys().cloned().collect::<Vec<_>>();
+    materialize_outputs(engine,dataset,&definitions,&outputs,Some(&FormulaRowSets::new()))
+}
+
 fn materialize_outputs(
     engine: &DuckDbEngine,
     dataset_id: &str,
     definitions_by_output: &BTreeMap<String, CalculatedColumnDefinitionV1>,
     output_ids: &[String],
+    row_sets:Option<&FormulaRowSets>,
 ) -> Result<(), AppError> {
     if output_ids.is_empty() {
         return Ok(());
@@ -250,7 +330,7 @@ fn materialize_outputs(
             AppError::Database(format!("missing calculated definition for {output_id}"))
         })?;
         let compiled =
-            compile_formula_sql(&typed_expression_from_definition(definition)?, &sql_columns)
+            compile_materialized_formula_sql(&typed_expression_from_definition(definition)?, &sql_columns)
                 .map_err(map_formula_error)?;
         let output_column = sql_columns
             .iter()
@@ -259,9 +339,13 @@ fn materialize_outputs(
                 AppError::Database(format!("missing SQL column binding for {output_id}"))
             })?;
         let identifier = DuckDbEngine::quote_identifier(&output_column.physical_name);
+        let predicate=if let Some(sets)=row_sets {
+            let Some(rows)=sets.get(output_id).filter(|rows|!rows.is_empty()) else {continue;};
+            format!(" WHERE \"_row_id\" IN ({})",rows.iter().map(i64::to_string).collect::<Vec<_>>().join(","))
+        } else {String::new()};
         engine.conn().execute(
             &format!(
-                "UPDATE {table_name} SET {identifier} = {}",
+                "UPDATE {table_name} SET {identifier} = {}{predicate}",
                 compiled.value_sql
             ),
             [],

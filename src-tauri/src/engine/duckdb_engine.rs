@@ -8,7 +8,7 @@ use duckdb::{
     appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
 };
 use sha2::{Digest, Sha256};
-use tempfile::TempDir;
+use crate::engine::database_storage::DatabaseStorage;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
@@ -57,7 +57,7 @@ use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprint
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
-    _shared_db_dir: Arc<TempDir>,
+    storage: Arc<DatabaseStorage>,
 }
 
 pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
@@ -98,6 +98,41 @@ fn record_full_anchor_rebuild() {
 #[cfg(all(not(test), feature = "perf-harness"))]
 fn record_full_anchor_rebuild() {
     FULL_ANCHOR_REBUILD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+thread_local! {
+    static WINDOW_FULL_COUNT_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+static WINDOW_FULL_COUNT_COUNTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn window_full_count_counter() -> usize {
+    WINDOW_FULL_COUNT_COUNTER.with(std::cell::Cell::get)
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+pub(crate) fn window_full_count_counter() -> usize {
+    WINDOW_FULL_COUNT_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_window_full_count_counter() {
+    WINDOW_FULL_COUNT_COUNTER.with(|counter| counter.set(0));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+pub(crate) fn reset_window_full_count_counter() {
+    WINDOW_FULL_COUNT_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn record_window_full_count() {
+    WINDOW_FULL_COUNT_COUNTER.with(|counter| counter.set(counter.get().saturating_add(1)));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+fn record_window_full_count() {
+    WINDOW_FULL_COUNT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub(crate) struct DatasetReplacement {
@@ -760,12 +795,36 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    /// Create a new in-memory DuckDB engine and initialize metadata tables
+    /// Create a session-owned temporary database for legacy projects and tests.
     pub fn new_in_memory() -> Result<Self, AppError> {
-        let shared_db_dir = Arc::new(tempfile::tempdir()?);
-        let shared_db_path = shared_db_dir.path().join("stats_playground.duckdb");
-        let conn = Connection::open(&shared_db_path)?;
+        let storage = Arc::new(DatabaseStorage::Temporary(Arc::new(tempfile::tempdir()?)));
+        let conn = Connection::open(storage.path())?;
+        Self::initialize_schema(&conn)?;
+        Ok(Self { conn, storage })
+    }
 
+    pub(crate) fn create_project_file(path: &std::path::Path, draft: bool) -> Result<Self, AppError> {
+        let engine = Self::open_project_file(path, draft, false)?;
+        Self::initialize_schema(&engine.conn)?;
+        Ok(engine)
+    }
+
+    pub(crate) fn open_project_file(path: &std::path::Path, draft: bool, read_only: bool) -> Result<Self, AppError> {
+        let storage = Arc::new(if draft { DatabaseStorage::RecoverableDraft(path.to_path_buf()) }
+            else { DatabaseStorage::PersistentProject(path.to_path_buf()) });
+        let config = Config::default().access_mode(if read_only { duckdb::AccessMode::ReadOnly } else { duckdb::AccessMode::ReadWrite })?;
+        let conn = Connection::open_with_flags(path, config)?;
+        Ok(Self { conn, storage })
+    }
+
+    pub fn storage_path(&self) -> std::path::PathBuf { self.storage.path() }
+    pub(crate) fn storage_connection_count(&self)->usize {Arc::strong_count(&self.storage)}
+
+    pub(crate) fn is_persistent_project(&self) -> bool {
+        !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_))
+    }
+
+    fn initialize_schema(conn: &Connection) -> Result<(), AppError> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS _meta_datasets (
@@ -979,17 +1038,11 @@ impl DuckDbEngine {
             [],
         )?;
 
-        Ok(Self {
-            conn,
-            _shared_db_dir: shared_db_dir,
-        })
+        Ok(())
     }
 
     pub fn try_clone(&self) -> Result<DuckDbEngine, AppError> {
-        Ok(Self {
-            conn: self.conn.try_clone()?,
-            _shared_db_dir: Arc::clone(&self._shared_db_dir),
-        })
+        Ok(Self { conn: self.conn.try_clone()?, storage: Arc::clone(&self.storage) })
     }
 
     pub fn rebuild_natural_anchors(
@@ -1364,51 +1417,48 @@ impl DuckDbEngine {
     }
 
     pub(crate) fn prepare_tabulate_member_indexes(
-        &self,
-        request: &TabulateSessionRequest,
-        session_id: &uuid::Uuid,
-        max_bytes: usize,
+        &self, request: &TabulateSessionRequest, session_id: &uuid::Uuid, max_bytes: usize,
     ) -> Result<PreparedTabulateSessionInfo, AppError> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
-        let result = (|| {
-            let info = self.measure_tabulate_member_indexes(request)?;
-            if info.measured_bytes_estimate > max_bytes {
-                return Err(AppError::InvalidParam(
-                    "tabulate_member_index_budget".into(),
-                ));
-            }
-            let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
-            for (name, fields) in [
-                (&row_table, &request.row_fields),
-                (&column_table, &request.column_fields),
-            ] {
-                let select = Self::tabulate_member_select(
-                    &Self::internal_table_name(&request.dataset_id),
-                    fields,
-                );
-                self.conn.execute(
-                    &format!(
-                        "CREATE TEMP TABLE {} AS {select}",
-                        Self::quote_identifier(name)
-                    ),
-                    [],
-                )?;
-                self.conn.execute(
-                    &format!(
-                        "CREATE INDEX {} ON {} (ordinal)",
-                        Self::quote_identifier(&format!("{name}_ordinal_idx")),
-                        Self::quote_identifier(name)
-                    ),
-                    [],
-                )?;
-            }
-            self.conn.execute_batch("COMMIT")?;
-            Ok(info)
-        })();
-        if result.is_err() {
-            self.conn.execute_batch("ROLLBACK")?;
+        let result=self.prepare_tabulate_member_indexes_in_transaction(request,session_id,max_bytes);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn prepare_tabulate_member_indexes_in_transaction(
+        &self, request: &TabulateSessionRequest, session_id: &uuid::Uuid, max_bytes: usize,
+    ) -> Result<PreparedTabulateSessionInfo, AppError> {
+        let info = self.measure_tabulate_member_indexes(request)?;
+        if info.measured_bytes_estimate > max_bytes {
+            return Err(AppError::InvalidParam(
+                "tabulate_member_index_budget".into(),
+            ));
         }
-        result
+        let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+        for (name, fields) in [
+            (&row_table, &request.row_fields),
+            (&column_table, &request.column_fields),
+        ] {
+            let select = Self::tabulate_member_select(
+                &Self::internal_table_name(&request.dataset_id),
+                fields,
+            );
+            self.conn.execute(
+                &format!(
+                    "CREATE TEMP TABLE {} AS {select}",
+                    Self::quote_identifier(name)
+                ),
+                [],
+            )?;
+            self.conn.execute(
+                &format!(
+                    "CREATE INDEX {} ON {} (ordinal)",
+                    Self::quote_identifier(&format!("{name}_ordinal_idx")),
+                    Self::quote_identifier(name)
+                ),
+                [],
+            )?;
+        }
+        Ok(info)
     }
 
     pub(crate) fn drop_tabulate_member_indexes(
@@ -1898,9 +1948,17 @@ impl DuckDbEngine {
     }
 
     pub(crate) fn materialize_tabulate_table(
-        &self,
-        definition: &TabulateSessionRequest,
-        session_id: &uuid::Uuid,
+        &self, definition: &TabulateSessionRequest, session_id: &uuid::Uuid,
+        request: &crate::models::tabulate::TabulateMaterializeRequest,
+        before_commit: impl FnOnce(&Self) -> Result<(), AppError>,
+    ) -> Result<DatasetMeta, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result=self.materialize_tabulate_table_in_transaction(definition,session_id,request,before_commit);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn materialize_tabulate_table_in_transaction(
+        &self, definition: &TabulateSessionRequest, session_id: &uuid::Uuid,
         request: &crate::models::tabulate::TabulateMaterializeRequest,
         before_commit: impl FnOnce(&Self) -> Result<(), AppError>,
     ) -> Result<DatasetMeta, AppError> {
@@ -1921,187 +1979,179 @@ impl DuckDbEngine {
             "Dataset name",
         )
         .map_err(AppError::InvalidParam)?;
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
-        let outcome = (|| {
-            self.validate_tabulate_session(definition)?;
-            self.validate_dataset_name(&request.destination_name, None)?;
-            let (source_table, column_types) = self.validate_tabulate_fields(
-                &definition.dataset_id,
-                &definition.row_fields,
-                &definition.column_fields,
-                &definition.statistics,
-            )?;
-            let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
-            let mut names = Vec::new();
-            let mut used = HashSet::from(["_row_id".to_string()]);
-            let mut unique_name = |base: String| {
-                let mut name = base.clone();
-                let mut suffix = 2;
-                while !used.insert(name.to_ascii_lowercase()) {
-                    name = format!("{base} ({suffix})");
-                    suffix += 1;
-                }
-                name
-            };
-            let mut parameters = Vec::<Value>::new();
-            let mut projection = vec!["(members.ordinal + 1)::BIGINT AS \"_row_id\"".to_string()];
-            for (index, field) in definition.row_fields.iter().enumerate() {
-                let name = unique_name(field.clone());
-                let types =
-                    HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
-                let expression =
-                    dimension_select_expression(&format!("dimension_{index}"), &types)?;
-                let label = tabulate_dimension_sql_label(&expression, &column_types[field]);
-                projection.push(format!(
-                    "COALESCE({label}, ?) AS {}",
-                    Self::quote_identifier(&name)
-                ));
-                parameters.push(Value::Text(request.missing_label.clone()));
-                names.push((name, "VARCHAR"));
+        self.validate_tabulate_session(definition)?;
+        self.validate_dataset_name(&request.destination_name, None)?;
+        let (source_table, column_types) = self.validate_tabulate_fields(
+            &definition.dataset_id,
+            &definition.row_fields,
+            &definition.column_fields,
+            &definition.statistics,
+        )?;
+        let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+        let mut names = Vec::new();
+        let mut used = HashSet::from(["_row_id".to_string()]);
+        let mut unique_name = |base: String| {
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !used.insert(name.to_ascii_lowercase()) {
+                name = format!("{base} ({suffix})");
+                suffix += 1;
             }
-            let member_types = definition
-                .column_fields
-                .iter()
-                .enumerate()
-                .map(|(index, field)| (format!("dimension_{index}"), column_types[field].clone()))
-                .collect::<HashMap<_, _>>();
-            let member_projection = (0..definition.column_fields.len())
-                .map(|index| {
-                    dimension_select_expression(&format!("dimension_{index}"), &member_types)
-                        .map(|value| format!(", {value}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join("");
-            let mut statement = self.conn.prepare(&format!(
-                "SELECT ordinal{member_projection} FROM {} ORDER BY ordinal",
-                Self::quote_identifier(&column_table)
-            ))?;
-            let mut members = statement.query([])?;
-            while let Some(member) = members.next()? {
-                let ordinal: u64 = member.get(0)?;
-                let labels = (0..definition.column_fields.len())
-                    .map(|index| {
-                        member
-                            .get::<_, Value>(index + 1)
-                            .map(json_dimension_value)
-                            .map(|value| tabulate_dimension_label(value, &request.missing_label))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                for (index, statistic) in definition.statistics.iter().enumerate() {
-                    let mut parts = labels.clone();
-                    parts.push(request.statistic_labels[index].clone());
-                    parts.push(statistic.field.clone());
-                    let name = unique_name(parts.join(" - "));
-                    let raw = format!(
-                        "MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})"
-                    );
-                    let value = if is_tabulate_percentage(&statistic.kind) {
-                        let denominator = match statistic.kind {
-                            StatisticKind::RowPercentage => format!("MAX(cells.row_total_{index})"),
-                            StatisticKind::ColumnPercentage => format!("(SELECT MAX(column_total_{index}) FROM cells WHERE column_ordinal = {ordinal})"),
-                            _ => format!("(SELECT MAX(grand_total_{index}) FROM cells)"),
-                        };
-                        format!("COALESCE({raw}, 0)::DOUBLE / NULLIF({denominator}, 0)")
-                    } else if default_missing_value(&statistic.kind).is_some() {
-                        format!("COALESCE({raw}, 0)::DOUBLE")
-                    } else {
-                        format!(
-                            "CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END"
-                        )
-                    };
-                    projection.push(format!("{value} AS {}", Self::quote_identifier(&name)));
-                    names.push((name, "DOUBLE"));
-                }
-            }
-            drop(members);
-            drop(statement);
-            let aggregates = definition
-                .statistics
-                .iter()
-                .enumerate()
-                .map(|(index, statistic)| {
-                    aggregate_sql_for_field(
-                        statistic,
-                        &format!("source.{}", Self::quote_identifier(&statistic.field)),
-                    )
-                    .map(|value| format!("{value} AS stat_{index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ");
-            let mut totals = Vec::new();
-            for (index, statistic) in definition.statistics.iter().enumerate() {
-                if is_tabulate_percentage(&statistic.kind) {
-                    totals.push(format!(
-                        "SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"
-                    ));
-                    totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY column_ordinal) AS column_total_{index}"));
-                    totals.push(format!("SUM(stat_{index}) OVER () AS grand_total_{index}"));
-                }
-            }
-            let totals = if totals.is_empty() {
-                String::new()
-            } else {
-                format!(", {}", totals.join(", "))
-            };
-            let id = uuid::Uuid::new_v4().to_string();
-            let output = Self::quote_identifier(&Self::internal_table_name(&id));
-            let group_by = std::iter::once("members.ordinal".to_string())
-                .chain(
-                    (0..definition.row_fields.len())
-                        .map(|index| format!("members.dimension_{index}")),
-                )
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "CREATE TABLE {output} AS WITH grouped AS (
-                 SELECT row_members.ordinal AS row_ordinal, column_members.ordinal AS column_ordinal, {aggregates}
-                 FROM {} AS source JOIN {} AS row_members ON {} JOIN {} AS column_members ON {}
-                 GROUP BY row_members.ordinal, column_members.ordinal),
-                 cells AS (SELECT *{totals} FROM grouped)
-                 SELECT {} FROM {} AS members LEFT JOIN cells ON members.ordinal = cells.row_ordinal
-                 GROUP BY {group_by} ORDER BY members.ordinal",
-                Self::quote_identifier(&source_table), Self::quote_identifier(&row_table),
-                Self::tabulate_member_join(&definition.row_fields, "row_members"),
-                Self::quote_identifier(&column_table), Self::tabulate_member_join(&definition.column_fields, "column_members"),
-                projection.join(", "), Self::quote_identifier(&row_table),
-            );
-            self.conn.execute(&sql, params_from_iter(parameters))?;
-            for (index, (name, sql_type)) in names.iter().enumerate() {
-                self.conn.execute("INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
-                    params![id, index as i32, name, sql_type])?;
-            }
-            self.conn.execute(&format!("INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count) SELECT ?, ?, 'manual', count(*), ? FROM {output}"),
-                params![id, request.destination_name, names.len() as i32])?;
-            self.rebuild_natural_anchors(&id, 0)?;
-            let meta = self.get_dataset_meta(&id)?;
-            before_commit(self)?;
-            let changed = self.conn.execute("UPDATE _meta_datasets SET generation = generation WHERE id = ? AND generation = ?",
-                params![definition.dataset_id, definition.source_generation])
-                .map_err(|_| AppError::InvalidParam("tabulate_stale_source".into()))?;
-            if changed != 1 {
-                return Err(AppError::InvalidParam("tabulate_stale_source".into()));
-            }
-            self.conn.execute_batch("COMMIT")?;
-            Ok(meta)
-        })();
-        if outcome.is_err() {
-            let _ = self.conn.execute_batch("ROLLBACK");
+            name
+        };
+        let mut parameters = Vec::<Value>::new();
+        let mut projection = vec!["(members.ordinal + 1)::BIGINT AS \"_row_id\"".to_string()];
+        for (index, field) in definition.row_fields.iter().enumerate() {
+            let name = unique_name(field.clone());
+            let types =
+                HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
+            let expression =
+                dimension_select_expression(&format!("dimension_{index}"), &types)?;
+            let label = tabulate_dimension_sql_label(&expression, &column_types[field]);
+            projection.push(format!(
+                "COALESCE({label}, ?) AS {}",
+                Self::quote_identifier(&name)
+            ));
+            parameters.push(Value::Text(request.missing_label.clone()));
+            names.push((name, "VARCHAR"));
         }
-        outcome
+        let member_types = definition
+            .column_fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| (format!("dimension_{index}"), column_types[field].clone()))
+            .collect::<HashMap<_, _>>();
+        let member_projection = (0..definition.column_fields.len())
+            .map(|index| {
+                dimension_select_expression(&format!("dimension_{index}"), &member_types)
+                    .map(|value| format!(", {value}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("");
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT ordinal{member_projection} FROM {} ORDER BY ordinal",
+            Self::quote_identifier(&column_table)
+        ))?;
+        let mut members = statement.query([])?;
+        while let Some(member) = members.next()? {
+            let ordinal: u64 = member.get(0)?;
+            let labels = (0..definition.column_fields.len())
+                .map(|index| {
+                    member
+                        .get::<_, Value>(index + 1)
+                        .map(json_dimension_value)
+                        .map(|value| tabulate_dimension_label(value, &request.missing_label))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for (index, statistic) in definition.statistics.iter().enumerate() {
+                let mut parts = labels.clone();
+                parts.push(request.statistic_labels[index].clone());
+                parts.push(statistic.field.clone());
+                let name = unique_name(parts.join(" - "));
+                let raw = format!(
+                    "MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})"
+                );
+                let value = if is_tabulate_percentage(&statistic.kind) {
+                    let denominator = match statistic.kind {
+                        StatisticKind::RowPercentage => format!("MAX(cells.row_total_{index})"),
+                        StatisticKind::ColumnPercentage => format!("(SELECT MAX(column_total_{index}) FROM cells WHERE column_ordinal = {ordinal})"),
+                        _ => format!("(SELECT MAX(grand_total_{index}) FROM cells)"),
+                    };
+                    format!("COALESCE({raw}, 0)::DOUBLE / NULLIF({denominator}, 0)")
+                } else if default_missing_value(&statistic.kind).is_some() {
+                    format!("COALESCE({raw}, 0)::DOUBLE")
+                } else {
+                    format!(
+                        "CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END"
+                    )
+                };
+                projection.push(format!("{value} AS {}", Self::quote_identifier(&name)));
+                names.push((name, "DOUBLE"));
+            }
+        }
+        drop(members);
+        drop(statement);
+        let aggregates = definition
+            .statistics
+            .iter()
+            .enumerate()
+            .map(|(index, statistic)| {
+                aggregate_sql_for_field(
+                    statistic,
+                    &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                )
+                .map(|value| format!("{value} AS stat_{index}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        let mut totals = Vec::new();
+        for (index, statistic) in definition.statistics.iter().enumerate() {
+            if is_tabulate_percentage(&statistic.kind) {
+                totals.push(format!(
+                    "SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"
+                ));
+                totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY column_ordinal) AS column_total_{index}"));
+                totals.push(format!("SUM(stat_{index}) OVER () AS grand_total_{index}"));
+            }
+        }
+        let totals = if totals.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", totals.join(", "))
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let output = Self::quote_identifier(&Self::internal_table_name(&id));
+        let group_by = std::iter::once("members.ordinal".to_string())
+            .chain(
+                (0..definition.row_fields.len())
+                    .map(|index| format!("members.dimension_{index}")),
+            )
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "CREATE TABLE {output} AS WITH grouped AS (
+             SELECT row_members.ordinal AS row_ordinal, column_members.ordinal AS column_ordinal, {aggregates}
+             FROM {} AS source JOIN {} AS row_members ON {} JOIN {} AS column_members ON {}
+             GROUP BY row_members.ordinal, column_members.ordinal),
+             cells AS (SELECT *{totals} FROM grouped)
+             SELECT {} FROM {} AS members LEFT JOIN cells ON members.ordinal = cells.row_ordinal
+             GROUP BY {group_by} ORDER BY members.ordinal",
+            Self::quote_identifier(&source_table), Self::quote_identifier(&row_table),
+            Self::tabulate_member_join(&definition.row_fields, "row_members"),
+            Self::quote_identifier(&column_table), Self::tabulate_member_join(&definition.column_fields, "column_members"),
+            projection.join(", "), Self::quote_identifier(&row_table),
+        );
+        self.conn.execute(&sql, params_from_iter(parameters))?;
+        for (index, (name, sql_type)) in names.iter().enumerate() {
+            self.conn.execute("INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
+                params![id, index as i32, name, sql_type])?;
+        }
+        self.conn.execute(&format!("INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count) SELECT ?, ?, 'manual', count(*), ? FROM {output}"),
+            params![id, request.destination_name, names.len() as i32])?;
+        self.rebuild_natural_anchors(&id, 0)?;
+        let meta = self.get_dataset_meta(&id)?;
+        before_commit(self)?;
+        let changed = self.conn.execute("UPDATE _meta_datasets SET generation = generation WHERE id = ? AND generation = ?",
+            params![definition.dataset_id, definition.source_generation])
+            .map_err(|_| AppError::InvalidParam("tabulate_stale_source".into()))?;
+        if changed != 1 {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        Ok(meta)
     }
 
     /// Import a CSV file as a new dataset
-    pub fn import_csv(
-        &self,
-        id: &str,
-        name: &str,
-        file_path: &str,
-    ) -> Result<DatasetMeta, AppError> {
+    pub fn import_csv(&self, id: &str, name: &str, file_path: &str) -> Result<DatasetMeta, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.import_csv_in_transaction(id, name, file_path);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn import_csv_in_transaction(&self, id: &str, name: &str, file_path: &str) -> Result<DatasetMeta, AppError> {
         self.validate_dataset_name(name, None)?;
         let table_name = format!("dataset_{}", id.replace('-', "_"));
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
-        let result = (|| -> Result<DatasetMeta, AppError> {
+        (|| -> Result<DatasetMeta, AppError> {
             let mut csv_schema = self
                 .conn
                 .prepare("DESCRIBE SELECT * FROM read_csv($1, auto_detect=true)")?;
@@ -2168,18 +2218,8 @@ impl DuckDbEngine {
             self.rebuild_natural_anchors(id, 0)?;
 
             self.get_dataset_meta(id)
-        })();
+        })()
 
-        match result {
-            Ok(meta) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(meta)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
     }
 
     /// Get metadata for a single dataset
@@ -2237,9 +2277,8 @@ impl DuckDbEngine {
 
     /// Delete a dataset and its metadata
     pub fn delete_dataset(&self, id: &str) -> Result<(), AppError> {
-        let table_name = format!("dataset_{}", id.replace('-', "_"));
-        self.conn
-            .execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(id));
+        self.conn.execute(&format!("DROP TABLE IF EXISTS {table_name}"), [])?;
         self.conn.execute(
             "DELETE FROM _meta_columns WHERE dataset_id = $1",
             params![id],
@@ -2295,11 +2334,21 @@ impl DuckDbEngine {
         name: &str,
         sql: &str,
     ) -> Result<DatasetMeta, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.create_table_from_sql_query_in_transaction(id, name, sql);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn create_table_from_sql_query_in_transaction(
+        &self,
+        id: &str,
+        name: &str,
+        sql: &str,
+    ) -> Result<DatasetMeta, AppError> {
         let sql = self.validate_query_against_visible_tables(sql)?;
         let snapshot = self.build_isolated_snapshot_connection()?;
         let materialized = self.collect_sql_query_rows(&snapshot, &sql)?;
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
 
         let outcome = (|| -> Result<DatasetMeta, AppError> {
             self.validate_dataset_name(name, None)?;
@@ -2378,31 +2427,20 @@ impl DuckDbEngine {
             self.get_dataset_meta(id)
         })();
 
-        match outcome {
-            Ok(meta) => {
-                Self::finalize_transaction(
-                    || {
-                        self.conn.execute_batch("COMMIT")?;
-                        Ok(())
-                    },
-                    || {
-                        let _ = self.conn.execute_batch("ROLLBACK");
-                    },
-                )?;
-                Ok(meta)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+        outcome
     }
 
-    pub fn create_table_from_rows(
-        &self,
-        id: &str,
-        request: &CreateTableFromRowsRequest,
-    ) -> Result<DatasetMeta, AppError> {
+    pub fn create_table_from_rows(&self,id:&str,request:&CreateTableFromRowsRequest) -> Result<DatasetMeta,AppError> {
+        self.create_table_from_rows_impl(id,request,true)
+    }
+
+    pub(crate) fn create_table_from_rows_in_transaction(&self,id:&str,request:&CreateTableFromRowsRequest) -> Result<DatasetMeta,AppError> {
+        self.create_table_from_rows_impl(id,request,false)
+    }
+
+    fn create_table_from_rows_impl(
+        &self,id:&str,request:&CreateTableFromRowsRequest,owns_transaction:bool,
+    ) -> Result<DatasetMeta,AppError> {
         if request.column_names.is_empty() {
             return Err(AppError::InvalidParam(
                 "Column names and types must not be empty".into(),
@@ -2469,7 +2507,7 @@ impl DuckDbEngine {
             }
         }
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        if owns_transaction { self.conn.execute_batch("BEGIN TRANSACTION")?; }
 
         let outcome = (|| -> Result<DatasetMeta, AppError> {
             let table_name = Self::internal_table_name(id);
@@ -2555,6 +2593,8 @@ impl DuckDbEngine {
             self.get_dataset_meta(id)
         })();
 
+        if !owns_transaction { return outcome; }
+
         match outcome {
             Ok(meta) => {
                 Self::finalize_transaction(
@@ -2626,6 +2666,15 @@ impl DuckDbEngine {
             )));
         }
 
+        if request.sort.is_none()&&request.filters.is_empty()&&matches!(self.storage.as_ref(),DatabaseStorage::PersistentProject(_)|DatabaseStorage::RecoverableDraft(_)) {
+            let column_ids=self.get_table_column_descriptors(&request.dataset_id)?.into_iter().map(|column|column.column_id).collect();
+            let window=Self::query_natural_navigation_window(&self.conn,&TableNavigationRequest {
+                version:1,request_id:"initial-native-window".into(),dataset_id:request.dataset_id.clone(),generation:request.generation,
+                start:request.start,count:request.count,column_ids,sort:None,filters:vec![],session_id:None,include_transport_diagnostics:false,
+            })?;
+            return Ok(TableWindowResult{columns:window.columns,column_types:window.column_types,rows:window.rows,total_rows:window.total_rows,start:request.start,generation:window.generation});
+        }
+
         let user_columns = self.get_user_columns(&request.dataset_id)?;
         let allowed_columns = user_columns
             .iter()
@@ -2637,6 +2686,8 @@ impl DuckDbEngine {
         let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
 
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        #[cfg(any(test,feature="perf-harness"))]
+        record_window_full_count();
         let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
         let total_rows: i64 =
             self.conn
@@ -2744,6 +2795,8 @@ impl DuckDbEngine {
         let navigation_columns =
             self.resolve_navigation_projection(&request.dataset_id, &request.column_ids)?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        #[cfg(any(test,feature="perf-harness"))]
+        record_window_full_count();
         let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
         let total_rows: i64 =
             self.conn
@@ -3208,6 +3261,11 @@ impl DuckDbEngine {
             .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
         let offset = i64::try_from(local_offset)
             .map_err(|_| AppError::InvalidParam("window offset is too large".into()))?;
+        let upper_anchor:Option<NaturalNavigationAnchor>=connection.query_row(
+            "SELECT ordinal,order_key,row_id FROM _table_navigation_anchors WHERE dataset_id=? AND generation=? AND ordinal>=? ORDER BY ordinal LIMIT 1",
+            params![&request.dataset_id,generation_i64,start_i64.saturating_add(limit)],
+            |row|Ok(NaturalNavigationAnchor{ordinal:row.get(0)?,order_key:row.get(1)?,row_id:row.get(2)?}),
+        ).optional()?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
         let select_columns = columns
             .iter()
@@ -3226,15 +3284,12 @@ impl DuckDbEngine {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns,&columns);
+        let query_parameters=Self::natural_navigation_viewport_parameters(anchor,upper_anchor,limit,offset);
+        #[cfg(all(feature="project-v5",feature="perf-harness"))]
+        crate::perf_project_v5::capture_navigation_sql_plan(connection,&query_sql,params_from_iter(query_parameters.iter()))?;
         let mut stmt = connection.prepare(&query_sql)?;
-        let mut result_rows = stmt.query(params![
-            anchor.order_key,
-            anchor.order_key,
-            anchor.row_id,
-            limit,
-            offset
-        ])?;
+        let mut result_rows = stmt.query(params_from_iter(query_parameters.iter()))?;
         let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
         while let Some(row) = result_rows.next()? {
             let mut values = Vec::with_capacity(columns.len());
@@ -3268,14 +3323,31 @@ impl DuckDbEngine {
         ))
     }
 
-    fn natural_navigation_viewport_sql(table_name: &str, select_columns: &str) -> String {
-        format!(
-            "SELECT {select_columns} FROM {table_name}
-             WHERE {NATURAL_ORDER_SQL} > ?
-                OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" >= ?)
-             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
-             LIMIT ? OFFSET ?"
-        )
+    fn natural_navigation_viewport_sql(table_name:&str,select_columns:&str,columns:&[String])->String {
+        let mut order_alias="__sp_navigation_order".to_string();
+        while columns.iter().any(|name|name.eq_ignore_ascii_case(&order_alias)){order_alias.push('_');}
+        let order_alias=Self::quote_identifier(&order_alias);
+        let raw_columns=columns.iter().map(|name|Self::quote_identifier(name)).collect::<Vec<_>>().join(", ");
+        // Separate physical-order and legacy-null rows so both scans can prune
+        // storage groups using simple ranges on their stored columns.
+        format!("SELECT {select_columns} FROM (
+            SELECT {raw_columns}, \"_row_order\" AS {order_alias} FROM {table_name}
+            WHERE \"_row_order\" IS NOT NULL AND \"_row_order\" BETWEEN ? AND ?
+            UNION ALL
+            SELECT {raw_columns}, CAST(\"_row_id\" AS HUGEINT)*18446744073709551616::HUGEINT AS {order_alias} FROM {table_name}
+            WHERE \"_row_order\" IS NULL AND \"_row_id\" BETWEEN ? AND ?
+        ) AS __sp_bounded_navigation
+        WHERE ({order_alias}>? OR ({order_alias}=? AND \"_row_id\">=?))
+          AND (? OR {order_alias}<? OR ({order_alias}=? AND \"_row_id\"<?))
+        ORDER BY {order_alias}, \"_row_id\" LIMIT ? OFFSET ?")
+    }
+
+    fn natural_navigation_viewport_parameters(lower:NaturalNavigationAnchor,upper:Option<NaturalNavigationAnchor>,limit:i64,offset:i64)->Vec<Value> {
+        let upper_order=upper.map(|anchor|anchor.order_key).unwrap_or(i128::MAX);
+        vec![Value::HugeInt(lower.order_key),Value::HugeInt(upper_order),
+            Value::BigInt(lower.order_key.div_euclid(NATURAL_ORDER_STRIDE) as i64),Value::BigInt(upper_order.div_euclid(NATURAL_ORDER_STRIDE) as i64),
+            Value::HugeInt(lower.order_key),Value::HugeInt(lower.order_key),Value::BigInt(lower.row_id),Value::Boolean(upper.is_none()),
+            Value::HugeInt(upper_order),Value::HugeInt(upper_order),Value::BigInt(upper.map(|anchor|anchor.row_id).unwrap_or(i64::MAX)),Value::BigInt(limit),Value::BigInt(offset)]
     }
 
     pub fn locate_table_row(
@@ -5200,6 +5272,8 @@ impl DuckDbEngine {
     }
 
     fn copy_visible_datasets_into_snapshot(&self, snapshot: &Connection) -> Result<(), AppError> {
+        #[cfg(any(test, feature="perf-harness"))]
+        crate::services::project_work_counters::database_copy();
         let datasets = self.list_datasets()?;
         let mut seen_names: HashSet<String> = HashSet::new();
 
@@ -5667,9 +5741,10 @@ impl DuckDbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
-        let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns,&columns);
+        let parameters=Self::natural_navigation_viewport_parameters(NaturalNavigationAnchor{ordinal:0,order_key:0,row_id:0},None,1,0);
         let mut statement = connection.prepare(&format!("EXPLAIN {sql}"))?;
-        let mut rows = statement.query(params![0_i128, 0_i128, 0_i64, 1_i64, 0_i64])?;
+        let mut rows = statement.query(params_from_iter(parameters.iter()))?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             let value: String = row.get(1)?;
@@ -5994,6 +6069,22 @@ impl DuckDbEngine {
         F: Fn(&str, usize, usize, usize, usize),
         C: Fn() -> bool,
     {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result=self.import_selected_sqlite_in_transaction(file_path, selections, on_progress, is_cancelled);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn import_selected_sqlite_in_transaction<F, C>(
+        &self,
+        file_path: &str,
+        selections: &[(String, String, bool)],
+        on_progress: &F,
+        is_cancelled: &C,
+    ) -> Result<Vec<(String, DatasetMeta, usize)>, AppError>
+    where
+        F: Fn(&str, usize, usize, usize, usize),
+        C: Fn() -> bool,
+    {
         let connector = SqliteConnector::new(file_path);
         connector.test_connection()?;
         let source_description = std::path::Path::new(file_path)
@@ -6079,7 +6170,6 @@ impl DuckDbEngine {
         }
 
         let table_total = plans.len();
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
         let import_result = (|| -> Result<Vec<(String, DatasetMeta, usize)>, AppError> {
             let mut results = Vec::new();
 
@@ -6215,27 +6305,28 @@ impl DuckDbEngine {
             Ok(results)
         })();
 
-        match import_result {
-            Ok(results) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(error.into());
-                }
-                Ok(results)
-            }
-            Err(error) => {
-                let rollback_result = self.conn.execute_batch("ROLLBACK");
-                if let Err(rollback_error) = rollback_result {
-                    return Err(AppError::Database(format!(
-                        "{error}; rollback failed: {rollback_error}"
-                    )));
-                }
-                Err(error)
-            }
-        }
+        import_result
     }
 
     pub fn import_server_snapshot<F, C>(
+        &self,
+        connector: &ServerConnector,
+        object: &SourceObjectRef,
+        target_name: &str,
+        source_description: &str,
+        on_progress: &F,
+        is_cancelled: &C,
+    ) -> Result<(DatasetMeta, usize), AppError>
+    where
+        F: Fn(usize, usize),
+        C: Fn() -> bool,
+    {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result=self.import_server_snapshot_in_transaction(connector, object, target_name, source_description, on_progress, is_cancelled);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn import_server_snapshot_in_transaction<F, C>(
         &self,
         connector: &ServerConnector,
         object: &SourceObjectRef,
@@ -6280,7 +6371,6 @@ impl DuckDbEngine {
             })
             .collect::<Vec<_>>();
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
         let import_result = (|| -> Result<(DatasetMeta, usize), AppError> {
             self.conn.execute(
                 &format!(
@@ -6353,24 +6443,7 @@ impl DuckDbEngine {
             Ok((self.get_dataset_meta(&id)?, rows_done))
         })();
 
-        match import_result {
-            Ok(result) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(error.into());
-                }
-                Ok(result)
-            }
-            Err(error) => {
-                let rollback_result = self.conn.execute_batch("ROLLBACK");
-                if let Err(rollback_error) = rollback_result {
-                    return Err(AppError::Database(format!(
-                        "{error}; rollback failed: {rollback_error}"
-                    )));
-                }
-                Err(error)
-            }
-        }
+        import_result
     }
 
     fn map_mysql_type(source_type: &str) -> &'static str {
@@ -7094,6 +7167,10 @@ impl DuckDbEngine {
         if cells.is_empty() {
             return Ok(());
         }
+        if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_)) {
+            let updates = cells.iter().map(|cell| CellUpdate { row_id:cell.row_id,column_name:cell.column_name.clone(),value:None }).collect::<Vec<_>>();
+            return self.update_cells(dataset_id, &updates);
+        }
         let changed_column_ids = self.resolve_column_ids_by_name(
             dataset_id,
             cells.iter().map(|cell| cell.column_name.as_str()),
@@ -7127,6 +7204,14 @@ impl DuckDbEngine {
             dataset_id,
             updates.iter().map(|update| update.column_name.as_str()),
         )?;
+        if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_))
+            && !crate::services::table_mutation_coordinator::has_affected_calculated_outputs(self, dataset_id, &changed_column_ids)? {
+            let generation = expected_generation.unwrap_or(self.get_dataset_generation(dataset_id)?);
+            self.conn.execute_batch("BEGIN TRANSACTION")?;
+            let result = crate::services::table_delta_mutation::update_cells_compact_in_transaction(self, dataset_id, updates, generation)
+                .and_then(|_| self.get_dataset_generation(dataset_id));
+            return crate::services::table_delta_mutation::finish_transaction(self, result);
+        }
         execute_table_mutation(self, dataset_id, expected_generation, |engine| {
             engine.apply_cell_updates_inner(dataset_id, updates)?;
             let next_generation = engine
@@ -7841,6 +7926,12 @@ impl DuckDbEngine {
             start_col,
             rows.iter().map(Vec::len).max().unwrap_or(0),
         )?;
+        if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_)) {
+            if let Some(updates) = crate::services::project_cell_mutation::compact_paste_updates(self, dataset_id, start_row, start_col, rows, header_names, new_col_types)? {
+                self.update_cells_if_generation(dataset_id, &updates, expected_generation)?;
+                return Ok(());
+            }
+        }
         execute_table_mutation(self, dataset_id, expected_generation, |engine| {
             engine.paste_at_position_inner(
                 dataset_id,
@@ -7880,6 +7971,15 @@ impl DuckDbEngine {
             .checked_add(paste_column_count)
             .ok_or_else(|| AppError::InvalidParam("Paste column range is too large".into()))?;
         self.reject_calculated_column_range_writes(dataset_id, start_col, paste_column_count)?;
+        if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_)) {
+            if let Some(updates) = crate::services::project_cell_mutation::compact_paste_updates(self, dataset_id, start_row, start_col, rows, header_names, new_col_types)? {
+                let generation = expected_generation.unwrap_or(self.get_dataset_generation(dataset_id)?);
+                self.conn.execute_batch("BEGIN TRANSACTION")?;
+                let result = crate::services::table_delta_mutation::update_cells_compact_in_transaction(self, dataset_id, &updates, generation)
+                    .and_then(|effects| effects.change_set_id.ok_or_else(|| AppError::Database("paste_history_missing".into())));
+                return crate::services::table_delta_mutation::finish_transaction(self, result);
+            }
+        }
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
         let change_set_id = uuid::Uuid::new_v4().to_string();
         execute_table_mutation(self, dataset_id, expected_generation, |engine| {
@@ -8319,6 +8419,12 @@ impl DuckDbEngine {
         new_type: &str,
         expected_generation: Option<u64>,
     ) -> Result<String, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result=self.alter_column_with_change_set_in_transaction(dataset_id,old_name,new_name,new_type,expected_generation,false);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn alter_column_with_change_set_in_transaction(&self,dataset_id:&str,old_name:&str,new_name:&str,new_type:&str,expected_generation:Option<u64>,scoped:bool)->Result<String,AppError> {
         let existing_columns = self.get_user_column_descriptors(dataset_id)?;
         let existing_column = existing_columns
             .iter()
@@ -8365,7 +8471,8 @@ impl DuckDbEngine {
             }
         }
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+        let selected=if scoped {Some(crate::services::table_mutation_coordinator::mutation_column_ids(self,dataset_id,&BTreeSet::from([existing_column.column_id.clone()]))?)} else {None};
+        crate::services::table_mutation_coordinator::execute_column_mutation_in_transaction(self, dataset_id, expected_generation, selected, |engine| {
             if new_type != old_type {
                 engine.conn.execute(
                     &format!(
@@ -8402,6 +8509,12 @@ impl DuckDbEngine {
         new_type: &str,
         expected_generation: Option<u64>,
     ) -> Result<String, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result=self.alter_columns_type_with_change_set_in_transaction(dataset_id,column_names,new_type,expected_generation,false);
+        crate::services::table_delta_mutation::finish_transaction(self,result)
+    }
+
+    pub(crate) fn alter_columns_type_with_change_set_in_transaction(&self,dataset_id:&str,column_names:&[String],new_type:&str,expected_generation:Option<u64>,scoped:bool)->Result<String,AppError> {
         const MAX_COLUMNS: usize = 1_000;
         if column_names.is_empty() || column_names.len() > MAX_COLUMNS {
             return Err(AppError::InvalidParam(format!(
@@ -8461,7 +8574,8 @@ impl DuckDbEngine {
             .iter()
             .map(|column| column.column_id.clone())
             .collect::<BTreeSet<_>>();
-        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+        let selected=if scoped {Some(crate::services::table_mutation_coordinator::mutation_column_ids(self,dataset_id,&changed_column_ids)?)} else {None};
+        crate::services::table_mutation_coordinator::execute_column_mutation_in_transaction(self, dataset_id, expected_generation, selected, |engine| {
             for column in &changed_columns {
                 let identifier = Self::quote_identifier(&column.name);
                 engine.conn.execute(
@@ -8485,6 +8599,23 @@ impl DuckDbEngine {
     }
 
     pub fn apply_change_set(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.apply_change_set_in_transaction(change_set_id, undo);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn apply_change_set_in_transaction(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
+        if let Some(children) = crate::services::project_history_group::children(self, change_set_id)? {
+            for (child, rebind_cells) in crate::services::project_history_group::replay_order(self, &children, undo)? {
+                if rebind_cells { crate::services::project_cell_mutation::apply_grouped_cell_undo_in_transaction(self, &child)?; }
+                else { self.apply_change_set_single_in_transaction(&child, undo)?; }
+            }
+            return Ok(());
+        }
+        self.apply_change_set_single_in_transaction(change_set_id, undo)
+    }
+
+    fn apply_change_set_single_in_transaction(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
         let storage_kind = self
@@ -8495,8 +8626,11 @@ impl DuckDbEngine {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
+        if storage_kind.as_deref() == Some("cell_delta") {
+            return crate::services::project_cell_mutation::apply_cell_change_set_in_transaction(self, change_set_id, undo);
+        }
         if storage_kind.as_deref() == Some("row_delta") {
-            crate::services::table_delta_mutation::apply_row_delta_change_set(
+            crate::services::table_delta_mutation::apply_row_delta_change_set_in_transaction(
                 self,
                 change_set_id,
                 undo,
@@ -8504,7 +8638,7 @@ impl DuckDbEngine {
             return Ok(());
         }
         if storage_kind.as_deref() == Some("column_delta") {
-            crate::services::table_delta_mutation::apply_column_delta_change_set(
+            crate::services::table_delta_mutation::apply_column_delta_change_set_in_transaction(
                 self,
                 change_set_id,
                 undo,
@@ -8518,7 +8652,6 @@ impl DuckDbEngine {
             "_history_{}_{suffix}",
             if undo { "before" } else { "after" }
         ));
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
         let result = (|| -> Result<(), AppError> {
             let (dataset_id, applied, expected_generation): (String, bool, u64) = self
                 .conn
@@ -8952,13 +9085,7 @@ impl DuckDbEngine {
             )?;
             Ok(())
         })();
-        match result {
-            Ok(()) => self.conn.execute_batch("COMMIT;").map_err(Into::into),
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+        result
     }
 
     fn replay_calculated_history_columns(
@@ -9511,7 +9638,7 @@ impl DuckDbEngine {
     ) -> Result<(), AppError> {
         let prefix = match (storage_kind, operation) {
             ("row_delta", "delete_rows") => "_history_rows_",
-            ("column_delta", "delete_columns") => "_history_columns_",
+            ("column_delta", "delete_columns" | "add_valued_columns") => "_history_columns_",
             _ => {
                 return Err(AppError::FileIO(
                     "Delta history operation must not reference a snapshot".into(),
@@ -9971,10 +10098,10 @@ impl DuckDbEngine {
             ) -> Result<(), AppError> {
                 use crate::services::table_history_archive::HistorySchemaColumn;
 
-                let inserting = (entry.operation == "add_columns" && !reverse)
+                let inserting = (matches!(entry.operation.as_str(),"add_columns"|"add_valued_columns") && !reverse)
                     || (entry.operation == "delete_columns" && reverse);
                 let removing = (entry.operation == "delete_columns" && !reverse)
-                    || (entry.operation == "add_columns" && reverse);
+                    || (matches!(entry.operation.as_str(),"add_columns"|"add_valued_columns") && reverse);
                 if inserting {
                     for column in &entry.columns {
                         if schema
@@ -10599,14 +10726,20 @@ impl DuckDbEngine {
     }
 
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.drop_change_set_in_transaction(change_set_id);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn drop_change_set_in_transaction(&self, change_set_id: &str) -> Result<(), AppError> {
+        crate::services::project_history_group::unlink(self, change_set_id)?;
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
         let suffix = parsed_id.to_string().replace('-', "_");
         let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
         let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
 
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
+        (|| -> Result<(), AppError> {
             let compact_snapshot: Option<Option<String>> = self
                 .conn
                 .query_row(
@@ -10639,6 +10772,9 @@ impl DuckDbEngine {
                     ),
                     [],
                 )?;
+            }
+            if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_)) {
+                crate::services::project_cell_mutation::drop_cell_snapshots_in_transaction(self, change_set_id)?;
             }
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {before_table}"), [])?;
@@ -10673,14 +10809,7 @@ impl DuckDbEngine {
                 params![change_set_id],
             )?;
             Ok(())
-        })();
-        match result {
-            Ok(()) => self.conn.execute_batch("COMMIT;").map_err(Into::into),
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+        })()
     }
 
     fn paste_at_position_inner(
@@ -10958,7 +11087,7 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    fn generate_col_name(existing: &[String]) -> String {
+    pub(crate) fn generate_col_name(existing: &[String]) -> String {
         let mut i = 1;
         loop {
             let name = format!("列{}", i);
@@ -10976,7 +11105,7 @@ impl DuckDbEngine {
     /// designates a slot in `existing` whose current name should NOT count as
     /// a collision (used when renaming a column to a header value that may
     /// equal its own current name).
-    fn unique_col_name(base: &str, existing: &[String], exclude_idx: Option<usize>) -> String {
+    pub(crate) fn unique_col_name(base: &str, existing: &[String], exclude_idx: Option<usize>) -> String {
         let in_use = |candidate: &str| -> bool {
             existing
                 .iter()
@@ -11675,6 +11804,20 @@ impl DuckDbEngine {
         match_column: &str,
         update_columns: &[String],
     ) -> Result<DatasetMeta, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.copy_and_update_table_in_transaction(new_id, new_name, left_id, right_id, match_column, update_columns);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn copy_and_update_table_in_transaction(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        left_id: &str,
+        right_id: &str,
+        match_column: &str,
+        update_columns: &[String],
+    ) -> Result<DatasetMeta, AppError> {
         if new_id == left_id || new_id == right_id {
             return Err(AppError::InvalidParam(
                 "derived update output must have a distinct dataset id".into(),
@@ -11747,7 +11890,7 @@ impl DuckDbEngine {
         }
         let changed_column_ids =
             self.resolve_column_ids_by_name(new_id, update_columns.iter().map(String::as_str))?;
-        let update_result = execute_table_mutation(self, new_id, None, |engine| {
+        let update_result = crate::services::table_mutation_coordinator::execute_table_mutation_in_transaction(self, new_id, None, |engine| {
             for column in update_columns {
                 let column_identifier = Self::quote_identifier(column);
                 engine.conn.execute(
@@ -11791,6 +11934,18 @@ impl DuckDbEngine {
         stable_name: &str,
         expected_generation: u64,
     ) -> Result<DatasetMeta, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.replace_dataset_atomically_in_transaction(stable_id, temporary_id, stable_name, expected_generation);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn replace_dataset_atomically_in_transaction(
+        &self,
+        stable_id: &str,
+        temporary_id: &str,
+        stable_name: &str,
+        expected_generation: u64,
+    ) -> Result<DatasetMeta, AppError> {
         if stable_id.trim().is_empty() || temporary_id.trim().is_empty() {
             return Err(AppError::InvalidParam(
                 "stable and temporary dataset ids are required".into(),
@@ -11806,7 +11961,6 @@ impl DuckDbEngine {
         let stable_table = Self::quote_identifier(&Self::internal_table_name(stable_id));
         let temporary_table = Self::quote_identifier(&Self::internal_table_name(temporary_id));
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = (|| -> Result<(), AppError> {
             let stable_generation = self.get_dataset_generation_if_exists(stable_id)?;
             match stable_generation {
@@ -11909,23 +12063,20 @@ impl DuckDbEngine {
             Ok(())
         })();
 
-        match result {
-            Ok(()) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(error.into());
-                }
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-
+        result?;
         self.get_dataset_meta(stable_id)
     }
 
     pub(crate) fn replace_datasets_atomically(
+        &self,
+        replacements: &[DatasetReplacement],
+    ) -> Result<Vec<DatasetMeta>, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.replace_datasets_atomically_in_transaction(replacements);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn replace_datasets_atomically_in_transaction(
         &self,
         replacements: &[DatasetReplacement],
     ) -> Result<Vec<DatasetMeta>, AppError> {
@@ -11952,7 +12103,6 @@ impl DuckDbEngine {
             temporary_meta.push(self.get_dataset_meta(&replacement.temporary_id)?);
         }
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = replacements.iter().zip(&temporary_meta).try_for_each(
             |(replacement, meta)| -> Result<(), AppError> {
                 let stable_generation =
@@ -12072,18 +12222,7 @@ impl DuckDbEngine {
             },
         );
 
-        match result {
-            Ok(()) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(error.into());
-                }
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
+        result?;
         replacements
             .iter()
             .map(|replacement| self.get_dataset_meta(&replacement.stable_id))
@@ -13588,7 +13727,7 @@ fn requires_numeric_field(kind: &StatisticKind) -> bool {
     )
 }
 
-fn is_numeric_type(data_type: &str) -> bool {
+pub(crate) fn is_numeric_type(data_type: &str) -> bool {
     matches!(
         base_data_type(data_type),
         "TINYINT"
@@ -13609,7 +13748,7 @@ fn is_numeric_type(data_type: &str) -> bool {
     )
 }
 
-fn is_temporal_type(data_type: &str) -> bool {
+pub(crate) fn is_temporal_type(data_type: &str) -> bool {
     let data_type = data_type.to_ascii_uppercase();
     data_type.contains("DATE") || data_type.contains("TIME") || data_type.contains("TIMESTAMP")
 }
@@ -14519,6 +14658,25 @@ mod tests {
             .expect("target manifests");
         assert_eq!(target_anchors, 0);
         assert_eq!(target_manifests, 1);
+    }
+
+    #[test]
+    fn natural_navigation_bounded_ranges_preserve_mixed_fractional_keys_and_projection_aliases() {
+        let engine=DuckDbEngine::new_in_memory().unwrap();let id="bounded_mixed";
+        let names=vec!["__sp_navigation_order".to_string(),"__sp_navigation_order_".to_string()];
+        engine.create_empty_table(id,"Mixed keys",&names,&["BIGINT".into(),"VARCHAR".into()]).unwrap();
+        let table=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(id));
+        engine.conn().execute_batch(&format!("INSERT INTO {table} SELECT range,range,concat('r',range),CASE WHEN range%3=0 THEN CAST(10001-range AS HUGEINT)*18446744073709551616::HUGEINT+9223372036854775808::HUGEINT WHEN range%3=1 THEN NULL::HUGEINT ELSE -CAST(range AS HUGEINT)*18446744073709551616::HUGEINT+1 END FROM range(1,10001)" )).unwrap();
+        engine.conn().execute("UPDATE _meta_datasets SET row_count=10000 WHERE id=?",[id]).unwrap();engine.rebuild_natural_anchors(id,0).unwrap();
+        let expected={let mut statement=engine.conn().prepare(&format!("SELECT \"_row_id\",\"__sp_navigation_order\",\"__sp_navigation_order_\" FROM {table} ORDER BY {NATURAL_ORDER_SQL},\"_row_id\"" )).unwrap();
+            statement.query_map([],|row|Ok(vec![serde_json::json!(row.get::<_,i64>(0)?),serde_json::json!(row.get::<_,i64>(1)?),serde_json::json!(row.get::<_,String>(2)?)] )).unwrap().collect::<Result<Vec<_>,_>>().unwrap()};
+        let ids=engine.get_table_column_descriptors(id).unwrap().into_iter().map(|column|column.column_id).collect::<Vec<_>>();
+        for start in [0,4090,4095,4096,8190,8191,8192,9988,10000,12000] {for count in [1,16,2000] {
+            let mut request=natural_navigation_request(id,0,start,count);request.column_ids=ids.clone();
+            let result=DuckDbEngine::query_natural_navigation_window(engine.conn(),&request).unwrap();
+            let first=start.min(expected.len());let end=(first+count).min(expected.len());
+            assert_eq!(result.rows,expected[first..end],"start={start}, count={count}");
+        }}
     }
 
     #[test]

@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from "react";
+import {projectViewportBudget} from "@/projectPersistence/viewportBudget";
+import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo, useId } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { dataService } from "@/services/dataService";
@@ -32,7 +33,7 @@ import { modKey, shiftKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import { buildClipboardTsv, copyThenClear, createClipboardRowFetcher, resolveClipboardSelection } from "@/utils/tableClipboard";
 import { TableNavigationScheduler, type TableNavigationSchedulerClock } from "@/utils/tableNavigationScheduler";
-import { TableWindowCache, type TableWindowCacheRequest } from "@/utils/tableWindowCache";
+import { TableWindowCache, tableWindowPageSize, type TableWindowCacheRequest } from "@/utils/tableWindowCache";
 import { buildTableQuerySessionSignature, buildTableQuerySignature, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
 import { FilterPanel } from "@/components/filter";
@@ -135,19 +136,24 @@ function scheduleAfterPaint(callback: () => void): AfterPaintScheduleHandle {
   const controller = (window as typeof window & {
     __statsPlaygroundAfterPaintController?: TableAfterPaintController;
   }).__statsPlaygroundAfterPaintController;
+  // Give foreground paint and a short burst of user input priority over IO/decoding.
+  let idleTimer: number | null = null;
+  const afterPaint = () => { idleTimer = window.setTimeout(() => { idleTimer = null; callback(); }, 100); };
   if (controller) {
-    return controller.schedule(callback);
+    const handle = controller.schedule(afterPaint);
+    return { cancel() { handle.cancel(); if (idleTimer != null) window.clearTimeout(idleTimer); } };
   }
   let firstFrame: number | null = window.requestAnimationFrame(() => {
     firstFrame = null;
     secondFrame = window.requestAnimationFrame(() => {
       secondFrame = null;
-      callback();
+      afterPaint();
     });
   });
   let secondFrame: number | null = null;
   return {
     cancel() {
+      if (idleTimer != null) { window.clearTimeout(idleTimer); idleTimer = null; }
       if (firstFrame != null) {
         window.cancelAnimationFrame(firstFrame);
         firstFrame = null;
@@ -791,6 +797,7 @@ const FormulaBar = React.memo(function FormulaBar({
   const [refDirty, setRefDirty] = useState(false);
   const [formulaValue, setFormulaValue] = useState("");
   const [formulaDirty, setFormulaDirty] = useState(false);
+  const formulaCommitInFlightRef = useRef(false);
 
   // Sync ref input with active cell when not actively typed.
   useEffect(() => {
@@ -856,11 +863,18 @@ const FormulaBar = React.memo(function FormulaBar({
         onKeyDown={async (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            const ok = await onWriteActiveCell(formulaValue);
-            if (ok) {
-              setFormulaDirty(false);
-              onMoveDownAfterCommit();
-              onFocusGrid();
+            if (formulaCommitInFlightRef.current) return;
+            formulaCommitInFlightRef.current = true;
+            try {
+              const ok = await onWriteActiveCell(formulaValue);
+              if (ok) {
+                setFormulaDirty(false);
+                onMoveDownAfterCommit();
+                // Focus changes can synchronously blur before React commits dirty=false.
+                onFocusGrid();
+              }
+            } finally {
+              formulaCommitInFlightRef.current = false;
             }
           } else if (e.key === "Escape") {
             e.preventDefault();
@@ -870,9 +884,14 @@ const FormulaBar = React.memo(function FormulaBar({
           }
         }}
         onBlur={async () => {
-          if (formulaDirty) {
-            const ok = await onWriteActiveCell(formulaValue);
-            if (ok) setFormulaDirty(false);
+          if (formulaDirty && !formulaCommitInFlightRef.current) {
+            formulaCommitInFlightRef.current = true;
+            try {
+              const ok = await onWriteActiveCell(formulaValue);
+              if (ok) setFormulaDirty(false);
+            } finally {
+              formulaCommitInFlightRef.current = false;
+            }
           }
         }}
       />
@@ -889,6 +908,7 @@ export function DataTableView({
   const { t } = useTranslation();
   const labelOf = useMemo(() => typeLabelOf(t), [t]);
   const [data, setData] = useState<TableQueryResult | null>(null);
+  const windowPageSize = useMemo(() => tableWindowPageSize(data?.rows ?? []), [data?.rows]);
   const [windowStart, setWindowStart] = useState(0);
   const [activeCell, setActiveCell] = useState<{ row: number; col: number } | null>(null);
   const [editCell, setEditCell] = useState<{ row: number; col: number } | null>(null);
@@ -1061,10 +1081,12 @@ export function DataTableView({
     rowCount: datasetRowCount,
     updatedAt: datasetUpdatedAt,
   }), [datasetGeneration, datasetId, datasetRowCount, datasetUpdatedAt]);
+  const projectEpoch=useProjectStore(state=>state.persistenceSnapshot?.epoch);
   const currentRenderedLoadToken = useMemo(
-    () => createTableRenderLoadToken(datasetRevision),
-    [datasetRevision],
+    () => createTableRenderLoadToken(datasetRevision,projectEpoch),
+    [datasetRevision,projectEpoch],
   );
+  const previousProjectEpochRef=useRef(projectEpoch);
   const { markDirty, readOnly } = useProjectStore();
   const handleTableFiltersChange = useCallback((next: FilterRuleItem[]) => {
     if (readOnly) return;
@@ -1116,6 +1138,9 @@ export function DataTableView({
   const windowStartRef = useRef(0);
   const logicalStartRef = useRef(0);
   const windowCacheRef = useRef<TableWindowCache | null>(null);
+  const renderedWindowKeyRef = useRef<string|null>(null);
+  const viewportBudgetId=useId();
+  const viewportBudgetMountedRef=useRef(false);
   const requestEpochRef = useRef<RequestEpoch | null>(null);
   const queryRefreshEffectEpochRef = useRef(0);
   const pendingWindowsRef = useRef<Set<string>>(new Set());
@@ -1126,6 +1151,7 @@ export function DataTableView({
   const tableQuerySessionPollSeqRef = useRef(0);
   const tableNavigationRequestSeqRef = useRef(0);
   const tableNavigationSchedulerRef = useRef<TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult> | null>(null);
+  const immediateReferenceNavigationRef=useRef(false);
   const navigationReloadRef = useRef<() => void>(() => {});
   const loadedFilterKeyRef = useRef(initialQuerySignature);
   const loadedFilterGenerationRef = useRef<number | null>(null);
@@ -1174,7 +1200,10 @@ export function DataTableView({
   }, [cancelPendingPrefetchAfterPaint]);
   const updateTableCacheDiagnostics = useCallback((patch: Partial<TableCacheStatusDiagnostics> = {}) => {
     const cache = windowCacheRef.current;
-    if (!cache) return;
+    if (!cache||!viewportBudgetMountedRef.current) return;
+    if(cache.retainedRows>0||projectViewportBudget.snapshot().ids.includes(viewportBudgetId)) {
+      projectViewportBudget.update(viewportBudgetId,{rows:cache.retainedRows,bytes:cache.estimatedBytes});
+    }
     setTableCacheDiagnostics((previous) => {
       const next = {
         cacheHit: patch.cacheHit ?? previous.cacheHit,
@@ -1198,7 +1227,20 @@ export function DataTableView({
       }
       return next;
     });
-  }, []);
+  }, [viewportBudgetId]);
+  useEffect(()=>{
+    viewportBudgetMountedRef.current=true;
+    projectViewportBudget.acquire(viewportBudgetId,()=>{
+      windowCacheRef.current?.clear();
+      clearPendingPrefetches();
+      if(viewportBudgetMountedRef.current) setTableCacheDiagnostics(previous=>({...previous,retainedRows:0,estimatedBytes:0,entryCount:0}));
+    });
+    return ()=>{
+      viewportBudgetMountedRef.current=false;
+      projectViewportBudget.release(viewportBudgetId);
+      projectViewportBudget.forget(viewportBudgetId);
+    };
+  },[viewportBudgetId,clearPendingPrefetches]);
   const scheduleActiveTransportDiagnostics = useCallback((cacheHit: boolean, metrics: {
     frontendReceivedAtMs?: number;
     diagnosticJsonEncodeMs?: number | null;
@@ -1298,10 +1340,10 @@ export function DataTableView({
     sort: input.sort,
     filters: input.filters,
     generation: input.generation,
-    sessionKey: buildTableWindowSessionKey(input.querySignature, input.sessionId),
+    sessionKey: `${projectEpoch===undefined?"":`${projectEpoch}:`}${buildTableWindowSessionKey(input.querySignature, input.sessionId)}`,
     columnIds: [...input.columnIds],
     transportVersion: TABLE_TRANSPORT_VERSION,
-  }), [datasetId]);
+  }), [datasetId,projectEpoch]);
 
   const syncTableQuerySession = useCallback((signature: string, status: TableQuerySessionStatus) => {
     const nextState: TableQuerySessionViewState = {
@@ -1377,9 +1419,10 @@ export function DataTableView({
   }) => {
     clearPendingPrefetches();
     const epoch = requestEpochRef.current!.current;
+    const neighborCount = Math.min(input.baseRequest.count, tableWindowPageSize(dataRef.current?.rows ?? []));
     const candidateStarts = [
       input.baseRequest.start + input.baseRequest.count,
-      Math.max(0, input.baseRequest.start - input.baseRequest.count),
+      Math.max(0, input.baseRequest.start - neighborCount),
     ].filter((start, index, values) => {
       if (start >= input.totalRows || start === input.baseRequest.start) {
         return false;
@@ -1387,7 +1430,7 @@ export function DataTableView({
       return values.indexOf(start) === index;
     });
     pendingPrefetchRequestsRef.current = candidateStarts.map((start) => {
-      const count = Math.min(input.baseRequest.count, input.totalRows - start);
+      const count = Math.min(neighborCount, input.totalRows - start);
       const windowRequest = buildWindowRequest({
         start,
         count,
@@ -1481,10 +1524,11 @@ export function DataTableView({
     start = windowStartRef.current,
     generation?: number,
     surfaceObsoleteError = false,
+    count = TABLE_WINDOW_SIZE,
   ) => {
     const requestedDatasetId = datasetId;
     const loadToken = currentRenderedLoadTokenRef.current;
-    const isCurrentDatasetLoad = () => shouldIssueDataTableLoadForCurrentDataset({
+    const isCurrentDatasetLoad = () => loadToken===currentRenderedLoadTokenRef.current&&shouldIssueDataTableLoadForCurrentDataset({
       requestedDatasetId,
       currentDatasetId: currentDatasetIdRef.current,
     });
@@ -1504,6 +1548,7 @@ export function DataTableView({
       requestedGeneration,
       nextQueryKey,
       start,
+      count,
     ]);
     const existingClaim = inFlightLoadClaimsRef.current.get(inFlightLoadKey);
     if (
@@ -1549,7 +1594,7 @@ export function DataTableView({
         if (!columnIds || columnIds.length === 0) return;
         const windowRequest = buildWindowRequest({
           start,
-          count: TABLE_WINDOW_SIZE,
+          count,
           sort: currentSort,
           filters: serializedFilters,
           generation: requestedGeneration,
@@ -1564,7 +1609,7 @@ export function DataTableView({
             datasetId: requestedDatasetId,
             generation: requestedGeneration,
             start,
-            count: TABLE_WINDOW_SIZE,
+            count,
             columnIds: [...columnIds],
             sort: currentSort,
             filters: serializedFilters,
@@ -1574,6 +1619,7 @@ export function DataTableView({
           frontendReceivedAtMs: performance.now(),
         };
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        renderedWindowKeyRef.current=buildTableWindowPendingKey(windowRequest);
         windowCacheRef.current!.put(windowRequest, {
           columns: navigationResult.columns,
           columnTypes: navigationResult.columnTypes,
@@ -1666,7 +1712,7 @@ export function DataTableView({
       const request = {
         datasetId: requestedDatasetId,
         start,
-        count: TABLE_WINDOW_SIZE,
+        count,
         sort: currentSort,
         filters: serializedFilters,
       };
@@ -1702,6 +1748,7 @@ export function DataTableView({
         })
         : null;
       if (initialWindowRequest) {
+        renderedWindowKeyRef.current=buildTableWindowPendingKey(initialWindowRequest);
         windowCacheRef.current!.put(initialWindowRequest, result);
         windowCacheRef.current!.pin(initialWindowRequest);
         updateTableCacheDiagnostics({ cacheHit: false, ...EMPTY_TABLE_TRANSPORT_METRICS });
@@ -1996,6 +2043,7 @@ export function DataTableView({
   const applyTableMutationResult = useCallback(async (
     result: { generation: number; rowCount?: number; columnCount?: number },
   ) => {
+    const refreshCount=Math.max(tableWindowPageSize(dataRef.current?.rows ?? []),dataRef.current?.rows.length ?? 0);
     const coordinateSnapshot = {
       activeCell,
       selection,
@@ -2040,10 +2088,11 @@ export function DataTableView({
       : Math.min(windowStartRef.current, Math.max(0, result.rowCount - 1));
     try {
       await load(
-        tableFiltersRef.current,
+        useDatasetFilterStore.getState().byDataset[datasetId] ?? EMPTY_FILTERS,
         desiredStart,
         result.generation,
         true,
+        refreshCount,
       );
     } catch (error) {
       refreshErrors.push(String(error));
@@ -2104,24 +2153,24 @@ export function DataTableView({
       onResult: (result, request) => {
         pendingWindowsRef.current.delete(request.cacheKey);
         if (!requestEpochRef.current!.isCurrent(request.localEpoch)) return;
-        if (!windowCacheRef.current!.put(request.windowRequest, {
+        if (!request.prefetch && !requestEpochRef.current!.isLatest({ epoch: request.localEpoch, key: request.cacheKey })) return;
+        const receivedWindow = {
           columns: result.columns,
           columnTypes: result.columnTypes,
           rows: result.rows,
           totalRows: result.totalRows,
           start: result.start,
           generation: result.generation,
-        })) {
-          return;
-        }
+        };
+        if (!request.prefetch) windowCacheRef.current!.pin(request.windowRequest);
+        const admitted = windowCacheRef.current!.put(request.windowRequest, receivedWindow);
         if (request.prefetch) {
           updateTableCacheDiagnostics();
-          scheduleNextPrefetch();
+          if (admitted) scheduleNextPrefetch();
           return;
         }
-        windowCacheRef.current!.pin(request.windowRequest);
-        if (!requestEpochRef.current!.isLatest({ epoch: request.localEpoch, key: request.cacheKey })) return;
-        const assembled = windowCacheRef.current!.get(request.windowRequest);
+        // A visible window remains usable even when wide values prevent cache retention.
+        const assembled = admitted ? windowCacheRef.current!.get(request.windowRequest) : receivedWindow;
         if (!assembled) return;
         const nextData: TableQueryResult = {
           columns: assembled.columns,
@@ -2131,6 +2180,7 @@ export function DataTableView({
           page: 0,
           pageSize: assembled.rows.length,
         };
+        renderedWindowKeyRef.current=request.cacheKey;
         windowStartRef.current = assembled.start;
         setWindowStart(assembled.start);
         dataRef.current = nextData;
@@ -2195,6 +2245,26 @@ export function DataTableView({
       invalidateData();
     } catch { /* ignore */ }
   }, [datasetId, invalidateData]);
+
+  useLayoutEffect(()=>{
+    if(previousProjectEpochRef.current===projectEpoch) return;
+    previousProjectEpochRef.current=projectEpoch;
+    immediateReferenceNavigationRef.current=false;
+    requestEpochRef.current!.advance();
+    inFlightLoadClaimsRef.current.clear();
+    localMutationGenerationRef.current=null;
+    loadedFilterGenerationRef.current=null;
+    datasetRevisionRef.current=null;
+    columnDescriptorsRef.current=[];
+    renderedWindowKeyRef.current=null;
+    windowCacheRef.current!.clear();
+    dataRef.current=null;setData(null);
+    setLoadedDataLoadToken(null);setLoadedDisplayPropsLoadToken(null);
+    logicalStartRef.current=0;windowStartRef.current=0;setLogicalStart(0);setWindowStart(0);
+    resetTableQuerySession();
+    void invalidateScheduledNavigation({datasetId,generation:datasetGeneration});
+    updateTableCacheDiagnostics();
+  },[projectEpoch,datasetId,datasetGeneration,resetTableQuerySession,invalidateScheduledNavigation,updateTableCacheDiagnostics]);
 
   useEffect(() => {
     if (
@@ -2361,11 +2431,13 @@ export function DataTableView({
   }, [historyErrorNotification, datasetId, consumeHistoryError]);
 
   useEffect(() => {
-    if (historyRevision === 0) return;
+    // Native receipts already project generation metadata; their owned refresh
+    // and the revision effect cover edit/replay without the legacy whole-window reload.
+    if (projectEpoch !== undefined || historyRevision === 0) return;
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
     void load();
     void refreshAndMarkDirty();
-  }, [datasetGeneration, datasetId, historyRevision, invalidateScheduledNavigation, load, refreshAndMarkDirty]);
+  }, [datasetGeneration, datasetId, historyRevision, invalidateScheduledNavigation, load, projectEpoch, refreshAndMarkDirty]);
 
   // Auto-scroll to keep activeCell visible (virtual scrolling) — both axes.
   useEffect(() => {
@@ -3004,14 +3076,13 @@ export function DataTableView({
     const serializedFilters = serializeTableWindowFilters(tableFiltersRef.current);
     const requiresPreparedSession = serializedFilters.length > 0 || tableSortRef.current !== null;
     if (requiresPreparedSession && !activePreparedSessionId) return;
-    clearPendingPrefetches();
     const range = calculateTableWindow({
       totalRows: data.totalRows,
       rowHeight: ROW_HEIGHT,
       scrollTop: logicalStart * ROW_HEIGHT,
       viewportHeight: Math.max(ROW_HEIGHT, visibleSlotCount * ROW_HEIGHT),
       overscanRows: OVERSCAN,
-      pageSize: TABLE_WINDOW_SIZE,
+      pageSize: windowPageSize,
     });
     if (range.count === 0) return;
     const request = {
@@ -3034,25 +3105,28 @@ export function DataTableView({
       sessionId: activePreparedSessionId,
     });
     const key = buildTableWindowPendingKey(windowRequest);
+    if(renderedWindowKeyRef.current===key) {immediateReferenceNavigationRef.current=false;return;}
+    clearPendingPrefetches();
     const cached = windowCacheRef.current!.get(windowRequest);
     if (cached) {
+      immediateReferenceNavigationRef.current=false;
+      renderedWindowKeyRef.current=key;
       cancelActiveTransportMeasurement();
       windowCacheRef.current!.pin(windowRequest);
       updateTableCacheDiagnostics({ cacheHit: true, ...EMPTY_TABLE_TRANSPORT_METRICS });
-      if (cached.start !== windowStartRef.current) {
-        const nextData: TableQueryResult = {
-          columns: cached.columns,
-          columnTypes: cached.columnTypes,
-          rows: cached.rows,
-          totalRows: cached.totalRows,
-          page: 0,
-          pageSize: cached.rows.length,
-        };
-        windowStartRef.current = cached.start;
-        setWindowStart(cached.start);
-        dataRef.current = nextData;
-        setData(nextData);
-      }
+      // Equal starts can still represent different spans or query scopes.
+      const nextData: TableQueryResult = {
+        columns: cached.columns,
+        columnTypes: cached.columnTypes,
+        rows: cached.rows,
+        totalRows: cached.totalRows,
+        page: 0,
+        pageSize: cached.rows.length,
+      };
+      windowStartRef.current = cached.start;
+      setWindowStart(cached.start);
+      dataRef.current = nextData;
+      setData(nextData);
       queueNeighborPrefetches({
         baseRequest: windowRequest,
         totalRows: cached.totalRows,
@@ -3086,7 +3160,11 @@ export function DataTableView({
     if (droppedRequest) {
       pendingWindowsRef.current.delete(droppedRequest.cacheKey);
     }
-  }, [activePreparedSessionId, buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, cols, data?.totalRows, datasetId, logicalStart, queueNeighborPrefetches, resolveColumnIds, ROW_HEIGHT, updateTableCacheDiagnostics, visibleSlotCount]);
+    if(immediateReferenceNavigationRef.current) {
+      immediateReferenceNavigationRef.current=false;
+      tableNavigationSchedulerRef.current!.flush();
+    }
+  }, [activePreparedSessionId, buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, cols, data?.totalRows, datasetId, logicalStart, queueNeighborPrefetches, resolveColumnIds, ROW_HEIGHT, updateTableCacheDiagnostics, visibleSlotCount, windowPageSize]);
 
   const handleLogicalInteractionEnd = useCallback(() => {
     tableNavigationSchedulerRef.current?.flush();
@@ -3941,12 +4019,18 @@ export function DataTableView({
     newData.rows[dataIdx] = newRow;
 
     if (!tryBeginTableMutation()) return;
+    if (projectEpoch !== undefined) mutationRefreshInProgressRef.current = true;
     try {
       setData(newData);
       dataRef.current = newData;
-      await dataService.updateCell(datasetId, rowId, colName, editValue);
-      markDirty();
-      await load();
+      await dataService.updateCell(datasetId, rowId, colName, editValue, generationRef.current);
+      if (projectEpoch !== undefined) {
+        const acknowledged = useDataStore.getState().datasets.find((item) => item.id === datasetId);
+        await applyTableMutationResult({ generation: acknowledged?.generation ?? generationRef.current });
+      } else {
+        markDirty();
+        await load();
+      }
       recordTable(t("history.editCell"), {
         kind: "cells",
         datasetId,
@@ -3963,6 +4047,10 @@ export function DataTableView({
       await load(); // Revert on error
       return;
     } finally {
+      if (projectEpoch !== undefined && mutationRefreshInProgressRef.current) {
+        mutationRefreshInProgressRef.current = false;
+        setMutationRefreshCompletionRevision((revision) => revision + 1);
+      }
       endTableMutation();
     }
 
@@ -4040,12 +4128,18 @@ export function DataTableView({
     newRow[rawColIdx] = value === "" ? null : value;
     newData.rows[dataIdx] = newRow;
     if (!tryBeginTableMutation()) return false;
+    if (projectEpoch !== undefined) mutationRefreshInProgressRef.current = true;
     try {
       setData(newData);
       dataRef.current = newData;
-      await dataService.updateCell(datasetId, rowId, colName, value);
-      markDirty();
-      await load();
+      await dataService.updateCell(datasetId, rowId, colName, value, generationRef.current);
+      if (projectEpoch !== undefined) {
+        const acknowledged = useDataStore.getState().datasets.find((item) => item.id === datasetId);
+        await applyTableMutationResult({ generation: acknowledged?.generation ?? generationRef.current });
+      } else {
+        markDirty();
+        await load();
+      }
       recordTable(t("history.editCell"), {
         kind: "cells",
         datasetId,
@@ -4063,6 +4157,10 @@ export function DataTableView({
       await load();
       return false;
     } finally {
+      if (projectEpoch !== undefined && mutationRefreshInProgressRef.current) {
+        mutationRefreshInProgressRef.current = false;
+        setMutationRefreshCompletionRevision((revision) => revision + 1);
+      }
       endTableMutation();
     }
   };
@@ -4397,11 +4495,39 @@ export function DataTableView({
       if (!confirmed) return;
     }
 
+    const pasteOwner=useProjectStore.getState().persistence;
+    const nativePaste=Boolean(pasteOwner);
+    const loadedRows=nativePaste?dataRows.map((_,offset)=>data.rows[toDataIdx(startRow+offset)] as unknown[]|undefined):[];
+    let rowIds=nativePaste&&loadedRows.every((row)=>!!row)?loadedRows.map(row=>getRowId(row!)):undefined;
+    const columnIds=nativePaste?columnDescriptorsRef.current.map(column=>column.columnId):undefined;
+    const pasteGeneration=generationRef.current;
+    const pasteSort=tableSortRef.current;
+    const pasteFilters=tableFiltersRef.current;
+    const pasteSession=tableQuerySessionRef.current.sessionId;
+    const pasteQuery=JSON.stringify([pasteSort,pasteFilters]);
+    const isCurrentPaste=()=>useProjectStore.getState().persistence===pasteOwner
+      && currentDatasetIdRef.current===datasetId && generationRef.current===pasteGeneration
+      && tableQuerySessionRef.current.sessionId===pasteSession
+      && JSON.stringify([tableSortRef.current,tableFiltersRef.current])===pasteQuery;
     if (!tryBeginTableMutation()) return;
     try {
-      const { changeSetId } = await dataService.pasteAtPositionWithChangeSet(
-        datasetId, startRow, startCol, dataRows, headerNames, detectedTypes, generationRef.current
+      if(nativePaste&&!rowIds) {
+        if(startRow+numPasteRows<=data.totalRows) {
+          rowIds=await dataService.resolveTablePasteRowIds({version:1,datasetId,generation:pasteGeneration,start:startRow,count:numPasteRows,columnIds:[],sort:pasteSort,filters:serializeTableWindowFilters(pasteFilters),sessionId:pasteSession,includeTransportDiagnostics:false},isCurrentPaste);
+        } else if(pasteSort||pasteFilters.length) {
+          throw new Error(t("dataTable.unloadedRangeUnsupported",{defaultValue:"This operation requires rows outside the loaded window."}));
+        }
+      }
+      if(nativePaste&&!isCurrentPaste())throw new Error("paste_row_identity_owner_changed");
+      const result = await dataService.pasteAtPositionWithChangeSet(
+        datasetId, startRow, startCol, dataRows, headerNames, detectedTypes, pasteGeneration,rowIds,columnIds
       );
+      const {changeSetId}=result;
+      if(nativePaste) {
+        if(result.generation===undefined) throw new Error(t("dataTable.pasteResultUnavailable",{defaultValue:"The paste result could not be confirmed. Retry saving to recover it."}));
+        await applyTableMutationResult({...result,generation:result.generation});
+        return;
+      }
       recordTable(t("history.pasteData"), {
         kind: "changeSet",
         datasetId,
@@ -4415,7 +4541,9 @@ export function DataTableView({
         setErrorMsg(String(refreshError));
       }
     } catch (err) {
-      setErrorMsg(String(err));
+      setErrorMsg(String(err).includes("paste_row_identity_")
+        ? t("dataTable.pasteTargetChanged",{defaultValue:"The table view changed while preparing the paste. Try again."})
+        : String(err));
     } finally {
       endTableMutation();
     }
@@ -5645,6 +5773,7 @@ export function DataTableView({
   };
   jumpToCellRef.current = (row: number, col: number) => {
     logicalEndFollowContextRef.current = null;
+    if(row<logicalStartRef.current||row>=logicalStartRef.current+visibleSlotCount) immediateReferenceNavigationRef.current=true;
     ensureLogicalRowVisible(row);
     setActiveCell({ row, col });
     setSelection({ startRow: row, startCol: col, endRow: row, endCol: col });

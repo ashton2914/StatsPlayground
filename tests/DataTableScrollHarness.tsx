@@ -1,3 +1,5 @@
+import {useTableViewportStore} from "../src/stores/useTableViewportStore";
+import {TableWindowCache} from "../src/utils/tableWindowCache";
 import { useEffect, useState } from "react";
 
 import { DataTableView } from "../src/components/DataTableView";
@@ -30,7 +32,7 @@ const TABLE: TableWindowResult = {
   generation: DATASET.generation,
 };
 
-export function DataTableScrollHarness({ zoom = 1 }: { zoom?: number }) {
+export function DataTableScrollHarness({ zoom = 1, rows = 238, rejectCache = false, valuePadding = 0 }: { zoom?: number; rows?:number; rejectCache?:boolean; valuePadding?:number }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -42,12 +44,25 @@ export function DataTableScrollHarness({ zoom = 1 }: { zoom?: number }) {
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
     const previousQueryTableWindow = dataService.queryTableWindow;
     const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
+    const previousDescriptors=dataService.getColumnDescriptors;
+    dataService.getColumnDescriptors=async()=>[{columnId:"value-column",name:"Value",sqlType:"VARCHAR"}];
+    const previousPut=TableWindowCache.prototype.put;
+    const previousNavigation=dataService.queryTableNavigationWindow;
+    const previousCancel=dataService.cancelTableNavigationRequest;
+    dataService.cancelTableNavigationRequest=async()=>undefined;
+    if(rejectCache) TableWindowCache.prototype.put=()=>false;
+    const dataset={...DATASET,rowCount:rows};
+    const windowAt=(start:number,count:number):TableWindowResult=>({...TABLE,start,totalRows:rows,rows:Array.from({length:Math.min(count,Math.max(0,rows-start))},(_,index)=>[start+index+1,`row-${start+index+1}${"x".repeat(valuePadding)}`])});
+    const requests:Array<{start:number;count:number;prefetch?:boolean}>=[];
+    (window as any).__scrollRequests=requests;
+    (window as any).__scrollSnapshot=()=>({requests,viewports:useTableViewportStore.getState().byDataset});
+    dataService.queryTableNavigationWindow=async request=>{requests.push({start:request.start,count:request.count,prefetch:request.requestId.startsWith("table-nav-prefetch:")});return {...windowAt(request.start,request.count),version:1,requestId:request.requestId,datasetId:dataset.id,generation:dataset.generation,totalRowsExact:true,sessionId:null,timings:{totalMs:0}};};
     let active = true;
 
     useDataStore.setState({
       ...previousDataState,
       activeDatasetId: DATASET.id,
-      datasets: [DATASET],
+      datasets: [dataset],
       statusInfo: null,
     });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
@@ -55,7 +70,7 @@ export function DataTableScrollHarness({ zoom = 1 }: { zoom?: number }) {
     useTableZoomStore.setState({ zoom });
 
     dataService.getDatasetGeneration = async () => DATASET.generation;
-    dataService.queryTableWindow = async () => TABLE;
+    dataService.queryTableWindow = async request => windowAt(request.start,request.count);
     dataService.getColumnDisplayProps = async () => [];
 
     void i18n.changeLanguage("en").then(() => {
@@ -64,6 +79,11 @@ export function DataTableScrollHarness({ zoom = 1 }: { zoom?: number }) {
 
     return () => {
       active = false;
+      dataService.getColumnDescriptors=previousDescriptors;
+      TableWindowCache.prototype.put=previousPut;
+      dataService.queryTableNavigationWindow=previousNavigation;
+      dataService.cancelTableNavigationRequest=previousCancel;
+      delete (window as any).__scrollRequests;delete (window as any).__scrollSnapshot;
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
       dataService.queryTableWindow = previousQueryTableWindow;
       dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
@@ -73,7 +93,7 @@ export function DataTableScrollHarness({ zoom = 1 }: { zoom?: number }) {
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [zoom]);
+  }, [zoom,rows,rejectCache,valuePadding]);
 
   if (!ready) return null;
 

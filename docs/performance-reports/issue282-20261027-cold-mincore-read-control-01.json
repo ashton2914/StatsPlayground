@@ -1,0 +1,36 @@
+{
+  "method": "owned-file msync MS_SYNC|MS_INVALIDATE and mincore census before independent raw read child",
+  "pageSize": 16384,
+  "pages": 2529,
+  "controls": [
+    {
+      "coldResidentPages": 0,
+      "requestedBytes": 65536,
+      "cold": {
+        "bytesRead": 65536,
+        "diskReadBytes": 65536,
+        "diskWriteBytes": 0
+      },
+      "warm": {
+        "bytesRead": 65536,
+        "diskReadBytes": 0,
+        "diskWriteBytes": 0
+      }
+    },
+    {
+      "coldResidentPages": 0,
+      "requestedBytes": 41431040,
+      "cold": {
+        "bytesRead": 41431040,
+        "diskReadBytes": 41431040,
+        "diskWriteBytes": 0
+      },
+      "warm": {
+        "bytesRead": 41431040,
+        "diskReadBytes": 0,
+        "diskWriteBytes": 0
+      }
+    }
+  ],
+  "calibrated": true
+}

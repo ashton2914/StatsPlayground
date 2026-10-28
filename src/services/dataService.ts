@@ -1,3 +1,5 @@
+import { useProjectStore } from "@/stores/useProjectStore";
+import type { ProjectMutationCommand } from "@/projectPersistence/coordinator";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
@@ -28,7 +30,59 @@ import type {
   ValidateCalculatedColumnRequest,
 } from "@/types/data";
 
+async function invokeProjectTableMutation<T>(command: ProjectMutationCommand, args: Record<string, unknown>, datasetId: string, expectedGeneration?: number): Promise<T> {
+  const persistence = useProjectStore.getState().persistence;
+  if (!persistence) return invoke<T>(command,args);
+  const generation = expectedGeneration ?? await invoke<number>("get_dataset_generation",{ datasetId });
+  if (useProjectStore.getState().persistence !== persistence) throw new Error("Project changed before mutation");
+  const commit = await persistence.submit<T>({ command,payload:args,datasetGenerations:[{id:datasetId,generation}] });
+  return commit.value;
+}
+
+async function invokeProjectCreation<T>(command: ProjectMutationCommand,args: Record<string,unknown>): Promise<T> {
+  const persistence=useProjectStore.getState().persistence;
+  if (!persistence) return invoke<T>(command,args);
+  return (await persistence.submit<T>({command,payload:args})).value;
+}
+
+/** Resolve only physical row IDs, in bounded pages of the current query mapping. */
+async function resolveTablePasteRowIds(
+  request: Omit<TableNavigationRequest, "requestId">,
+  isCurrent: () => boolean,
+): Promise<number[]> {
+  if (!Number.isSafeInteger(request.start) || request.start < 0 || !Number.isSafeInteger(request.count) || request.count < 1 || request.count > 100_000) {
+    throw new Error("paste_row_identity_range_invalid");
+  }
+  const ids: number[] = [];
+  const unique = new Set<number>();
+  while (ids.length < request.count) {
+    if (!isCurrent()) throw new Error("paste_row_identity_owner_changed");
+    const start = request.start + ids.length;
+    const count = Math.min(2000, request.count - ids.length);
+    const requestId = `paste-rows:${crypto.randomUUID()}`;
+    const result = await invoke<TableNavigationResult>("query_table_navigation_row_ids", {
+      request: { ...request, start, count, requestId, includeTransportDiagnostics: false },
+    });
+    if (!isCurrent()) throw new Error("paste_row_identity_owner_changed");
+    if (result.version !== 1 || result.requestId !== requestId || result.datasetId !== request.datasetId
+      || result.generation !== request.generation || result.start !== start
+      || (result.sessionId ?? null) !== (request.sessionId ?? null)
+      || result.columns.length !== 1 || result.columns[0] !== "_row_id" || result.rows.length !== count) {
+      throw new Error("paste_row_identity_window_stale_or_incomplete");
+    }
+    for (const row of result.rows) {
+      const id = row[0];
+      if (row.length !== 1 || typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || unique.has(id)) {
+        throw new Error("paste_row_identity_invalid");
+      }
+      unique.add(id); ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export const dataService = {
+  resolveTablePasteRowIds,
   /** 执行 SQL 查询（分页） */
   executeSqlQuery: (sql: string, page: number, pageSize = 200) =>
     invoke<SqlQueryResult>("execute_sql_query", { sql, page, pageSize }),
@@ -39,7 +93,7 @@ export const dataService = {
 
   /** 根据 SQL 查询创建数据表 */
   createTableFromSqlQuery: (sql: string, name: string) =>
-    invoke<DatasetMeta>("create_table_from_sql_query", { sql, name }),
+    invokeProjectCreation<DatasetMeta>("create_table_from_sql_query", { sql, name }),
 
   /** 查询数据表（分页） */
   queryTable: (params: TableQueryParams) =>
@@ -102,26 +156,28 @@ export const dataService = {
 
   /** 导入文件 */
   importFile: (filePath: string) =>
-    invoke<DatasetMeta>("import_file", { filePath }),
+    invokeProjectCreation<DatasetMeta>("import_file", { filePath }),
 
   /** 获取所有数据集元数据 */
   listDatasets: () => invoke<DatasetMeta[]>("list_datasets"),
 
   /** 删除数据集 */
   deleteDataset: (datasetId: string) =>
-    invoke<void>("delete_dataset", { datasetId }),
+    invokeProjectTableMutation<void>("delete_dataset", { datasetId },datasetId),
 
   /** 创建空数据表 */
-  createTable: (name: string, columnNames: string[], columnTypes: string[]) =>
-    invoke<DatasetMeta>("create_table", { name, columnNames, columnTypes }),
+  createTable: (name: string, columnNames: string[], columnTypes: string[]) => {
+    if (!useProjectStore.getState().persistence) return invoke<DatasetMeta>("create_table", { name, columnNames, columnTypes });
+    return invokeProjectCreation<DatasetMeta>("create_table_from_rows",{request:{name,columnNames,columnTypes,rows:[]}});
+  },
 
   /** 通过类型化行数据原子创建数据表 */
   createTableFromRows: (request: CreateTableFromRowsRequest) =>
-    invoke<DatasetMeta>("create_table_from_rows", { request }),
+    invokeProjectCreation<DatasetMeta>("create_table_from_rows", { request }),
 
   /** 原子创建数据表并持久化完整列显示属性 */
   createManagedTable: (request: CreateManagedTableRequest) =>
-    invoke<ManagedTableCreateResult>("create_managed_table", { request }),
+    invokeProjectCreation<ManagedTableCreateResult>("create_managed_table", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),
@@ -132,28 +188,30 @@ export const dataService = {
     count: number,
     beforeRowId: number | null,
     expectedGeneration: number,
-  ) => invoke<RowMutationResult>("add_rows", {
+  ) => invokeProjectTableMutation<RowMutationResult>("add_rows", {
     datasetId,
     count,
     beforeRowId,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 撤销或重做一次新增空行操作 */
   applyAddedRows: (datasetId: string, rowIds: number[], undo: boolean, expectedGeneration: number) =>
     invoke<number>("apply_added_rows", { datasetId, rowIds, undo, expectedGeneration }),
 
   /** 更新单元格 */
-  updateCell: (datasetId: string, rowId: number, columnName: string, value: string) =>
-    invoke<void>("update_cell", { datasetId, rowId, columnName, value }),
+  updateCell: (datasetId: string, rowId: number, columnName: string, value: string, expectedGeneration?: number) => {
+    if(!useProjectStore.getState().persistence)return invoke<void>("update_cell", { datasetId, rowId, columnName, value });
+    return invokeProjectTableMutation<number>("update_cells",{datasetId,updates:[{rowId,columnName,value:value===""?null:value}],expectedGeneration},datasetId,expectedGeneration).then(()=>undefined);
+  },
 
   /** 原子清空多个单元格 */
   clearCells: (datasetId: string, cells: CellPosition[]) =>
-    invoke<void>("clear_cells", { datasetId, cells }),
+    invokeProjectTableMutation<void>("clear_cells", { datasetId, cells },datasetId),
 
   /** 原子更新多个单元格，用于增量撤销/重做 */
   updateCells: (datasetId: string, updates: CellUpdate[], expectedGeneration: number) =>
-    invoke<number>("update_cells", { datasetId, updates, expectedGeneration }),
+    invokeProjectTableMutation<number>("update_cells", { datasetId, updates, expectedGeneration },datasetId,expectedGeneration),
 
   /** 删除行 */
   deleteRow: (datasetId: string, rowId: number) =>
@@ -165,22 +223,22 @@ export const dataService = {
 
   /** 原子删除多行，并在后端保留完整 before image */
   deleteRowsWithChangeSet: (datasetId: string, rowIds: number[], expectedGeneration: number) =>
-    invoke<RowMutationResult>("delete_rows_with_change_set", {
+    invokeProjectTableMutation<RowMutationResult>("delete_rows_with_change_set", {
       datasetId,
       rowIds,
       expectedGeneration,
-    }),
+    },datasetId,expectedGeneration),
 
   /** 删除列并在后端保留完整列 before image */
   deleteColumnsWithChangeSet: (
     datasetId: string,
     columns: ColumnDescriptor[],
     expectedGeneration: number,
-  ) => invoke<ColumnMutationResult>("delete_columns_with_change_set", {
+  ) => invokeProjectTableMutation<ColumnMutationResult>("delete_columns_with_change_set", {
     datasetId,
     columns,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 原子重命名/转换列，并保留有损转换的 before/after image */
   alterColumnWithChangeSet: (
@@ -189,13 +247,13 @@ export const dataService = {
     newName: string,
     newType: string,
     expectedGeneration: number,
-  ) => invoke<string>("alter_column_with_change_set", {
+  ) => invokeProjectTableMutation<string>("alter_column_with_change_set", {
     datasetId,
     oldName,
     newName,
     newType,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 原子转换多列类型，并在后端保留有损转换 before/after image */
   alterColumnsTypeWithChangeSet: (
@@ -203,16 +261,16 @@ export const dataService = {
     columnNames: string[],
     newType: string,
     expectedGeneration: number,
-  ) => invoke<string>("alter_columns_type_with_change_set", {
+  ) => invokeProjectTableMutation<string>("alter_columns_type_with_change_set", {
     datasetId,
     columnNames,
     newType,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 重命名数据集 */
   renameDataset: (datasetId: string, newName: string) =>
-    invoke<void>("rename_dataset", { datasetId, newName }),
+    invokeProjectTableMutation<void>("rename_dataset", { datasetId, newName },datasetId),
 
   /** 添加列 */
   addColumn: (datasetId: string, colName: string, colType: string) =>
@@ -239,12 +297,12 @@ export const dataService = {
     columns: ColumnDescriptor[],
     atIndex: number | null,
     expectedGeneration: number,
-  ) => invoke<ColumnMutationResult>("add_columns_with_change_set", {
+  ) => invokeProjectTableMutation<ColumnMutationResult>("add_columns_with_change_set", {
     datasetId,
     columns,
     atIndex,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 在指定位置插入列（0 基，位于可见列中的索引） */
   insertColumnAt: (datasetId: string, colName: string, colType: string, atIndex: number) =>
@@ -260,12 +318,12 @@ export const dataService = {
     from: number,
     to: number,
     expectedGeneration: number,
-  ) => invoke<number>("reorder_column_if_generation", {
+  ) => invokeProjectTableMutation<number>("reorder_column_if_generation", {
     datasetId,
     from,
     to,
     expectedGeneration,
-  }),
+  },datasetId,expectedGeneration),
 
   /** 删除列 */
   deleteColumn: (datasetId: string, colName: string) =>
@@ -284,12 +342,40 @@ export const dataService = {
     invoke<void>("paste_at_position", { datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration }),
 
   /** 粘贴并在后端保留有界 before/after image，前端只持有 opaque ID */
-  pasteAtPositionWithChangeSet: (datasetId: string, startRow: number, startCol: number, rows: string[][], headerNames: string[] | null, colTypes: string[], expectedGeneration?: number) =>
-    invoke<{ changeSetId: string }>("paste_at_position_with_change_set", { datasetId, startRow, startCol, rows, headerNames, colTypes, expectedGeneration }),
+  pasteAtPositionWithChangeSet: async (datasetId: string, startRow: number, startCol: number, rows: string[][], headerNames: string[] | null, colTypes: string[], expectedGeneration?: number, rowIds?:number[], columnIds?:string[]) => {
+    type Result={changeSetId:string;generation?:number;rowCount?:number;columnCount?:number};
+    const owner=useProjectStore.getState().persistence;
+    const args={datasetId,startRow,startCol,rows,headerNames,colTypes,expectedGeneration};
+    if(!owner) return invoke<Result>("paste_at_position_with_change_set",args);
+    const boundColumns=columnIds??(await invoke<ColumnDescriptor[]>("get_column_descriptors",{datasetId})).map(column=>column.columnId);
+    if(useProjectStore.getState().persistence!==owner) throw new Error("Project changed before mutation");
+    return invokeProjectTableMutation<Result>("paste_at_position_with_change_set",{...args,columnIds:boundColumns,...(rowIds?{rowIds}:{})},datasetId,expectedGeneration);
+  },
 
   /** 原子撤销或重做后端 change set */
-  applyTableChangeSet: (changeSetId: string, undo: boolean) =>
-    invoke<void>("apply_table_change_set", { changeSetId, undo }),
+  applyTableLifecycle: async (eventId:string,undo:boolean):Promise<void> => {
+    const owner=useProjectStore.getState().persistence;
+    if(!owner) throw new Error("Native project required for table history");
+    const {projectService}=await import("./projectService");
+    if(useProjectStore.getState().persistence!==owner)throw new Error("Project changed before table history replay");
+    const event=await projectService.getTableLifecycleEvent(owner.snapshot().epoch,eventId);
+    if(useProjectStore.getState().persistence!==owner)throw new Error("Project changed before table history replay");
+    if(event.id!==eventId||typeof event.datasetId!=="string"||!event.datasetId
+      ||!["create_table","delete_table"].includes(event.operation)||typeof event.applied!=="boolean"
+      ||!Number.isSafeInteger(event.revision)||event.revision<1
+      ||!Number.isSafeInteger(event.historyOrdinal)||event.historyOrdinal<0
+      ||!Number.isSafeInteger(event.projectRevision)||event.projectRevision<1
+      ||(event.datasetGeneration!==null&&(!Number.isSafeInteger(event.datasetGeneration)||event.datasetGeneration<0)))throw new Error("table_lifecycle_event_invalid");
+    if(event.applied!==undo)throw new Error("table_lifecycle_event_stale");
+    await owner.submit<null>({command:"apply_project_table_lifecycle",payload:{eventId,eventRevision:event.revision,undo},
+      datasetGenerations:event.datasetGeneration===null?[]:[{id:event.datasetId,generation:event.datasetGeneration}]});
+  },
+
+  applyTableChangeSet: (changeSetId: string, undo: boolean, datasetId?: string) => {
+    if (!useProjectStore.getState().persistence) return invoke<void>("apply_table_change_set", { changeSetId, undo });
+    if (!datasetId) return Promise.reject(new Error("Native history replay requires its dataset"));
+    return invokeProjectTableMutation<void>("apply_table_change_set", { changeSetId, undo, datasetId },datasetId);
+  },
 
   /** 释放 history eviction/reset 后不再可达的后端 change set */
   dropTableChangeSet: (changeSetId: string) =>
@@ -300,12 +386,19 @@ export const dataService = {
     invoke<void>("restore_snapshot", { datasetId, colNames, colTypes, rows }),
 
   /** 获取列显示属性 */
-  getColumnDisplayProps: (datasetId: string) =>
-    invoke<ColumnDisplayProps[]>("get_column_display_props", { datasetId }),
+  getColumnDisplayProps: (datasetId: string) => {
+    const persistence=useProjectStore.getState().persistence;
+    return invoke<ColumnDisplayProps[]>("get_column_display_props",persistence?{datasetId,epoch:persistence.snapshot().epoch}:{datasetId});
+  },
 
   /** 设置列显示属性 */
-  setColumnDisplayProps: (datasetId: string, props: ColumnDisplayProps[]) =>
-    invoke<void>("set_column_display_props", { datasetId, props }),
+  setColumnDisplayProps: async (datasetId: string, props: ColumnDisplayProps[]) => {
+    const persistence=useProjectStore.getState().persistence;
+    if(!persistence) return invoke<void>("set_column_display_props",{datasetId,props});
+    const columns=await invoke<ColumnDescriptor[]>("get_column_descriptors",{datasetId});
+    if(useProjectStore.getState().persistence!==persistence) throw new Error("Project changed before mutation");
+    return invokeProjectTableMutation<void>("set_column_display_props",{datasetId,props,columnIds:columns.map(column=>column.columnId)},datasetId);
+  },
 
   // ─── Table Operations ───
 
@@ -321,14 +414,14 @@ export const dataService = {
     invoke<CalculatedColumnValidation>("validate_calculated_column", { request }),
 
   upsertCalculatedColumn: (request: UpsertCalculatedColumnRequest) =>
-    invoke<CalculatedColumnMutationResult>("upsert_calculated_column", { request }),
+    invokeProjectTableMutation<CalculatedColumnMutationResult>("upsert_calculated_column", { request },request.datasetId,request.expectedGeneration??undefined),
 
   convertCalculatedColumnToValues: (datasetId: string, columnId: string, expectedGeneration: number) =>
-    invoke<CalculatedColumnMutationResult>("convert_calculated_column_to_values", {
+    invokeProjectTableMutation<CalculatedColumnMutationResult>("convert_calculated_column_to_values", {
       datasetId,
       columnId,
       expectedGeneration,
-    }),
+    },datasetId,expectedGeneration),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

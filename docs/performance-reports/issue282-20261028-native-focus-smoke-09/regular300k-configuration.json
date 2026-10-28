@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/native-focus-smoke-fixtures-09/regular300k.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-native-focus-smoke-09/regular300k-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-native-focus-smoke-09/regular300k",
+  "sourceTreeHash": "348311912647aec34ae13f01da85de67c94e9abf",
+  "tier": "regular",
+  "samples": 40,
+  "cacheMode": "warm"
+}

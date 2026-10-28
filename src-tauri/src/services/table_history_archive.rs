@@ -130,6 +130,7 @@ pub(crate) fn record_history_timeline(
     before_schema_json: &str,
     after_schema_json: &str,
 ) -> Result<(), AppError> {
+    super::project_table_lifecycle::prune_redo(engine,dataset_id)?;
     engine.conn().execute(
         "INSERT INTO _history_dataset_state (dataset_id, next_history_ordinal)
          SELECT ?, 0 WHERE NOT EXISTS (
@@ -243,9 +244,9 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
         validate_schema(&entry.after_schema)?;
         let expected_snapshot_kinds: &[&str] =
             match (entry.storage_kind.as_str(), entry.operation.as_str()) {
-                ("row_delta", "add_rows") | ("column_delta", "add_columns") => &[],
-                ("row_delta", "delete_rows") | ("column_delta", "delete_columns") => &["delta"],
-                ("full", "legacy_full") => &["before", "after"],
+                ("row_delta", "add_rows") | ("column_delta", "add_columns") | ("column_delta", "reorder_columns") | ("column_delta", "convert_calculated") | ("column_delta", "rename_column") | ("column_delta", "empty_column_type") => &[],
+                ("row_delta", "delete_rows") | ("column_delta", "delete_columns" | "add_valued_columns") => &["delta"],
+                ("full", "legacy_full" | "column_values") => &["before", "after"],
                 _ => return Err(AppError::FileIO("Unsupported history operation".into())),
             };
         let actual_kinds = entry
@@ -545,12 +546,14 @@ fn validate_legacy_transition(entry: &HistoryTimelineEntry) -> Result<(), AppErr
             }
         }
     }
-    if represented_before.len() != entry.before_schema.len()
-        || represented_after.len() != entry.after_schema.len()
-    {
-        return Err(AppError::FileIO(
-            "Legacy history metadata does not cover the exact timeline schemas".into(),
-        ));
+    if entry.operation == "column_values" {
+        let untouched_before=entry.before_schema.iter().filter(|column|!represented_before.contains(column.column_id.as_str())).collect::<Vec<_>>();
+        let untouched_after=entry.after_schema.iter().filter(|column|!represented_after.contains(column.column_id.as_str())).collect::<Vec<_>>();
+        if untouched_before.len()!=untouched_after.len() || untouched_before.iter().zip(&untouched_after).any(|(before,after)|before.column_id!=after.column_id||before.name!=after.name||before.duckdb_type!=after.duckdb_type||!calculated_definitions_equal(before.calculated_definition_json.as_deref(),after.calculated_definition_json.as_deref())) {
+            return Err(AppError::FileIO("Column value history modifies untracked columns".into()));
+        }
+    } else if represented_before.len()!=entry.before_schema.len() || represented_after.len()!=entry.after_schema.len() {
+        return Err(AppError::FileIO("Legacy history metadata does not cover the exact timeline schemas".into()));
     }
 
     for snapshot in &entry.snapshots {
@@ -612,7 +615,7 @@ fn apply_compact_schema_transition(
 ) -> Result<(), AppError> {
     match delta.operation.as_str() {
         "add_rows" | "delete_rows" => {}
-        "add_columns" => {
+        "add_columns" | "add_valued_columns" => {
             for column in &delta.columns {
                 let index = usize::try_from(column.col_index)
                     .map_err(|_| AppError::FileIO("Invalid history column index".into()))?;
@@ -636,6 +639,42 @@ fn apply_compact_schema_transition(
                     },
                 );
             }
+        }
+        "rename_column" => {
+            if delta.columns.len()!=1 {return Err(AppError::FileIO("Column rename must change exactly one column".into()));}
+            let column=&delta.columns[0];
+            if schema.iter().any(|current|current.column_id!=column.column_id&&current.name.eq_ignore_ascii_case(&column.col_name)) {return Err(AppError::FileIO("Column rename has duplicate or unchanged name".into()));}
+            let current=schema.iter_mut().find(|current|current.column_id==column.column_id).ok_or_else(||AppError::FileIO("Renamed column is missing".into()))?;
+            if current.col_index!=column.col_index||current.duckdb_type!=column.col_type||!calculated_definitions_equal(current.calculated_definition_json.as_deref(),column.calculated_definition_json.as_deref()) {return Err(AppError::FileIO("Column rename metadata disagrees with schema".into()));}
+            current.name=column.col_name.clone();
+        }
+        "empty_column_type" => {
+            if delta.columns.len()!=1 {return Err(AppError::FileIO("Empty type change must affect one column".into()));}
+            let column=&delta.columns[0];
+            let current=schema.iter_mut().find(|c|c.column_id==column.column_id).ok_or_else(||AppError::FileIO("Empty type column missing".into()))?;
+            if current.col_index!=column.col_index||current.name!=column.col_name||current.duckdb_type==column.col_type||current.calculated_definition_json.is_some()||column.calculated_definition_json.is_some() {return Err(AppError::FileIO("Invalid empty column type transition".into()));}
+            current.duckdb_type=column.col_type.clone();
+        }
+        "convert_calculated" => {
+            if delta.columns.len()!=1 {return Err(AppError::FileIO("Calculated conversion must change exactly one column".into()));}
+            let column=&delta.columns[0];let current=schema.iter_mut().find(|current|current.column_id==column.column_id).ok_or_else(||AppError::FileIO("Calculated conversion column is missing".into()))?;
+            if current.col_index!=column.col_index||current.name!=column.col_name||current.duckdb_type!=column.col_type||current.calculated_definition_json.is_none()||!calculated_definitions_equal(current.calculated_definition_json.as_deref(),column.calculated_definition_json.as_deref()) {
+                return Err(AppError::FileIO("Calculated conversion metadata disagrees with schema".into()));
+            }
+            current.calculated_definition_json=None;
+        }
+        "reorder_columns" => {
+            if delta.columns.len()!=schema.len() {return Err(AppError::FileIO("Invalid history column reorder size".into()));}
+            let mut ids=std::collections::HashSet::new();
+            let mut reordered=Vec::with_capacity(schema.len());
+            for (index,column) in delta.columns.iter().enumerate() {
+                let current=schema.iter().find(|current|current.column_id==column.column_id).ok_or_else(||AppError::FileIO("Invalid history column reorder identity".into()))?;
+                if column.ordinal!=index as i32||column.col_index!=index as i32||!ids.insert(&column.column_id)||current.name!=column.col_name||current.duckdb_type!=column.col_type||!calculated_definitions_equal(current.calculated_definition_json.as_deref(),column.calculated_definition_json.as_deref()) {
+                    return Err(AppError::FileIO("History column reorder changed column metadata".into()));
+                }
+                reordered.push(HistorySchemaColumn {col_index:column.col_index,..current.clone()});
+            }
+            *schema=reordered;
         }
         "delete_columns" => {
             for column in delta.columns.iter().rev() {

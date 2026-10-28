@@ -69,6 +69,7 @@ interface RuntimeRequest<TData> {
   mode: CommandMode;
   controller: AbortController;
   committed: boolean;
+  assertOwner?: () => void;
   settled: boolean;
   cancellationSignal: Promise<void>;
   confirmationSignal: Promise<boolean>;
@@ -88,6 +89,7 @@ export type PendingCommandResult<TData> = Promise<CommandResult<TData>> & {
 };
 
 interface RuntimeRevisionAdapter {
+  isAuthoritative?: () => boolean;
   get: () => number;
   set: (revision: number) => void;
 }
@@ -154,10 +156,13 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
   private readonly revisionAdapter?: RuntimeRevisionAdapter;
 
-  constructor(input?: { initialRevision?: number; policy?: CommandPolicy; revision?: RuntimeRevisionAdapter }) {
+  private readonly captureMutationGuard?: () => () => void;
+
+  constructor(input?: { initialRevision?: number; policy?: CommandPolicy; revision?: RuntimeRevisionAdapter; captureMutationGuard?: () => () => void }) {
     this.projectRevision = input?.initialRevision ?? 0;
     this.policy = input?.policy ?? allowAllCommandPolicy;
     this.revisionAdapter = input?.revision;
+    this.captureMutationGuard = input?.captureMutationGuard;
     if (this.revisionAdapter) {
       this.projectRevision = this.revisionAdapter.get();
     }
@@ -401,6 +406,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       mode: input.mode,
       controller: new AbortController(),
       committed: false,
+      assertOwner: input.mode === "mutation" ? this.captureMutationGuard?.() : undefined,
       settled: false,
       cancellationSignal,
       confirmationSignal,
@@ -522,7 +528,9 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
           request.percent = progress.percent ?? null;
           observer?.onProgress?.(progress);
         },
+        assertCurrent: () => request.assertOwner?.(),
         beginCommit: () => {
+          request.assertOwner?.();
           if (request.controller.signal.aborted && !request.committed) {
             throw new CommandExecutionError("cancelled", "Command cancelled");
           }
@@ -550,13 +558,14 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
         throw new CommandExecutionError("cancelled", "Command cancelled");
       }
 
+      request.assertOwner?.();
       const handlerResult = await registered.run(command.input, runtimeContext);
 
       if (request.controller.signal.aborted && !request.committed) {
         throw new CommandExecutionError("cancelled", "Command cancelled");
       }
 
-      if (request.mode === "mutation" && handlerResult.changed) {
+      if (request.mode === "mutation" && handlerResult.changed && !this.revisionAdapter?.isAuthoritative?.()) {
         this.setProjectRevision(this.getProjectRevision() + 1);
       }
 
@@ -634,6 +643,7 @@ export function createApplicationCommandRuntime<TRegistry extends CommandRegistr
   initialRevision?: number;
   policy?: CommandPolicy;
   revision?: RuntimeRevisionAdapter;
+  captureMutationGuard?: () => () => void;
 }): ApplicationCommandRuntime<TRegistry> {
   return new Runtime<TRegistry>(input);
 }

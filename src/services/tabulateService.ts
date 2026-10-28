@@ -1,3 +1,4 @@
+import {useProjectStore} from "../stores/useProjectStore";
 import { invoke } from "@tauri-apps/api/core";
 import type { DatasetMeta } from "@/types/data";
 import type {
@@ -23,6 +24,11 @@ export const tabulateService = {
     invoke<void>("cancel_tabulate_request", { requestId }),
   release: (sessionId: string) =>
     invoke<void>("release_tabulate_session", { sessionId }),
-  materializeTable: (request: TabulateMaterializeRequest) =>
-    invoke<DatasetMeta>("materialize_tabulate_table", { request }),
+  materializeTable: async (request: TabulateMaterializeRequest, sourceDatasetId?:string):Promise<DatasetMeta> => {
+    const command="materialize_tabulate_table";
+    const persistence=useProjectStore.getState().persistence;
+    if(!persistence)return invoke<DatasetMeta>(command, { request });
+    if(!sourceDatasetId)throw new Error("tabulate source dataset required");
+    return (await persistence.submit<DatasetMeta>({command,payload:{request},datasetGenerations:[{id:sourceDatasetId,generation:request.sourceGeneration}]})).value;
+  },
 };

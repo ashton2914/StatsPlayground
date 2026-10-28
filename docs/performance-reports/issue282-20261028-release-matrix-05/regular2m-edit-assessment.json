@@ -1,0 +1,16 @@
+{
+  "qualified": false,
+  "failures": [
+    "logical verification failed or unavailable",
+    "at least 100 warm samples required",
+    "sample 49: foreground UI phase proof unavailable or inconsistent",
+    "sample 49: logical verification failed or unavailable",
+    "sample 49: uiReadyMs unavailable or invalid"
+  ],
+  "sampleCount": 50,
+  "backendP95Ms": 46.754375,
+  "uiP95Ms": 112,
+  "backendMedianMs": 26.266937499999997,
+  "uiMedianMs": 81,
+  "budgetMs": 200
+}

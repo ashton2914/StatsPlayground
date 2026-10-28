@@ -1,0 +1,141 @@
+{
+  "qualified": false,
+  "failures": [
+    "5f688680-d985-41ea-b152-42be81d20c2a/catalog: release source/build/engine provenance required",
+    "5f688680-d985-41ea-b152-42be81d20c2a/window: release source/build/engine provenance required",
+    "5f688680-d985-41ea-b152-42be81d20c2a/scroll: release source/build/engine provenance required",
+    "5f688680-d985-41ea-b152-42be81d20c2a/scroll: UI latency exceeds budget",
+    "5f688680-d985-41ea-b152-42be81d20c2a/edit: release source/build/engine provenance required",
+    "5f688680-d985-41ea-b152-42be81d20c2a/edit: UI latency exceeds budget",
+    "5f688680-d985-41ea-b152-42be81d20c2a/close: release source/build/engine provenance required",
+    "missing 300000x20 catalog/cold",
+    "missing 300000x20 catalog/warm",
+    "missing 300000x20 window/warm",
+    "missing 300000x20 scroll/warm",
+    "missing 300000x20 edit/warm",
+    "missing 300000x20 close/warm",
+    "missing 2000000x20 catalog/cold",
+    "missing 2000000x20 catalog/warm",
+    "missing 2000000x20 window/warm",
+    "missing 2000000x20 scroll/warm",
+    "missing 2000000x20 edit/warm",
+    "missing 2000000x20 close/warm",
+    "missing 10000000x20 catalog/cold",
+    "missing many-documents tier",
+    "missing long-strings tier"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "5f688680-d985-41ea-b152-42be81d20c2a",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 156.025125,
+        "uiP95Ms": 176,
+        "backendMedianMs": 135.841583,
+        "uiMedianMs": 146,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "5f688680-d985-41ea-b152-42be81d20c2a",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 69.35725,
+        "uiP95Ms": 129,
+        "backendMedianMs": 66.838521,
+        "uiMedianMs": 124,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "5f688680-d985-41ea-b152-42be81d20c2a",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 54.143584,
+        "uiP95Ms": 112,
+        "backendMedianMs": 48.5199585,
+        "uiMedianMs": 95,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "5f688680-d985-41ea-b152-42be81d20c2a",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "UI latency exceeds budget"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 176.149917,
+        "uiP95Ms": 244,
+        "backendMedianMs": 167.5270835,
+        "uiMedianMs": 228,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "5f688680-d985-41ea-b152-42be81d20c2a",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 238.522583,
+        "uiP95Ms": 259,
+        "backendMedianMs": 175.584083,
+        "uiMedianMs": 191.5,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

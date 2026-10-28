@@ -1,0 +1,342 @@
+{
+  "graphBuilders": [
+    {
+      "id": "graph",
+      "name": "Legacy chart",
+      "sourceDatasetId": "table",
+      "mode": "2d",
+      "modeStates": {
+        "twoD": {
+          "encoding": {},
+          "multiX": [],
+          "multiY": [],
+          "elements": [
+            {
+              "kind": "points",
+              "enabled": true
+            }
+          ],
+          "smootherLambda": 0.4
+        },
+        "threeD": {
+          "encoding": {},
+          "elements": [
+            {
+              "kind": "scatter3d",
+              "enabled": true
+            }
+          ],
+          "smootherLambda": 0.4
+        },
+        "multivariate": {
+          "columns": [],
+          "chartType": "correlationMatrix",
+          "correlationMethod": "pearson"
+        }
+      },
+      "sampling": {
+        "mode": "full"
+      },
+      "createdAt": "2026-01-01"
+    }
+  ],
+  "graphBuildersNew": [
+    {
+      "version": 3,
+      "layers": [
+        {
+          "id": "layer-0",
+          "kind": "points",
+          "options": {
+            "summaryStat": "none",
+            "errorInterval": "auto",
+            "intervalStyle": "errorBar",
+            "jitter": "stacked",
+            "jitterLimit": 0.5
+          }
+        }
+      ],
+      "id": "graph-new",
+      "name": "Layered chart",
+      "datasetId": "table",
+      "xColumnId": null,
+      "yColumnId": null,
+      "overlayColumnId": null,
+      "hiddenOverlayGroupIds": [],
+      "xMode": "auto",
+      "camera": null
+    }
+  ],
+  "graphNewFolders": {
+    "graph-new": "Charts"
+  },
+  "graphFolders": {
+    "graph": "Charts"
+  },
+  "reports": [
+    {
+      "id": "report",
+      "name": "Report",
+      "schemaVersion": 1,
+      "markdown": "# Kept report",
+      "createdAt": "2026-01-01",
+      "updatedAt": "2026-01-01"
+    }
+  ],
+  "reportFolders": {
+    "report": "Reports"
+  },
+  "tabulates": [
+    {
+      "id": "tabulate",
+      "name": "Summary",
+      "sourceDatasetId": "table",
+      "rowFields": [],
+      "columnFields": [],
+      "statistics": [
+        {
+          "id": "mean",
+          "field": "value",
+          "kind": "mean"
+        }
+      ],
+      "includeRowTotals": true,
+      "includeColumnTotals": false,
+      "createdAt": "2026-01-01"
+    }
+  ],
+  "tabulateFolders": {
+    "tabulate": "Reports"
+  },
+  "workflows": [
+    {
+      "id": "workflow",
+      "name": "Native graph workflow",
+      "formatVersion": "1",
+      "revision": 1,
+      "inputSlots": [
+        {
+          "id": "input-source",
+          "name": "Source",
+          "outputPort": {
+            "id": "input-source:output",
+            "name": "output",
+            "payloadKind": "table"
+          },
+          "schemaContract": {
+            "schemaFingerprint": "fixture-schema",
+            "columns": [
+              {
+                "name": "value",
+                "canonicalDuckdbType": "DOUBLE",
+                "required": true,
+                "requiredByOperationIds": [
+                  "operation-graph"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "operations": [
+        {
+          "id": "operation-graph",
+          "kind": "graphGeneration",
+          "schemaVersion": "1",
+          "configuration": {
+            "mode": "2d",
+            "activeState": {
+              "encoding": {
+                "x": {
+                  "name": "value",
+                  "type": "continuous"
+                }
+              },
+              "multiX": [],
+              "multiY": [],
+              "elements": [],
+              "smootherLambda": 0.5
+            },
+            "filters": [],
+            "sampling": {
+              "mode": "full"
+            },
+            "groupThemeSlots": {}
+          },
+          "inputPorts": [
+            {
+              "id": "operation-graph:in",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "outputPorts": [
+            {
+              "id": "operation-graph:out",
+              "name": "result",
+              "payloadKind": "graph"
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-input",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "input-source",
+            "portId": "input-source:output"
+          },
+          "target": {
+            "nodeId": "operation-graph",
+            "portId": "operation-graph:in"
+          }
+        },
+        {
+          "id": "edge-output",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-graph",
+            "portId": "operation-graph:out"
+          },
+          "target": {
+            "nodeId": "output-graph",
+            "portId": "output-graph:input"
+          }
+        }
+      ],
+      "outputDeclarations": [
+        {
+          "id": "output-graph",
+          "name": "Native workflow graph",
+          "inputPort": {
+            "id": "output-graph:input",
+            "name": "input",
+            "payloadKind": "graph"
+          },
+          "outputPort": {
+            "id": "output-graph:output",
+            "name": "output",
+            "payloadKind": "graph"
+          },
+          "sourceEndpoint": {
+            "nodeId": "operation-graph",
+            "portId": "operation-graph:out"
+          },
+          "artifactKind": "graph"
+        }
+      ]
+    }
+  ],
+  "logicalFolders": [
+    {
+      "id": "logical-root",
+      "name": "Workflow runs",
+      "kind": "project"
+    }
+  ],
+  "workflowRuns": [
+    {
+      "id": "saved-run",
+      "workflowId": "workflow",
+      "workflowRevision": 1,
+      "status": "succeeded",
+      "startedAt": "2026-01-01",
+      "completedAt": "2026-01-02",
+      "inputBindings": [
+        {
+          "slotId": "input-source",
+          "tableDocumentId": "table"
+        }
+      ],
+      "nodeResults": [],
+      "outputBindings": [
+        {
+          "declarationId": "output-graph",
+          "artifactDocumentId": "graph"
+        }
+      ],
+      "errors": [],
+      "parentFolderId": "logical-root",
+      "inputFingerprints": [],
+      "outputFingerprints": []
+    }
+  ],
+  "tableTransforms": [
+    {
+      "id": "transform",
+      "name": "Concatenate",
+      "formatVersion": "1",
+      "revision": 1,
+      "operation": {
+        "kind": "concatenate",
+        "sourceCount": 2
+      },
+      "inputSlots": [
+        {
+          "role": "source-1",
+          "schemaContract": {
+            "schemaFingerprint": "cbf29ce484222325",
+            "columns": []
+          }
+        },
+        {
+          "role": "source-2",
+          "schemaContract": {
+            "schemaFingerprint": "cbf29ce484222325",
+            "columns": []
+          }
+        }
+      ],
+      "output": {
+        "tableDocumentId": "output",
+        "name": "Output"
+      }
+    }
+  ],
+  "tableTransformBindings": [
+    {
+      "definitionId": "transform",
+      "definitionRevision": 1,
+      "inputs": [
+        {
+          "role": "source-1",
+          "tableDocumentId": "table"
+        },
+        {
+          "role": "source-2",
+          "tableDocumentId": "table"
+        }
+      ],
+      "outputGeneration": 0
+    }
+  ],
+  "folders": [
+    "Charts",
+    "Reports",
+    "Empty/Nested"
+  ],
+  "tableFolders": {
+    "table": "",
+    "output": ""
+  },
+  "datasetFilters": {
+    "table": [
+      {
+        "id": "filter",
+        "op": "AND",
+        "rule": {
+          "kind": "continuous",
+          "field": {
+            "name": "value",
+            "type": "continuous"
+          },
+          "min": 0,
+          "max": 10
+        }
+      }
+    ]
+  },
+  "history": [],
+  "snapshots": []
+}

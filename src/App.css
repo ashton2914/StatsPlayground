@@ -2218,6 +2218,9 @@
 
 .sp-cell .sp-val,
 .sp-cell .sp-null {
+  /* Dense clipped cell text does not need optional typographic shaping. */
+  font-kerning: none;
+  font-variant-ligatures: none;
   display: block;
   padding: 0 calc(6px * var(--sp-zoom, 1));
   white-space: nowrap;
@@ -3333,6 +3336,12 @@
 }
 
 /* ========= Status Bar ========= */
+.project-persistence-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status-bar {
   display: flex;
   align-items: center;

@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import {createProjectPersistenceCoordinator} from "../src/projectPersistence/coordinator.ts";
+import type {ProjectCommit} from "../src/types/projectPersistence.ts";
+let timerId=0;let time=0;const timers=new Map<number,{run:()=>void;delay:number}>();const checkpoints:Array<[number,number]>=[];let receive!:(commit:ProjectCommit<unknown>)=>void;let unsubscribed=0;let checkpointFails=false;let release:(()=>void)|undefined;let hold=false;const errors:string[]=[];
+const queue=createProjectPersistenceCoordinator({projectId:"project",epoch:7,committedRevision:0,now:()=>time,newOperationId:()=>`op-${time++}`,setTimer:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimer:id=>{timers.delete(id as number);},transport:async<T>(_operation,context):Promise<ProjectCommit<T>>=>({operationId:context.operationId,epoch:7,committedRevision:context.expectedRevision+1,value:null as T,changedDatasetGenerations:[],changedDocumentRevisions:[]}),subscribeCommits:fn=>{receive=fn;return ()=>{unsubscribed++;};},checkpoint:async(epoch,revision)=>{checkpoints.push([epoch,revision]);if(hold) await new Promise<void>(resolve=>{release=resolve;});if(checkpointFails) throw new Error("checkpoint busy");},onCheckpointError:error=>{errors.push(String(error));}});
+const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
+const fire=()=>{const [id,timer]=[...timers][0];assert.equal(timer.delay,5000);timers.delete(id);timer.run();};
+assert.equal(timers.size,0,"metadata-only installation schedules no write");
+await queue.submit({command:"commit_project_records",payload:{}});
+assert.equal(timers.size,1,"a committed change schedules one idle checkpoint instead of checkpointing inline");assert.equal(checkpoints.length,0);
+await queue.flushThrough(queue.captureBarrier());assert.equal(checkpoints.length,0,"Ctrl+S must not force a checkpoint");
+await queue.submit({command:"commit_project_records",payload:{}});assert.equal(timers.size,1,"new writes replace the idle deadline");
+fire();await settle();assert.deepEqual(checkpoints,[[7,2]]);assert.equal(timers.size,0);
+receive({operationId:"external",epoch:7,committedRevision:3,value:null,changedDatasetGenerations:[],changedDocumentRevisions:[]});assert.equal(timers.size,1);
+const resume=queue.suspendWrites();assert.equal(timers.size,0,"session transitions cancel scheduled maintenance");resume();assert.equal(timers.size,1);
+checkpointFails=true;fire();await settle();assert.equal(queue.snapshot().status,"saved");assert.equal(queue.snapshot().error,null);assert.ok(errors[0].includes("checkpoint busy"));
+checkpointFails=false;hold=true;await queue.submit({command:"commit_project_records",payload:{}});fire();await settle();let closed=false;const closing=queue.close().then(()=>{closed=true;});await settle();assert.equal(closed,false,"close joins in-flight checkpoint RPCs");release!();await closing;assert.equal(timers.size,0);assert.equal(unsubscribed,1);
+console.log("idle checkpoint: idle-only scheduling, barriers, external commits, transition cancellation, deferred failure and close joining passed");

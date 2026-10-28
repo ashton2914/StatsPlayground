@@ -1,0 +1,6 @@
+{
+  "observedAt": "2026-10-27T08:44:27.373528+00:00",
+  "action": "Computer-use app lookup unexpectedly launched an extra benchmark process without runtime configuration (PID35671, launchd parent); it showed the explicit-configuration-required error. Only that owned observer process was terminated. Runner-owned PID35762 was preserved.",
+  "affectedPhase": "regular300k/regular2m warm; exact overlap cannot be ruled out",
+  "qualification": "retain all raw matrix01 data; do not use potentially occluded samples as final foreground UI qualification; run a new immutable matrix without computer-use app lookup."
+}

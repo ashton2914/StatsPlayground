@@ -1,0 +1,92 @@
+{
+  "method": "owned-file mmap MAP_SHARED, msync MS_SYNC|MS_INVALIDATE, mincore resident-bit census without reading mapped data",
+  "pageSize": 16384,
+  "pages": 2529,
+  "size": 41431040,
+  "warmResidentPages": 2529,
+  "sha256BeforeInvalidate": "f5fe13ad8dd750d12ef99576531139618f2c7bd5ee01a8309abccf9144dcbf0b",
+  "coldResidentPages": 0,
+  "cold": {
+    "source": {
+      "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+      "engineVersion": "v1.5.5",
+      "profile": "debug",
+      "storageVersion": "64",
+      "treeHash": "efaa578479f7c6a9fe966c60dd9a078437f87a10"
+    },
+    "sample": {
+      "backendMs": 100.026083,
+      "backendRetainedRows": null,
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 diskio byte deltas",
+      "processId": 97569,
+      "processMemory": {
+        "baselineWorkingSetBytes": 73908224,
+        "deltaWorkingSetBytes": 1425408,
+        "peakWorkingSetBytes": 75333632
+      },
+      "retention": null,
+      "rssBytes": 75333632,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; sampled every 5ms plus endpoints",
+      "transferredBytes": 952,
+      "uiReadyMs": null,
+      "verification": {
+        "passed": true
+      },
+      "walBytes": 0
+    }
+  },
+  "warm": {
+    "source": {
+      "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+      "engineVersion": "v1.5.5",
+      "profile": "debug",
+      "storageVersion": "64",
+      "treeHash": "efaa578479f7c6a9fe966c60dd9a078437f87a10"
+    },
+    "sample": {
+      "backendMs": 104.19516700000001,
+      "backendRetainedRows": null,
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 561152,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 diskio byte deltas",
+      "processId": 97579,
+      "processMemory": {
+        "baselineWorkingSetBytes": 74301440,
+        "deltaWorkingSetBytes": 819200,
+        "peakWorkingSetBytes": 75120640
+      },
+      "retention": null,
+      "rssBytes": 75120640,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; sampled every 5ms plus endpoints",
+      "transferredBytes": 952,
+      "uiReadyMs": null,
+      "verification": {
+        "passed": true
+      },
+      "walBytes": 0
+    }
+  },
+  "calibrated": false
+}

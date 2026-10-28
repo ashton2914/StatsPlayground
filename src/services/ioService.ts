@@ -1,3 +1,5 @@
+import {invokeProjectExport} from "@/projectPersistence/exportRead";
+import {useProjectStore} from "@/stores/useProjectStore";
 import { invoke } from "@tauri-apps/api/core";
 import type { DatasetMeta } from "@/types/data";
 
@@ -13,7 +15,7 @@ interface AuthorizedCsvTargetInspection {
 export const ioService = {
   /** 导出数据集为 CSV */
   exportCsv: (datasetId: string, outputPath: string) =>
-    invoke<void>("export_csv", { datasetId, outputPath }),
+    invokeProjectExport("export_csv", { datasetId, outputPath }),
 
   authorizeCsvExportRoot: (rootPath: string) =>
     invoke<AuthorizedOutputRootGrant>("authorize_csv_export_root", { rootPath }),
@@ -28,13 +30,18 @@ export const ioService = {
       relativePath,
     }),
 
-  exportCsvAuthorized: (
+  exportCsvAuthorized: async (
     datasetId: string,
     rootId: string,
     relativePath: string,
     overwriteConfirmed: boolean,
-  ) =>
-    invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath, overwriteConfirmed }),
+  ) => {
+    const owner=useProjectStore.getState().persistence;
+    if(owner)await owner.flushThrough(owner.captureBarrier());
+    if(useProjectStore.getState().persistence!==owner)throw new Error("project_session_stale");
+    if(owner)return invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath, overwriteConfirmed,epoch:owner.snapshot().epoch });
+    return invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath, overwriteConfirmed });
+  },
 
   /** 从 SQLite 数据库导入所有表 */
   importSqlite: (filePath: string) =>
@@ -42,7 +49,7 @@ export const ioService = {
 
   /** 导出所有数据表到 SQLite 数据库 */
   exportSqlite: (outputPath: string) =>
-    invoke<void>("export_sqlite", { outputPath }),
+    invokeProjectExport("export_sqlite", { outputPath }),
 
   /** Subset SQLite export.
    *  `datasetIds` — if omitted, all datasets are exported.
@@ -55,7 +62,7 @@ export const ioService = {
     datasetIds?: string[],
     nameOverrides?: Record<string, string>,
   ) =>
-    invoke<void>("export_sqlite_subset", {
+    invokeProjectExport("export_sqlite_subset", {
       outputPath,
       datasetIds: datasetIds ?? null,
       nameOverrides: nameOverrides ?? null,
@@ -63,7 +70,7 @@ export const ioService = {
 
   /** 导出所有数据表为 CSV 打包成 ZIP */
   exportCsvZip: (outputPath: string) =>
-    invoke<void>("export_csv_zip", { outputPath }),
+    invokeProjectExport("export_csv_zip", { outputPath }),
 
   /** Subset CSV ZIP export.
    *  `datasetIds` — if omitted, all datasets are exported.
@@ -74,7 +81,7 @@ export const ioService = {
     datasetIds?: string[],
     archivePaths?: Record<string, string>,
   ) =>
-    invoke<void>("export_csv_zip_subset", {
+    invokeProjectExport("export_csv_zip_subset", {
       outputPath,
       datasetIds: datasetIds ?? null,
       archivePaths: archivePaths ?? null,

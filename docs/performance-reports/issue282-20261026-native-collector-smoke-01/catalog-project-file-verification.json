@@ -1,0 +1,69 @@
+{
+  "projectSha256Before": "46594a9b7f306c715c8005f49a457742e4684726db663fcf180633e2172d8f25",
+  "projectSha256After": "46594a9b7f306c715c8005f49a457742e4684726db663fcf180633e2172d8f25",
+  "projectBytes": 20983808,
+  "unchanged": true,
+  "observation": "Whole-process disk IO also includes temporary legacy database lifecycle; project-file identity verified outside timing",
+  "probe": {
+    "cache": {
+      "method": "same-process reopened database; OS cache not purged; initial fixture metadata read excluded",
+      "mode": "warm"
+    },
+    "fixture": {
+      "columns": 20,
+      "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+      "rows": 30000,
+      "seed": 282,
+      "tier": "regular"
+    },
+    "processId": 96237,
+    "profiling": {
+      "method": null,
+      "verifiedNoFullScan": false
+    },
+    "samples": [
+      {
+        "backendMs": 113.976375,
+        "backendRetainedRows": null,
+        "checkpointBytes": null,
+        "diskReadBytes": 0,
+        "diskWriteBytes": 561152,
+        "forbiddenWork": {
+          "archiveRestoredRows": 0,
+          "archiveWriterCalls": 0,
+          "fullAnchorRebuilds": 0,
+          "fullBeforeImageCopies": 0,
+          "fullDatabaseCopies": 0
+        },
+        "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 diskio byte deltas",
+        "processId": 96237,
+        "processMemory": {
+          "baselineWorkingSetBytes": 74137600,
+          "deltaWorkingSetBytes": 1867776,
+          "peakWorkingSetBytes": 76005376
+        },
+        "retention": null,
+        "rssBytes": 76005376,
+        "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; sampled every 5ms plus endpoints",
+        "transferredBytes": 238,
+        "uiReadyMs": null,
+        "verification": {
+          "passed": true
+        },
+        "walBytes": 0
+      }
+    ],
+    "scenario": "catalog",
+    "schemaVersion": 1,
+    "source": {
+      "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+      "engineVersion": "v1.5.5",
+      "profile": "debug",
+      "storageVersion": "64",
+      "treeHash": "5ebd4ebb151afd71c2db62437e002feae47b2cfc"
+    },
+    "verification": {
+      "passed": true
+    }
+  }
+}

@@ -1,3 +1,6 @@
+import { emitProjectRecordMutation } from "../projectPersistence/recordMutations";
+import { useProjectStore } from "./useProjectStore";
+import { assertProjectMutable } from "../utils/saveReadOnly";
 import { create } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
@@ -175,19 +178,22 @@ function stateCreator(
         return applyResult(result, token, transformId);
       },
       remove: (transformId) => {
+        assertProjectMutable(useProjectStore.getState().readOnly);
         const lineage = dependencies.getLineage();
         const operationIds = new Set(lineage.nodes
           .filter((node) => node.nodeType === "operation"
             && node.documentRef?.kind === "tableTransform"
             && node.documentRef.id === transformId)
           .map((node) => node.id));
-        dependencies.setLineage({
+        const nextLineage = {
           ...lineage,
           graphHash: "",
           nodes: lineage.nodes.filter((node) => !operationIds.has(node.id)),
           edges: lineage.edges.filter((edge) => !operationIds.has(edge.source.nodeId)
             && !operationIds.has(edge.target.nodeId)),
-        });
+        };
+        emitProjectRecordMutation({ kind: "removeTransform", id: transformId, lineage: nextLineage });
+        dependencies.setLineage(nextLineage);
         set((state) => {
           const { [transformId]: _removed, ...pendingById } = state.pendingById;
           return {

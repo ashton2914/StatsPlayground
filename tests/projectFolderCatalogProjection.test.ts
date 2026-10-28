@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import {mockIPC,clearMocks} from "@tauri-apps/api/mocks";
+import {useFolderStore} from "../src/stores/useFolderStore.ts";
+import {useReportStore} from "../src/stores/useReportStore.ts";
+import {useProjectStore} from "../src/stores/useProjectStore.ts";
+import {useProjectCatalogStore} from "../src/stores/useProjectCatalogStore.ts";
+import {readNativeProjectDirectory} from "../src/projectPersistence/catalogAccess.ts";
+import {createProjectDocumentAdapters,applyCommittedProjectEffects,registerProjectDocumentSummaries} from "../src/projectPersistence/documentAdapters.ts";
+import {createProjectPersistenceCoordinator} from "../src/projectPersistence/coordinator.ts";
+import type {ProjectDocumentSummary,ProjectRecordPatch} from "../src/types/projectPersistence.ts";
+Object.defineProperty(globalThis,"window",{value:globalThis,configurable:true});
+const report=(id:string,folder:string):ProjectDocumentSummary=>({id,name:id,kind:"report",folder,revision:1,dependencies:[]});
+const folder=(path:string):ProjectDocumentSummary=>({id:`folder:${path}`,name:path.split("/").at(-1)!,kind:"folder",folder:path.includes("/")?path.slice(0,path.lastIndexOf("/")):"",revision:1,dependencies:[]});
+const first=[folder("Reports"),folder("Reports/Nested"),report("first","Reports")];
+const later=[report("later","Reports/Nested"),folder("Later empty")];
+let releaseFirstCommit!:()=>void;const firstCommit=new Promise<void>(resolve=>{releaseFirstCommit=resolve;});
+const sent:ProjectRecordPatch[]=[];let reads=0,pages=0;
+mockIPC(command=>{if(command==="list_project_catalog"){pages++;return {items:later,nextCursor:null,committedRevision:1};}reads++;throw new Error(`Unexpected body read ${command}`);});
+useFolderStore.getState().reset();useReportStore.getState().reset();
+const queue=createProjectPersistenceCoordinator({projectId:"folders",epoch:101,committedRevision:1,now:()=>0,newOperationId:()=>crypto.randomUUID(),setTimer:()=>0,clearTimer:()=>{},onCommit:applyCommittedProjectEffects,transport:async<T>(operation,context)=>{const patch=operation.payload as ProjectRecordPatch;sent.push(patch);if(sent.length===1) await firstCommit;return {operationId:context.operationId,epoch:101,committedRevision:context.expectedRevision+1,value:null as T,changedDatasetGenerations:[],changedDocumentRevisions:[],changedDirectoryEntries:[]};}});
+useProjectStore.getState().installPersistence(queue);const adapter=createProjectDocumentAdapters({coordinator:queue,summaries:[]});const release=adapter.activate();
+try {
+ useProjectCatalogStore.getState().installOpenSummary({project:{name:"folders",filePath:"folders.spprj",createdAt:"today"},epoch:101,writable:true,header:{projectId:"folders",formatVersion:"5.0.0",minimumReader:1,minimumWriter:1,committedRevision:1,createdAt:"today",engineVersion:"test",storageVersion:"test"},directory:{items:first,nextCursor:"later",committedRevision:1},settingsRevision:0});
+ assert.equal(useFolderStore.getState().reportFolders.first,"Reports","metadata-only reopen must populate folder assignments");
+ assert.deepEqual(useFolderStore.getState().folders,["Reports","Reports/Nested"]);
+ // A pending move to root must survive incoming catalog metadata.
+ useFolderStore.getState().setReportFolder("first",null);
+ registerProjectDocumentSummaries(first,101,1,false);
+ assert.equal(useFolderStore.getState().reportFolders.first,undefined);
+ await readNativeProjectDirectory();assert.equal(pages,1);assert.equal(useFolderStore.getState().reportFolders.later,"Reports/Nested");
+ assert.ok(useFolderStore.getState().folders.includes("Later empty"),"later-page empty folders survive unrelated pending moves");
+ useFolderStore.getState().renameFolder("Reports","Renamed");
+ assert.equal(useFolderStore.getState().reportFolders.later,"Renamed/Nested");
+ useFolderStore.getState().deleteFolder("Renamed");
+ assert.equal(useFolderStore.getState().reportFolders.later,"Nested");
+ releaseFirstCommit();await queue.flushThrough(queue.captureBarrier());
+ assert(sent.some(patch=>patch.directoryMoves?.some(move=>move.id==="first"&&move.folder==="")),"move to root must emit a directory delta");
+ assert(sent.some(patch=>patch.directoryMoves?.some(move=>move.id==="later"&&move.folder==="Renamed/Nested")),"rename must include metadata from later pages");
+ assert(sent.some(patch=>patch.directoryMoves?.some(move=>move.id==="later"&&move.folder==="Nested")),"delete promotes descendant folders to root");
+ assert.equal(reads,0);assert.equal(useReportStore.getState().items.length,0);
+ console.log("native folder catalog projects metadata, preserves pending root moves, and includes later pages in rename/delete");
+} finally {release();clearMocks();useProjectStore.setState({persistence:null,persistenceSnapshot:null});useFolderStore.getState().reset();useReportStore.getState().reset();}

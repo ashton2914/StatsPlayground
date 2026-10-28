@@ -1,4 +1,13 @@
 {
+  "projectPersistence": {
+    "pending": "Changes waiting to save…",
+    "saving": "Saving…",
+    "saved": "All changes saved",
+    "error": "Changes could not be saved.",
+    "readOnly": "Read-only",
+    "retry": "Retry saving",
+    "closeError": "The project is still open because changes could not be saved. Retry saving, then close again."
+  },
   "graphNewUi": {
     "addLayerHint": "Add a graph element to begin",
     "columns": "Columns",
@@ -396,6 +405,14 @@
     "projectFile": "Untitled Project.spprj"
   },
   "history": {
+    "nativeReplayFailed": "Could not undo or redo this action.",
+    "nativeLoadFailed": "Unable to load history",
+    "nativeSnapshotLoadFailed": "Could not load snapshots.",
+    "loadMore": "Load more",
+    "nativeTableUpdate": "Updated table “{{name}}”",
+    "nativeTable": "Table",
+    "nativeArchived": "From the previous project",
+    "nativeUndone": "Undone",
     "title": "History",
     "empty": "No history yet",
     "snapshot": "Snapshots",
@@ -488,6 +505,7 @@
     "noLineage": "No workflow lineage is available yet."
   },
   "workspace": {
+    "destinationPublished": "The copy was written to the destination.",
     "discardUnsavedChanges": "Discard unsaved changes to this project?",
     "directory": "Directory",
     "datasourceLabel": "Source: {{name}}",
@@ -517,7 +535,17 @@
     "statMax": "Max: ",
     "statSum": "Sum: ",
     "statCount": "Count: ",
+    "migrationTitle": "Convert project",
+    "migrationConfirm": "This project uses an older format. Create a converted copy to open it. The original file will be kept. Conversion may take time for large projects.",
+    "migrationCreateCopy": "Create converted copy",
+    "migrationChooseDestination": "Save converted project",
+    "migratingProject": "Converting project…",
+    "migrationCancel": "Cancel conversion",
+    "migrationCancelling": "Cancelling…",
     "openingProject": "Opening project…",
+    "documentLoadFailed": "Unable to open this item. Try again.",
+    "directoryPageLoadFailed": "Unable to load more items",
+    "retryDocumentLoad": "Retry",
     "creatingSnapshot": "Creating snapshot…",
     "restoringSnapshot": "Restoring snapshot…",
     "importingSqlite": "Importing SQLite database…",
@@ -528,6 +556,8 @@
     "importProgressTable": "Table {{i}}/{{total}}: {{name}}",
     "importProgressRows": "rows",
     "createSnapshotTitle": "Create snapshot",
+    "resolveFailedOperation": "Continue saving other changes",
+    "resolveFailedOperationHint": "Cancel an unapplied failed operation and continue saving later changes. Already saved changes are kept.",
     "savingProject": "Saving project…",
     "readOnlyWhileSaving": "Read-only while saving",
     "savePhase": {
@@ -1067,6 +1097,9 @@
     "totalPercentage": "Total %"
   },
   "welcome": {
+    "recoverProject": "Recover an unnamed project",
+    "recoverProjectHint": "Your previous work is available. Choose a project to resume, or start a new one.",
+    "untitledProject": "Untitled",
     "subtitle": "Lightweight · Cross-platform · Open-source data analysis tool",
     "newProject": "New Project",
     "openProject": "Open Project",
@@ -1345,6 +1378,8 @@
     }
   },
   "dataTable": {
+    "pasteResultUnavailable": "The paste result could not be confirmed. Retry saving to recover it.",
+    "pasteTargetChanged": "The table view changed while preparing the paste. Try again.",
     "loading": "Loading...",
     "type": {
       "VARCHAR": "Text",

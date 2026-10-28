@@ -8,7 +8,9 @@ import "./stores/useThemeStore";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 
-if (import.meta.env.DEV && import.meta.env.VITE_GRAPH_NEW_TRANSPORT_BENCHMARK === "1") {
+if (import.meta.env.VITE_PROJECT_V5_BENCHMARK === "1") {
+  import("./benchmarks/ProjectV5UiBenchmark").then(({ProjectV5UiBenchmark})=>root.render(<ProjectV5UiBenchmark/>));
+} else if (import.meta.env.DEV && import.meta.env.VITE_GRAPH_NEW_TRANSPORT_BENCHMARK === "1") {
   import("./benchmarks/GraphNewTransportBenchmark").then(({ GraphNewTransportBenchmark }) => {
     root.render(<GraphNewTransportBenchmark />);
   });

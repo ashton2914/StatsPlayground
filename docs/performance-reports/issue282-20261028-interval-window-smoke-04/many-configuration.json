@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/interval-window-smoke-fixtures-04/many.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-interval-window-smoke-04/many-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-interval-window-smoke-04/many",
+  "sourceTreeHash": "8751b2b5e08dcabdb3b9a3d76591438fc9e46cb6",
+  "tier": "many-documents",
+  "samples": 2,
+  "cacheMode": "warm"
+}

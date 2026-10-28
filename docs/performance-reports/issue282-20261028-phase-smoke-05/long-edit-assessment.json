@@ -1,0 +1,17 @@
+{
+  "qualified": false,
+  "failures": [
+    "release source/build/engine provenance required",
+    "logical verification failed or unavailable",
+    "at least 100 warm samples required",
+    "sample 0: logical verification failed or unavailable",
+    "sample 0: uiReadyMs unavailable or invalid",
+    "native latency exceeds budget"
+  ],
+  "sampleCount": 1,
+  "backendP95Ms": 255.696792,
+  "uiP95Ms": null,
+  "backendMedianMs": 255.696792,
+  "uiMedianMs": null,
+  "budgetMs": 200
+}

@@ -35,6 +35,8 @@ export interface ProjectInspectResult {
     analyses: number;
     tabulates: number;
     reports: number;
+    graphsNew?: number;
+    workflows?: number;
   };
   capabilities?: {
     table: {
@@ -359,7 +361,7 @@ export interface ReportUpdateInput {
   markdown: string;
 }
 
-export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
+export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report" | "graphNew" | "workflow";
 
 export interface ProjectDocumentListInput {
   kind?: ProjectDocumentKind;
@@ -368,6 +370,7 @@ export interface ProjectDocumentListInput {
 }
 
 export interface ProjectDocumentSummary {
+  analysisKind?: import("@/types/analysis").AnalysisKind;
   kind: ProjectDocumentKind;
   id: string;
   name: string;
@@ -470,6 +473,7 @@ export interface CommandExecutionContext {
   signal: AbortSignal;
   reportProgress(progress: CommandProgress): void;
   beginCommit(): void;
+  assertCurrent?(): void;
   trusted: TrustedCommandExecutionContext;
 }
 

@@ -38,6 +38,7 @@ export type TableHistoryAction =
   | { kind: "cells"; datasetId: string; generation: number; cells: TableCellPatch[] }
   | { kind: "addedRows"; datasetId: string; generation: number; rowIds: number[] }
   | { kind: "reorderColumns"; datasetId: string; generation: number; from: number; to: number }
+  | { kind: "tableLifecycle"; datasetId: string; eventId: string }
   | { kind: "changeSet"; datasetId: string; changeSetId: string };
 
 export interface PendingHistoryAction {

@@ -3,13 +3,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::error::AppError;
 use crate::models::project::ProjectInfo;
+use crate::models::project_persistence::{ProjectMutationResult,ProjectWriteContext};
 use crate::models::save::{SaveProgress, SaveProjectRequest};
 use crate::services::project_service::{ImportedTableTransform, OpenProjectResult, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::table_transform_domain::{TableTransformDefinition, TableTransformDraft};
 use crate::services::table_transform_service::{
-    TableTransformExecutionResult, TableTransformInputBinding, TableTransformProjectBinding,
-    TableTransformService,
+    TableTransformInputBinding, TableTransformProjectBinding, TableTransformService,
 };
 use crate::services::workflow_domain::{
     self, ProjectLineageGraph, WorkflowDefinition, WorkflowExtractionRequest,
@@ -19,13 +19,7 @@ use crate::services::workflow_executor::{
 };
 use crate::state::AppState;
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TableTransformCommandResult {
-    pub definition: TableTransformDefinition,
-    pub execution: TableTransformExecutionResult,
-    pub lineage_graph: ProjectLineageGraph,
-}
+pub use crate::services::table_transform_service::TableTransformCommandResult;
 
 pub(crate) fn acquire_mutation_permit(
     state: &AppState,
@@ -234,10 +228,18 @@ pub fn extract_workflow(
 pub async fn run_workflow(
     app: AppHandle,
     request: WorkflowRunRequest,
-) -> Result<WorkflowRunCommitPacket, AppError> {
+    context:Option<ProjectWriteContext>,
+    folder:Option<String>,
+) -> Result<ProjectMutationResult<WorkflowRunCommitPacket>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = Manager::state::<AppState>(&app);
-        WorkflowExecutor::new(&state).execute(request)
+        if let Some(context)=context {
+            let commit=crate::services::project_native_service::NativeProjectService::new(&state).run_workflow(&context,&request,folder.as_deref().unwrap_or(""))?;
+            if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+            return Ok(ProjectMutationResult::Committed(commit));
+        }
+        state.save_coordinator.ensure_legacy_project()?;
+        WorkflowExecutor::new(&state).execute(request).map(ProjectMutationResult::Legacy)
     })
     .await
     .map_err(|error| AppError::Stats(format!("workflow worker join failure: {error}")))?
@@ -261,7 +263,9 @@ pub fn export_table(
     state: State<'_, AppState>,
     dataset_id: String,
     file_path: String,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = ProjectService::new(&state);
     service.export_table(&dataset_id, &file_path)
 }
@@ -276,7 +280,9 @@ pub fn export_tables_sptb_zip(
     dataset_ids: Vec<String>,
     archive_paths: Option<std::collections::HashMap<String, String>>,
     output_path: String,
+    epoch:Option<u64>,
 ) -> Result<(), AppError> {
+    let _export=crate::services::project_export::acquire_export_project(state.inner(),epoch)?;
     let service = ProjectService::new(&state);
     let paths = archive_paths.unwrap_or_default();
     service.export_tables_sptb_zip(&dataset_ids, &paths, &output_path)
@@ -285,22 +291,25 @@ pub fn export_tables_sptb_zip(
 /// Result of importing a standalone `.sptb` into the current project.
 /// Per issue #7 the `.sptb` body no longer carries folder info — the imported
 /// table lands wherever the caller decides (root by default).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportTableResult {
-    pub id: String,
-}
+pub type ImportTableResult = crate::models::project_persistence::ProjectTableImportResult;
 
 /// Returns the new dataset id assigned to the imported table.
 #[tauri::command(async)]
 pub fn import_table(
+    app:AppHandle,
     state: State<'_, AppState>,
     file_path: String,
-) -> Result<ImportTableResult, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<ImportTableResult>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).import_sptb(&context,&file_path,||false)?;
+        if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = ProjectService::new(&state);
     let id = service.import_table(&file_path)?;
-    Ok(ImportTableResult { id })
+    Ok(ProjectMutationResult::Legacy(ImportTableResult { id }))
 }
 
 /// Returns the imported graph builder body (opaque JSON, frontend shape).
@@ -312,14 +321,28 @@ pub fn import_graph(
     import_graph_entry(state.inner(), &file_path)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_table_transform(
+    app: AppHandle,
     state: State<'_, AppState>,
     draft: TableTransformDraft,
     input_bindings: Vec<TableTransformInputBinding>,
     lineage_graph: ProjectLineageGraph,
-) -> Result<TableTransformCommandResult, AppError> {
+    context: Option<crate::models::project_persistence::ProjectWriteContext>,
+) -> Result<
+    crate::models::project_persistence::ProjectMutationResult<TableTransformCommandResult>,
+    AppError,
+> {
+    if let Some(context) = context {
+        let commit = crate::services::project_native_service::NativeProjectService::new(&state)
+            .create_transform(&context, &draft, &input_bindings)?;
+        if app.emit("project-committed", &commit).is_err() {
+            eprintln!("project_commit_event_delivery_failed");
+        }
+        return Ok(crate::models::project_persistence::ProjectMutationResult::Committed(commit));
+    }
     create_table_transform_entry(state.inner(), draft, input_bindings, lineage_graph)
+        .map(crate::models::project_persistence::ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -332,14 +355,21 @@ pub fn preflight_create_table_transform(
     preflight_create_table_transform_entry(state.inner(), draft, input_bindings)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn run_table_transform(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     definition: TableTransformDefinition,
     binding: TableTransformProjectBinding,
     lineage_graph: ProjectLineageGraph,
-) -> Result<TableTransformCommandResult, AppError> {
-    run_table_transform_entry(state.inner(), definition, binding, lineage_graph)
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<TableTransformCommandResult>, AppError> {
+    if let Some(context)=context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).run_transform(&context,&definition,&binding,None)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
+    run_table_transform_entry(state.inner(), definition, binding, lineage_graph).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -352,21 +382,22 @@ pub fn preflight_run_table_transform(
     preflight_run_table_transform_entry(state.inner(), definition, binding)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rebind_table_transform(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     definition: TableTransformDefinition,
     binding: TableTransformProjectBinding,
     input_bindings: Vec<TableTransformInputBinding>,
     lineage_graph: ProjectLineageGraph,
-) -> Result<TableTransformCommandResult, AppError> {
-    rebind_table_transform_entry(
-        state.inner(),
-        definition,
-        binding,
-        input_bindings,
-        lineage_graph,
-    )
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<TableTransformCommandResult>, AppError> {
+    if let Some(context)=context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).run_transform(&context,&definition,&binding,Some(&input_bindings))?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
+    rebind_table_transform_entry(state.inner(),definition,binding,input_bindings,lineage_graph).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]
@@ -400,6 +431,50 @@ mod tests {
     };
     use crate::services::workflow_domain::ProjectLineageGraph;
     use crate::state::AppState;
+
+    #[test]
+    fn native_import_table_command_preserves_receipt_and_legacy_value_contract() {
+        let _:for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,String,Option<crate::models::project_persistence::ProjectWriteContext>)->Result<crate::models::project_persistence::ProjectMutationResult<super::ImportTableResult>,AppError>=super::import_table;
+        let legacy=crate::models::project_persistence::ProjectMutationResult::Legacy(super::ImportTableResult{id:"imported".into()});
+        assert_eq!(serde_json::to_value(legacy).unwrap(),serde_json::json!({"id":"imported"}));
+    }
+
+    #[test]
+    fn native_table_lifecycle_commands_keep_epoch_and_commit_contracts() {
+        use crate::models::project_persistence::{ProjectCommit,ProjectWriteContext,ProjectTableLifecycleEvent};
+        let _:for<'a> fn(tauri::State<'a,AppState>,u64,bool)->Result<crate::models::project_persistence::ProjectHistoryFrontier,AppError>=super::get_project_history_frontier;
+        let _:for<'a> fn(tauri::State<'a,AppState>,u64,String)->Result<ProjectTableLifecycleEvent,AppError>=super::get_project_table_lifecycle_event;
+        let _:for<'a> fn(tauri::AppHandle,tauri::State<'a,AppState>,ProjectWriteContext,String,u64,bool)->Result<ProjectCommit<()>,AppError>=super::apply_project_table_lifecycle;
+    }
+
+    #[test]
+    fn native_project_migration_commands_keep_preflight_cancel_and_outcome_contracts() {
+        use crate::models::project_persistence::{ProjectMigrationPreflight,ProjectSnapshotOutcome};
+        let _:fn(String,Option<String>)->Result<ProjectMigrationPreflight,AppError>=super::preflight_project_migration;
+        let _:for<'a> fn(tauri::State<'a,AppState>,String)->Result<bool,AppError>=super::cancel_project_migration;
+        let _:for<'a> fn(tauri::State<'a,AppState>,tauri::AppHandle,String,String,String)->Result<ProjectSnapshotOutcome,AppError>=super::migrate_project_v5;
+    }
+
+    #[test]
+    #[cfg(feature="project-v5")]
+    fn native_project_migration_entry_reports_owned_cancellation_and_durable_completion() {
+        use crate::services::{project_database::ProjectDatabase,project_native_service::NativeProjectService};
+        use sha2::{Digest,Sha256};
+        let dir=tempfile::tempdir().unwrap();let source=dir.path().join("old.spprj");let target=dir.path().join("new.spprj");let live=dir.path().join("live.spprj");
+        std::fs::write(&source,br#"{"name":"Old","version":"1.0.0","datasets":[{"id":"table","name":"Data","sourceType":"csv","columns":[{"name":"Value","colType":"DOUBLE"}],"rows":[[1,22]]}]}"#).unwrap();
+        let hash=Sha256::digest(std::fs::read(&source).unwrap());
+        let db=ProjectDatabase::create(&live,false).unwrap();db.prepare_close(db.epoch()).unwrap();
+        let state=AppState::new().unwrap();let native=NativeProjectService::new(&state);let previous=native.open(&live,false).unwrap();
+        let id=uuid::Uuid::new_v4().to_string();
+        let cancelled=super::migrate_project_v5_entry(&state,source.to_str().unwrap(),target.to_str().unwrap(),&id,&|index,total,_,_,_|{if index<total {assert!(state.project_migrations.cancel(&id).unwrap());}}).unwrap();
+        assert!(cancelled.active.is_none());assert!(!cancelled.destination_published);assert!(cancelled.error.unwrap().starts_with("Cancelled:"));assert!(!target.exists());
+        assert_eq!(state.project_database.read().unwrap().as_ref().unwrap().epoch(),previous.epoch);assert!(!state.project_migrations.cancel(&id).unwrap());
+        let started=std::sync::atomic::AtomicBool::new(false);
+        let success=super::migrate_project_v5_entry(&state,source.to_str().unwrap(),target.to_str().unwrap(),&uuid::Uuid::new_v4().to_string(),&|index,total,_,_,_|{if total==0 {started.store(true,std::sync::atomic::Ordering::Relaxed);} if total>0&&index==total {assert!(target.exists());assert_ne!(state.project_database.read().unwrap().as_ref().unwrap().epoch(),previous.epoch);}}).unwrap();
+        assert!(started.load(std::sync::atomic::Ordering::Relaxed),"registration must be announced before conversion starts");
+        assert!(success.destination_published);assert!(success.error.is_none());let opened=success.active.unwrap();assert_eq!(opened.datasets[0].source_type,"csv");native.close(opened.epoch).unwrap();
+        assert_eq!(Sha256::digest(std::fs::read(&source).unwrap()),hash);
+    }
 
     fn function_signature(source: &str, function_name: &str) -> String {
         let start = source
@@ -735,4 +810,206 @@ mod tests {
         assert_eq!(datasets_before[0].id, datasets_after[0].id);
         assert_eq!(datasets_before[0].name, datasets_after[0].name);
     }
+}
+
+#[tauri::command(async)]
+pub fn open_project_v5(
+    state: State<'_, AppState>,
+    file_path: String,
+    read_only: bool,
+) -> Result<crate::models::project_persistence::ProjectOpenSummary, AppError> {
+    ProjectService::new(&state).open_project_v5(&file_path, read_only)
+}
+
+#[tauri::command(async)]
+pub fn preflight_project_migration(source_path:String,destination_path:Option<String>)->Result<crate::models::project_persistence::ProjectMigrationPreflight,AppError> {
+    crate::services::project_migration::ProjectMigrationService::preflight(std::path::Path::new(&source_path),destination_path.as_deref().map(std::path::Path::new))
+}
+
+#[tauri::command]
+pub fn cancel_project_migration(state:State<'_,AppState>,migration_id:String)->Result<bool,AppError> {
+    crate::services::project_schema::require_v5_capability()?;
+    state.project_migrations.cancel(&migration_id)
+}
+
+pub(crate) fn migrate_project_v5_entry(state:&AppState,source_path:&str,destination_path:&str,migration_id:&str,progress:&crate::services::project_migration::MigrationProgressCallback<'_>)->Result<crate::models::project_persistence::ProjectSnapshotOutcome,AppError> {
+    crate::services::project_schema::require_v5_capability()?;
+    let request=state.project_migrations.register(migration_id)?;
+    progress(0,0,"",0,0);
+    let result=crate::services::project_migration::ProjectMigrationService::new(state).migrate_with_cancel(std::path::Path::new(source_path),std::path::Path::new(destination_path),progress,&||request.cancelled());
+    Ok(crate::services::project_migration::finish_migration_result(result))
+}
+
+#[tauri::command(async)]
+pub fn migrate_project_v5(state:State<'_,AppState>,app:AppHandle,source_path:String,destination_path:String,migration_id:String)->Result<crate::models::project_persistence::ProjectSnapshotOutcome,AppError> {
+    migrate_project_v5_entry(&state,&source_path,&destination_path,&migration_id,&|dataset_index,dataset_total,dataset_name,rows_done,rows_total| {
+        let _=app.emit("project-migration-progress",serde_json::json!({"migrationId":migration_id,"datasetIndex":dataset_index,"datasetTotal":dataset_total,"datasetName":dataset_name,"rowsDone":rows_done,"rowsTotal":rows_total}));
+    })
+}
+
+#[tauri::command(async)]
+pub fn list_project_catalog(
+    state: State<'_, AppState>,
+    epoch: u64,
+    request: crate::models::project_persistence::CatalogPageRequest,
+) -> Result<crate::models::project_persistence::CatalogPage, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state)
+        .list_catalog(epoch, &request)
+}
+
+#[tauri::command(async)]
+pub fn get_project_document(
+    state: State<'_, AppState>,
+    epoch: u64,
+    id: String,
+    expected_revision: u64,
+) -> Result<crate::models::project_persistence::ProjectDocumentBody, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).get_document(
+        epoch,
+        &id,
+        expected_revision,
+    )
+}
+
+#[tauri::command(async)]
+pub fn get_project_workflow_run_state(state:State<'_,AppState>,epoch:u64,workflow_id:String,workflow_revision:u64)->Result<crate::models::project_persistence::ProjectWorkflowRunState,AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).workflow_run_state(epoch,&workflow_id,workflow_revision)
+}
+
+#[tauri::command(async)]
+pub fn get_project_history_frontier(state:State<'_,AppState>,epoch:u64,undo:bool)->Result<crate::models::project_persistence::ProjectHistoryFrontier,AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).history_frontier(epoch,None,undo)
+}
+
+#[tauri::command(async)]
+pub fn get_project_table_lifecycle_event(state:State<'_,AppState>,epoch:u64,event_id:String)->Result<crate::models::project_persistence::ProjectTableLifecycleEvent,AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).table_lifecycle_event(epoch,&event_id)
+}
+
+#[tauri::command(async)]
+pub fn apply_project_table_lifecycle(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,event_id:String,event_revision:u64,undo:bool)->Result<crate::models::project_persistence::ProjectCommit<()>,AppError> {
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).apply_table_lifecycle(&context,&event_id,event_revision,undo)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
+    Ok(commit)
+}
+
+#[tauri::command(async)]
+pub fn list_project_history(
+    state: State<'_, AppState>,
+    epoch: u64,
+    request: crate::models::project_persistence::HistoryPageRequest,
+) -> Result<crate::models::project_persistence::ProjectHistoryPage, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state)
+        .list_history(epoch, &request)
+}
+
+#[tauri::command(async)]
+pub fn resolve_project_operation(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext)->Result<crate::models::project_persistence::ProjectOperationResolution,AppError> {
+    let resolution=crate::services::project_native_service::NativeProjectService::new(&state).resolve_operation(&context)?;
+    if let crate::models::project_persistence::ProjectOperationResolution::Committed{commit}=&resolution {
+        if app.emit("project-committed",commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+    }
+    Ok(resolution)
+}
+
+#[tauri::command(async)]
+pub fn commit_project_records(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    context: crate::models::project_persistence::ProjectWriteContext,
+    patch: crate::models::project_persistence::ProjectRecordPatch,
+) -> Result<crate::models::project_persistence::ProjectCommit<()>, AppError> {
+    let commit = crate::services::project_native_service::NativeProjectService::new(&state)
+        .commit_records(&context, &patch)?;
+    if app.emit("project-committed", &commit).is_err() {
+        eprintln!("project_commit_event_delivery_failed");
+    }
+    Ok(commit)
+}
+
+#[tauri::command(async)]
+pub fn get_project_persistence_status(
+    state: State<'_, AppState>,
+    epoch: u64,
+) -> Result<crate::models::project_persistence::ProjectPersistenceStatus, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).status(epoch)
+}
+
+#[tauri::command(async)]
+pub fn get_project_setting(
+    state: State<'_, AppState>,
+    epoch: u64,
+    key: String,
+) -> Result<Option<crate::models::project_persistence::ProjectSettingRecord>, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state)
+        .get_setting(epoch, &key)
+}
+
+fn project_draft_root(app: &AppHandle) -> Result<std::path::PathBuf, AppError> {
+    Ok(app.path().app_data_dir().map_err(|e| AppError::FileIO(e.to_string()))?.join("project-drafts-v5"))
+}
+
+#[tauri::command(async)]
+pub fn create_project_draft_v5(app: AppHandle, state: State<'_, AppState>) -> Result<crate::models::project_persistence::ProjectOpenSummary, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).create_draft(&project_draft_root(&app)?)
+}
+#[tauri::command(async)]
+pub fn list_recoverable_project_drafts(app: AppHandle) -> Result<Vec<crate::services::project_drafts::DraftDescriptor>, AppError> {
+    crate::services::project_schema::require_v5_capability()?;
+    crate::services::project_drafts::ProjectDraftRegistry::list_recoverable(&project_draft_root(&app)?)
+}
+#[tauri::command(async)]
+pub fn recover_project_draft_v5(app: AppHandle, state: State<'_, AppState>, recovery_id: String) -> Result<crate::models::project_persistence::ProjectOpenSummary, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).recover_draft(&project_draft_root(&app)?, &recovery_id)
+}
+#[tauri::command(async)]
+pub fn close_project_v5(state: State<'_, AppState>, epoch: u64) -> Result<(), AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).close(epoch)
+}
+#[tauri::command(async)]
+pub fn snapshot_project_v5(app: AppHandle, state: State<'_, AppState>, epoch: u64, file_path: String, first_naming: bool) -> Result<crate::models::project_persistence::ProjectSnapshotOutcome, AppError> {
+    let mut result = crate::services::project_native_service::NativeProjectService::new(&state)
+        .snapshot(epoch, std::path::Path::new(&file_path), first_naming)?;
+    if first_naming && result.error.is_none() {
+        if let Some(active) = &result.active {
+            let marking = project_draft_root(&app).and_then(|root|
+                crate::services::project_drafts::ProjectDraftRegistry::mark_named(&root, &active.header.project_id));
+            if let Err(error) = marking {
+                result.error = Some(error.to_string());
+            }
+        }
+    }
+    Ok(result)
+}
+#[tauri::command]
+pub fn project_v5_enabled() -> bool { cfg!(feature = "project-v5") }
+
+#[tauri::command(async)]
+pub fn checkpoint_project_v5(state: State<'_, AppState>, epoch: u64, expected_revision: u64) -> Result<bool, AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).checkpoint(epoch, expected_revision)
+}
+
+#[tauri::command(async)]
+pub fn capture_project_data_snapshot(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,id:String,name:String,created_at:String)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_persistence::ProjectDataSnapshotDescriptor>,AppError> {
+    let db=crate::services::project_native_service::NativeProjectService::new(&state).database(context.expected_epoch)?;
+    let progress=|dataset_index,dataset_total,dataset_name:&str|{let _=app.emit("snapshot-progress",serde_json::json!({"datasetIndex":dataset_index,"datasetTotal":dataset_total,"datasetName":dataset_name}));};
+    let commit=db.capture_data_snapshot_with_progress(&context,&id,&name,&created_at,&progress)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
+}
+#[tauri::command(async)]
+pub fn list_project_data_snapshots(state:State<'_,AppState>,epoch:u64,after:Option<String>,limit:usize)->Result<crate::models::project_persistence::ProjectDataSnapshotPage,AppError> {
+    crate::services::project_native_service::NativeProjectService::new(&state).database(epoch)?.list_data_snapshots(epoch,after.as_deref(),limit)
+}
+#[tauri::command(async)]
+pub fn restore_project_data_snapshot(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,id:String,expected_revision:u64)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_persistence::ProjectDataSnapshotRestored>,AppError> {
+    let db=crate::services::project_native_service::NativeProjectService::new(&state).database(context.expected_epoch)?;
+    let progress=|dataset_index,dataset_total,dataset_name:&str|{let _=app.emit("restore-progress",serde_json::json!({"datasetIndex":dataset_index,"datasetTotal":dataset_total,"datasetName":dataset_name}));};
+    let commit=db.restore_data_snapshot_with_progress(&context,&id,expected_revision,&progress)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
+}
+#[tauri::command(async)]
+pub fn delete_project_data_snapshot(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,id:String,expected_revision:u64)->Result<crate::models::project_persistence::ProjectCommit<()>,AppError> {
+    let db=crate::services::project_native_service::NativeProjectService::new(&state).database(context.expected_epoch)?;
+    let commit=db.delete_data_snapshot(&context,&id,expected_revision)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
 }

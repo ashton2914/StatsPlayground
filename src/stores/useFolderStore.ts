@@ -1,3 +1,4 @@
+import { createPersistedRecordSetter, directoryMutation } from "../projectPersistence/recordMutations";
 /**
  * 文件夹层级状态。
  *
@@ -168,7 +169,9 @@ function uniqueFolderPath(parent: string | null, baseName: string, existing: Set
   return `${prefix}${baseName} (${n})`;
 }
 
-export const useFolderStore = create<FolderStore>((set, get) => ({
+export const useFolderStore = create<FolderStore>((rawSet, get) => {
+  const set = createPersistedRecordSetter(rawSet, get, directoryMutation);
+  return ({
   folders: [],
   tableFolders: {},
   graphFolders: {},
@@ -262,7 +265,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
         for (const anc of folderAncestors(n)) allFolders.add(anc);
       }
     }
-    set({
+    rawSet({
       folders: Array.from(allFolders).sort((a, b) => a.localeCompare(b)),
       tableFolders: tbl,
       graphFolders: grp,
@@ -277,7 +280,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
   },
 
   reset: () => {
-    set({ folders: [], tableFolders: {}, graphFolders: {}, graphNewFolders: {}, tabulateFolders: {}, fitYByXFolders: {}, fitModelFolders: {}, reportFolders: {}, distributionFolders: {}, analysisFolders: {} });
+    rawSet({ folders: [], tableFolders: {}, graphFolders: {}, graphNewFolders: {}, tabulateFolders: {}, fitYByXFolders: {}, fitModelFolders: {}, reportFolders: {}, distributionFolders: {}, analysisFolders: {} });
   },
 
   createFolder: (parent, baseName) => {
@@ -645,4 +648,5 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     persistCollapsed({});
     set({ collapsed: {} });
   },
-}));
+});
+});

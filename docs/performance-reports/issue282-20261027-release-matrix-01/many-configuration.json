@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/release-matrix-fixtures-01/many.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261027-release-matrix-01/many-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261027-release-matrix-01/many",
+  "sourceTreeHash": "92e38d45273c056f398215437d2321c77e78bf23",
+  "tier": "many-documents",
+  "samples": 100,
+  "cacheMode": "warm"
+}

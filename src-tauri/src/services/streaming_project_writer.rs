@@ -318,6 +318,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         destination_path: &Path,
         progress_cb: Option<&SaveProgressCallback<'_>>,
     ) -> Result<SaveWriteResult, AppError> {
+        #[cfg(any(test, feature="perf-harness"))]
+        super::project_work_counters::archive_write();
         if snapshot.destination_path != destination_path {
             return Err(AppError::InvalidParam(
                 "snapshot destination path and writer destination path must match".to_string(),
@@ -1194,7 +1196,7 @@ impl<W: Write> Write for BoundedEncodedWriter<'_, W> {
     }
 }
 
-fn replace_archive_atomically_os(
+pub(crate) fn replace_archive_atomically_os(
     temp_path: &Path,
     destination_path: &Path,
 ) -> Result<(), AppError> {

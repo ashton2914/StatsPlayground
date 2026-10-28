@@ -34,6 +34,12 @@ pub(crate) struct RowOrderUpdateBoundary {
 }
 
 impl RowOrderUpdateBoundary {
+    /// Explicit bulk restore uses a native row-ID/order map, without transporting table values.
+    pub(crate) fn update_from_map(&mut self,engine:&DuckDbEngine,table_name:&str,map_name:&str)->Result<(),AppError> {
+        let map=DuckDbEngine::quote_identifier(map_name);
+        self.execute_update(engine,table_name,"source.row_order",&format!("FROM {map} source WHERE {table_name}._row_id=source.row_id"),&[])
+    }
+
     pub(crate) fn update_by_id(
         &mut self,
         engine: &DuckDbEngine,
@@ -41,10 +47,12 @@ impl RowOrderUpdateBoundary {
         row_id: i64,
         row_order: Option<i128>,
     ) -> Result<(), AppError> {
-        let sql = format!("UPDATE {table_name} SET \"_row_order\" = ? WHERE \"_row_id\" = ?");
-        self.affected_rows = self
-            .affected_rows
-            .saturating_add(engine.conn().execute(&sql, params![row_order, row_id])?);
+        self.execute_update(engine,table_name,"?","WHERE \"_row_id\" = ?",params![row_order,row_id])
+    }
+
+    fn execute_update(&mut self,engine:&DuckDbEngine,table_name:&str,value:&str,selection:&str,values:&[&dyn duckdb::ToSql])->Result<(),AppError> {
+        let sql=format!("UPDATE {table_name} SET \"_row_order\" = {value} {selection}");
+        self.affected_rows=self.affected_rows.saturating_add(engine.conn().execute(&sql,values)?);
         Ok(())
     }
 

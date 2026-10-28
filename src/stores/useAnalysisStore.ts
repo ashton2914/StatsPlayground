@@ -1,3 +1,4 @@
+import { projectDocumentNames, createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 import { create } from "zustand";
 
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -77,7 +78,9 @@ function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentP
   };
 }
 
-export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
+export const useAnalysisStore = create<AnalysisStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("analysis", rawSet, get, (state) => state.items);
+return ({
   items: [],
   counter: 0,
   addAnalysis: (analysis) => {
@@ -101,15 +104,16 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       items: removeDocumentById(state.items, id),
     }));
   },
-  loadAnalyses: (items) => {
+  loadAnalyses: (items) => withoutDocumentPersistence(() => {
     const normalizedItems = items.map(normalizeDistributionAnalysisIdentity);
     set({ items: normalizedItems, counter: ANALYSIS_HELPERS.maxSuffix(normalizedItems) });
-  },
-  reset: () => set({ items: [], counter: 0 }),
+  }),
+  reset: () => withoutDocumentPersistence(() => set({ items: [], counter: 0 })),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    const nextCounter = get().counter + 1;
+    const nextCounter = Math.max(get().counter, ANALYSIS_HELPERS.maxSuffix(projectDocumentNames(["analysis"], []).map(name => ({name})))) + 1;
     set({ counter: nextCounter });
     return ANALYSIS_HELPERS.nextName(nextCounter - 1);
   },
-}));
+});
+});

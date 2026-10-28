@@ -1,0 +1,13 @@
+{
+  "qualified": false,
+  "failures": [
+    "logical verification failed or unavailable",
+    "at least 100 warm samples required"
+  ],
+  "sampleCount": 0,
+  "backendP95Ms": null,
+  "uiP95Ms": null,
+  "backendMedianMs": null,
+  "uiMedianMs": null,
+  "budgetMs": 500
+}

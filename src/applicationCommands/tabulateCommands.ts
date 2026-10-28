@@ -1,3 +1,4 @@
+import {projectDocumentNames} from "@/stores/documentStore";
 import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspaceLifecycle";
 import { formatStatisticLabel } from "@/components/tabulate/TabulateStatisticEditor";
 import { throwIfCommandCancelled } from "@/applicationCommands/cancellation";
@@ -149,7 +150,7 @@ export function createTabulateCommandHandlers(
     listTabulateNamesForAllocation: () => {
       const analyses = useAnalysisStore.getState().items.map((analysis) => analysis.name);
       const tabulates = useTabulateStore.getState().items.map((item) => item.name);
-      return [...analyses, ...tabulates];
+      return projectDocumentNames(["analysis","tabulate"], [...analyses, ...tabulates]);
     },
     createTabulateId: () => (
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -286,7 +287,7 @@ export function createTabulateCommandHandlers(
         destinationName: input.tableName,
         missingLabel: i18n.t("tabulate.missing"),
         statisticLabels: definition.statistics.map(formatStatisticLabel),
-      });
+      }, definition.datasetId);
       const completed = await resolvedDependencies.completeMaterializedTable(created);
       warnings.push(...completed.warnings);
       return {

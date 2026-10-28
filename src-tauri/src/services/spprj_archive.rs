@@ -1973,14 +1973,14 @@ pub(crate) fn validate_delta_history_contract(
                 change_set.storage_kind.as_str(),
                 change_set.operation.as_str()
             ),
-            ("row_delta", "delete_rows") | ("column_delta", "delete_columns")
+            ("row_delta", "delete_rows") | ("column_delta", "delete_columns" | "add_valued_columns")
         );
         let forbids_snapshot = matches!(
             (
                 change_set.storage_kind.as_str(),
                 change_set.operation.as_str()
             ),
-            ("row_delta", "add_rows") | ("column_delta", "add_columns")
+            ("row_delta", "add_rows") | ("column_delta", "add_columns") | ("column_delta", "reorder_columns") | ("column_delta", "convert_calculated") | ("column_delta", "rename_column") | ("column_delta", "empty_column_type")
         );
         if !requires_snapshot && !forbids_snapshot {
             return Err(AppError::FileIO(format!(
@@ -3090,7 +3090,7 @@ fn validate_graph_builder_new_hidden_overlay_group_ids(
     Ok(())
 }
 
-fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
+pub(crate) fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
     let object = value.as_object().ok_or_else(|| {
         AppError::InvalidParam("graphBuildersNew document must be an object".into())
     })?;
@@ -5112,7 +5112,7 @@ fn validate_dataset_filters(dataset_filters: &DatasetFilters) -> Result<(), AppE
     Ok(())
 }
 
-fn validate_dataset_filter_rule_item(
+pub(crate) fn validate_dataset_filter_rule_item(
     dataset_id: &str,
     index: usize,
     rule_item: &ProjectFilterRuleItem,
@@ -5630,7 +5630,7 @@ fn value_required_name<'a>(value: &'a Value, file: &str, kind: &str) -> Result<&
         })
 }
 
-fn validate_report_value(value: &Value, context: &str) -> Result<(), AppError> {
+pub(crate) fn validate_report_value(value: &Value, context: &str) -> Result<(), AppError> {
     let schema_version = value
         .get("schemaVersion")
         .and_then(Value::as_i64)
@@ -6388,7 +6388,7 @@ fn validate_distribution_analysis_definition(
     Ok(())
 }
 
-fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError> {
+pub(crate) fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError> {
     let object = value
         .as_object()
         .ok_or_else(|| AppError::FileIO(format!("{context} analysis is not a JSON object")))?;

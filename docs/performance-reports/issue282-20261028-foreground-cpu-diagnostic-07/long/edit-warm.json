@@ -1,0 +1,1785 @@
+{
+  "cache": {
+    "method": "same-process real App operations; OS cache not purged",
+    "mode": "warm"
+  },
+  "fixture": {
+    "columns": 20,
+    "id": "cc77138b-bccd-4180-8f46-b57f059ea819",
+    "rows": 300000,
+    "seed": 282,
+    "tier": "long-strings"
+  },
+  "profiling": {
+    "artifact": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-foreground-cpu-diagnostic-07/long-profile.json",
+    "method": "DuckDB EXPLAIN (ANALYZE, FORMAT JSON) using canonical navigation SQL and actual bound values; separate untimed probe",
+    "sourceRowsScanned": [
+      122880,
+      122880,
+      54240
+    ],
+    "verifiedNoFullScan": true
+  },
+  "samples": [
+    {
+      "backendAggregateMs": 231.577707,
+      "backendIntervalsNs": [
+        [
+          4769542,
+          102327458
+        ],
+        [
+          114910042,
+          248929833
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 231.577707,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 2621440,
+      "diskWriteBytes": 16384,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              12,
+              15
+            ],
+            [
+              16,
+              21
+            ],
+            [
+              21,
+              36
+            ],
+            [
+              37,
+              53
+            ],
+            [
+              55,
+              70
+            ],
+            [
+              70,
+              86
+            ],
+            [
+              86,
+              114
+            ],
+            [
+              114,
+              126
+            ],
+            [
+              126,
+              137
+            ],
+            [
+              137,
+              153
+            ],
+            [
+              153,
+              169
+            ],
+            [
+              169,
+              187
+            ],
+            [
+              187,
+              203
+            ],
+            [
+              203,
+              219
+            ],
+            [
+              219,
+              238
+            ],
+            [
+              238,
+              253
+            ],
+            [
+              253,
+              270
+            ],
+            [
+              270,
+              320
+            ],
+            [
+              320,
+              400
+            ],
+            [
+              400,
+              436
+            ],
+            [
+              436,
+              507
+            ],
+            [
+              507,
+              520
+            ],
+            [
+              520,
+              536
+            ]
+          ],
+          "operationFinishedMs": 12,
+          "readyObservedMs": 507,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 386711552,
+      "rssBytes": 406913024,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 4,
+      "scenario": "edit",
+      "transferredBytes": 1255727,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 536.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 13317,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 205.391333,
+      "backendIntervalsNs": [
+        [
+          5123750,
+          90512583
+        ],
+        [
+          101373583,
+          221376083
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 205.391333,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 1280192,
+        "aggregateRows": 64,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              8,
+              8
+            ],
+            [
+              11,
+              23
+            ],
+            [
+              23,
+              40
+            ],
+            [
+              41,
+              56
+            ],
+            [
+              58,
+              74
+            ],
+            [
+              75,
+              97
+            ],
+            [
+              97,
+              108
+            ],
+            [
+              108,
+              125
+            ],
+            [
+              125,
+              140
+            ],
+            [
+              140,
+              157
+            ],
+            [
+              157,
+              173
+            ],
+            [
+              173,
+              190
+            ],
+            [
+              190,
+              207
+            ],
+            [
+              207,
+              224
+            ],
+            [
+              224,
+              266
+            ],
+            [
+              266,
+              339
+            ],
+            [
+              339,
+              377
+            ],
+            [
+              377,
+              444
+            ],
+            [
+              445,
+              446
+            ],
+            [
+              446,
+              448
+            ]
+          ],
+          "operationFinishedMs": 8,
+          "readyObservedMs": 445,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 1280192,
+        "viewportRows": 64
+      },
+      "rssBaselineBytes": 440451072,
+      "rssBytes": 458801152,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 9,
+      "scenario": "edit",
+      "transferredBytes": 628463,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 448.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11539,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 225.374125,
+      "backendIntervalsNs": [
+        [
+          817666,
+          86835625
+        ],
+        [
+          91406750,
+          230762916
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 225.374125,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              7
+            ],
+            [
+              8,
+              25
+            ],
+            [
+              25,
+              42
+            ],
+            [
+              42,
+              58
+            ],
+            [
+              59,
+              75
+            ],
+            [
+              75,
+              91
+            ],
+            [
+              91,
+              109
+            ],
+            [
+              109,
+              124
+            ],
+            [
+              124,
+              142
+            ],
+            [
+              142,
+              158
+            ],
+            [
+              158,
+              174
+            ],
+            [
+              174,
+              192
+            ],
+            [
+              192,
+              208
+            ],
+            [
+              208,
+              225
+            ],
+            [
+              225,
+              242
+            ],
+            [
+              242,
+              259
+            ],
+            [
+              259,
+              285
+            ],
+            [
+              285,
+              339
+            ],
+            [
+              339,
+              364
+            ],
+            [
+              364,
+              414
+            ],
+            [
+              414,
+              425
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 364,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 485376000,
+      "rssBytes": 498450432,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 14,
+      "scenario": "edit",
+      "transferredBytes": 1255727,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 425.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11571,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 212.033749,
+      "backendIntervalsNs": [
+        [
+          1302125,
+          86698666
+        ],
+        [
+          91008458,
+          217645666
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 212.033749,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 1280192,
+        "aggregateRows": 64,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              4,
+              11
+            ],
+            [
+              12,
+              29
+            ],
+            [
+              29,
+              45
+            ],
+            [
+              45,
+              62
+            ],
+            [
+              62,
+              79
+            ],
+            [
+              79,
+              96
+            ],
+            [
+              96,
+              111
+            ],
+            [
+              111,
+              129
+            ],
+            [
+              129,
+              145
+            ],
+            [
+              145,
+              162
+            ],
+            [
+              162,
+              179
+            ],
+            [
+              179,
+              195
+            ],
+            [
+              195,
+              212
+            ],
+            [
+              212,
+              228
+            ],
+            [
+              228,
+              256
+            ],
+            [
+              256,
+              308
+            ],
+            [
+              308,
+              331
+            ],
+            [
+              331,
+              380
+            ],
+            [
+              380,
+              395
+            ]
+          ],
+          "operationFinishedMs": 4,
+          "readyObservedMs": 331,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 1280192,
+        "viewportRows": 64
+      },
+      "rssBaselineBytes": 510328832,
+      "rssBytes": 514785280,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 19,
+      "scenario": "edit",
+      "transferredBytes": 628463,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 395.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11603,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 208.929209,
+      "backendIntervalsNs": [
+        [
+          608792,
+          83820709
+        ],
+        [
+          88504042,
+          214221334
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 208.929209,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              10
+            ],
+            [
+              11,
+              28
+            ],
+            [
+              28,
+              44
+            ],
+            [
+              44,
+              61
+            ],
+            [
+              62,
+              77
+            ],
+            [
+              77,
+              94
+            ],
+            [
+              94,
+              110
+            ],
+            [
+              110,
+              126
+            ],
+            [
+              126,
+              144
+            ],
+            [
+              144,
+              160
+            ],
+            [
+              160,
+              177
+            ],
+            [
+              177,
+              193
+            ],
+            [
+              193,
+              210
+            ],
+            [
+              210,
+              226
+            ],
+            [
+              226,
+              267
+            ],
+            [
+              267,
+              318
+            ],
+            [
+              318,
+              345
+            ],
+            [
+              345,
+              394
+            ],
+            [
+              394,
+              395
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 345,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 524959744,
+      "rssBytes": 525172736,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 24,
+      "scenario": "edit",
+      "transferredBytes": 1255727,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 395.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11635,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 213.212707,
+      "backendIntervalsNs": [
+        [
+          647167,
+          84102458
+        ],
+        [
+          88309917,
+          218067333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 213.212707,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              2,
+              10
+            ],
+            [
+              11,
+              27
+            ],
+            [
+              27,
+              44
+            ],
+            [
+              44,
+              60
+            ],
+            [
+              61,
+              77
+            ],
+            [
+              77,
+              94
+            ],
+            [
+              94,
+              110
+            ],
+            [
+              110,
+              127
+            ],
+            [
+              127,
+              144
+            ],
+            [
+              144,
+              160
+            ],
+            [
+              160,
+              177
+            ],
+            [
+              177,
+              194
+            ],
+            [
+              194,
+              210
+            ],
+            [
+              210,
+              227
+            ],
+            [
+              227,
+              243
+            ],
+            [
+              243,
+              270
+            ],
+            [
+              270,
+              322
+            ],
+            [
+              322,
+              346
+            ],
+            [
+              346,
+              394
+            ],
+            [
+              394,
+              410
+            ]
+          ],
+          "operationFinishedMs": 2,
+          "readyObservedMs": 346,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 536330240,
+      "rssBytes": 536788992,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 29,
+      "scenario": "edit",
+      "transferredBytes": 1255727,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 410.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11667,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 204.887041,
+      "backendIntervalsNs": [
+        [
+          736125,
+          84527458
+        ],
+        [
+          88543625,
+          209639333
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 204.887041,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 1280192,
+        "aggregateRows": 64,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              13
+            ],
+            [
+              13,
+              28
+            ],
+            [
+              29,
+              45
+            ],
+            [
+              45,
+              62
+            ],
+            [
+              62,
+              78
+            ],
+            [
+              78,
+              95
+            ],
+            [
+              95,
+              112
+            ],
+            [
+              112,
+              128
+            ],
+            [
+              128,
+              145
+            ],
+            [
+              145,
+              162
+            ],
+            [
+              162,
+              178
+            ],
+            [
+              178,
+              195
+            ],
+            [
+              195,
+              211
+            ],
+            [
+              211,
+              248
+            ],
+            [
+              248,
+              304
+            ],
+            [
+              304,
+              327
+            ],
+            [
+              327,
+              376
+            ],
+            [
+              376,
+              381
+            ],
+            [
+              381,
+              395
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 376,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 1280192,
+        "viewportRows": 64
+      },
+      "rssBaselineBytes": 547209216,
+      "rssBytes": 548847616,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 34,
+      "scenario": "edit",
+      "transferredBytes": 628463,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 395.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11699,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 225.274834,
+      "backendIntervalsNs": [
+        [
+          839500,
+          86372417
+        ],
+        [
+          90983000,
+          230724917
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 225.274834,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              12
+            ],
+            [
+              12,
+              28
+            ],
+            [
+              29,
+              45
+            ],
+            [
+              45,
+              62
+            ],
+            [
+              62,
+              78
+            ],
+            [
+              78,
+              95
+            ],
+            [
+              95,
+              112
+            ],
+            [
+              112,
+              128
+            ],
+            [
+              128,
+              145
+            ],
+            [
+              145,
+              162
+            ],
+            [
+              162,
+              178
+            ],
+            [
+              178,
+              195
+            ],
+            [
+              195,
+              213
+            ],
+            [
+              213,
+              228
+            ],
+            [
+              228,
+              245
+            ],
+            [
+              245,
+              284
+            ],
+            [
+              284,
+              335
+            ],
+            [
+              335,
+              359
+            ],
+            [
+              359,
+              408
+            ],
+            [
+              408,
+              412
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 359,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 559071232,
+      "rssBytes": 560185344,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 39,
+      "scenario": "edit",
+      "transferredBytes": 1255728,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 412.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11731,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 196.030876,
+      "backendIntervalsNs": [
+        [
+          915583,
+          85672125
+        ],
+        [
+          89754958,
+          201029292
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 196.030876,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 1280192,
+        "aggregateRows": 64,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              13
+            ],
+            [
+              13,
+              29
+            ],
+            [
+              29,
+              46
+            ],
+            [
+              46,
+              62
+            ],
+            [
+              62,
+              79
+            ],
+            [
+              79,
+              96
+            ],
+            [
+              96,
+              112
+            ],
+            [
+              112,
+              128
+            ],
+            [
+              128,
+              146
+            ],
+            [
+              146,
+              162
+            ],
+            [
+              162,
+              180
+            ],
+            [
+              180,
+              195
+            ],
+            [
+              195,
+              213
+            ],
+            [
+              213,
+              240
+            ],
+            [
+              240,
+              292
+            ],
+            [
+              292,
+              315
+            ],
+            [
+              316,
+              364
+            ],
+            [
+              364,
+              379
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 316,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 1280192,
+        "viewportRows": 64
+      },
+      "rssBaselineBytes": 570064896,
+      "rssBytes": 570507264,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 44,
+      "scenario": "edit",
+      "transferredBytes": 628465,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 379.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11764,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 214.427542,
+      "backendIntervalsNs": [
+        [
+          801583,
+          85275875
+        ],
+        [
+          89005958,
+          218959208
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 214.427542,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              12
+            ],
+            [
+              13,
+              29
+            ],
+            [
+              29,
+              45
+            ],
+            [
+              45,
+              62
+            ],
+            [
+              62,
+              79
+            ],
+            [
+              79,
+              96
+            ],
+            [
+              96,
+              111
+            ],
+            [
+              111,
+              128
+            ],
+            [
+              128,
+              144
+            ],
+            [
+              144,
+              161
+            ],
+            [
+              161,
+              179
+            ],
+            [
+              179,
+              195
+            ],
+            [
+              195,
+              211
+            ],
+            [
+              211,
+              229
+            ],
+            [
+              229,
+              245
+            ],
+            [
+              245,
+              272
+            ],
+            [
+              272,
+              323
+            ],
+            [
+              323,
+              347
+            ],
+            [
+              348,
+              396
+            ],
+            [
+              396,
+              412
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 348,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 580157440,
+      "rssBytes": 581533696,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 49,
+      "scenario": "edit",
+      "transferredBytes": 1255734,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 412.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11800,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 204.804333,
+      "backendIntervalsNs": [
+        [
+          870792,
+          86052167
+        ],
+        [
+          89782542,
+          209405500
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 204.804333,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 1280192,
+        "aggregateRows": 64,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              13
+            ],
+            [
+              13,
+              28
+            ],
+            [
+              29,
+              45
+            ],
+            [
+              45,
+              62
+            ],
+            [
+              62,
+              79
+            ],
+            [
+              80,
+              95
+            ],
+            [
+              95,
+              112
+            ],
+            [
+              112,
+              128
+            ],
+            [
+              128,
+              145
+            ],
+            [
+              145,
+              161
+            ],
+            [
+              161,
+              179
+            ],
+            [
+              179,
+              195
+            ],
+            [
+              195,
+              212
+            ],
+            [
+              212,
+              248
+            ],
+            [
+              248,
+              299
+            ],
+            [
+              299,
+              323
+            ],
+            [
+              323,
+              372
+            ],
+            [
+              372,
+              378
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 323,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 1280192,
+        "viewportRows": 64
+      },
+      "rssBaselineBytes": 590266368,
+      "rssBytes": 590381056,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 54,
+      "scenario": "edit",
+      "transferredBytes": 628470,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 378.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11832,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    },
+    {
+      "backendAggregateMs": 289.256791,
+      "backendIntervalsNs": [
+        [
+          771125,
+          85686625
+        ],
+        [
+          89872334,
+          294213625
+        ]
+      ],
+      "backendMethod": "union of matching native operation intervals; overlapping invocations counted once; prefetch excluded",
+      "backendMs": 289.256791,
+      "backendOverlapMs": 0.0,
+      "backendTiming": "intervalUnion",
+      "checkpointBytes": 0,
+      "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+      "diskReadBytes": 0,
+      "diskWriteBytes": 12288,
+      "forbiddenWork": {
+        "archiveRestoredRows": 0,
+        "archiveWriterCalls": 0,
+        "fullAnchorRebuilds": 0,
+        "fullBeforeImageCopies": 0,
+        "fullDatabaseCopies": 0,
+        "fullWindowCounts": 0
+      },
+      "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 process diskio byte deltas",
+      "nativeCalls": 2,
+      "nativeCallsPending": 0,
+      "processId": 65914,
+      "retention": {
+        "activeViewports": 1,
+        "aggregateBytes": 2558656,
+        "aggregateRows": 128,
+        "method": "actual projectViewportBudget cache entries; UTF-16 retained payload estimate; single-table fixture",
+        "uiPhases": {
+          "focusedAtFinish": true,
+          "focusedAtStart": true,
+          "framesMs": [
+            [
+              3,
+              10
+            ],
+            [
+              11,
+              28
+            ],
+            [
+              28,
+              43
+            ],
+            [
+              44,
+              61
+            ],
+            [
+              61,
+              77
+            ],
+            [
+              77,
+              94
+            ],
+            [
+              94,
+              111
+            ],
+            [
+              111,
+              127
+            ],
+            [
+              127,
+              143
+            ],
+            [
+              143,
+              161
+            ],
+            [
+              161,
+              177
+            ],
+            [
+              177,
+              194
+            ],
+            [
+              194,
+              210
+            ],
+            [
+              210,
+              228
+            ],
+            [
+              228,
+              244
+            ],
+            [
+              244,
+              261
+            ],
+            [
+              261,
+              277
+            ],
+            [
+              277,
+              294
+            ],
+            [
+              294,
+              311
+            ],
+            [
+              311,
+              347
+            ],
+            [
+              347,
+              400
+            ],
+            [
+              400,
+              424
+            ],
+            [
+              424,
+              474
+            ],
+            [
+              474,
+              477
+            ]
+          ],
+          "operationFinishedMs": 3,
+          "readyObservedMs": 424,
+          "visibilityAtFinish": "visible",
+          "visibilityAtStart": "visible"
+        },
+        "viewportBytes": 2558656,
+        "viewportRows": 128
+      },
+      "rssBaselineBytes": 601407488,
+      "rssBytes": 640122880,
+      "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; main process sampled peak every5ms plus endpoints; WebContent process excluded",
+      "sampleId": 59,
+      "scenario": "edit",
+      "transferredBytes": 1255734,
+      "transferredBytesMethod": "serialized native reply payload bytes; excludes IPC envelope",
+      "uiReadyMs": 478.0,
+      "verification": {
+        "nativeObserved": true,
+        "passed": true
+      },
+      "walBytes": 11864,
+      "walMethod": "project WAL file size after operation; absent file is zero"
+    }
+  ],
+  "scenario": "edit",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+    "engineVersion": "v1.5.5",
+    "nativeTimingVersion": 2,
+    "profile": "debug",
+    "storageVersion": "64",
+    "treeHash": "ae073ac46458c5e79ec8a35964c6679ad487bb1b",
+    "uiObservationVersion": 1,
+    "uiProbeBuild": true
+  },
+  "uiMethod": "real App exact visible state followed by two animation frames; not compositor presentation timing",
+  "verification": {
+    "passed": true
+  }
+}

@@ -34,6 +34,8 @@ function assertSourceExcludes(source: string, needle: string, message: string): 
 }
 
 const workspaceSource = readSource("../src/components/Workspace.tsx");
+const analysisCommandsSource = readSource("../src/applicationCommands/analysisCommands.ts");
+const projectCommandsSource = readSource("../src/applicationCommands/projectCommands.ts");
 
 for (const obsoletePath of [
   "../src/stores/useFitYByXStore.ts",
@@ -45,7 +47,7 @@ for (const obsoletePath of [
   assert.equal(existsSync(resolve(TEST_FILE_DIR, obsoletePath)), false, `${obsoletePath} must be removed`);
 }
 
-assertSourceIncludes(workspaceSource, "createFitYByXAnalysisDocument", "Workspace must create canonical Fit Y by X Analysis documents");
+assertSourceIncludes(analysisCommandsSource, "createFitYByXAnalysisDocument", "Workspace must create canonical Fit Y by X Analysis documents");
 assertSourceIncludes(workspaceSource, "analysisItems.filter(isFitYByXAnalysisDocument)", "Workspace must derive Fit Y by X rows from the Analysis store");
 assertSourceIncludes(workspaceSource, "FitYByXRoleDialog", "Workspace must render the Fit Y by X role dialog");
 assertSourceExcludes(workspaceSource, "useFitYByXStore", "Workspace must not consume the legacy Fit Y by X store");
@@ -54,17 +56,17 @@ assertSourceExcludes(workspaceSource, "FitYByXView", "Workspace must render Fit 
 assertSourceIncludes(workspaceSource, "menu.fitYByX", "Analysis menu must include menu.fitYByX");
 assertSourceIncludes(workspaceSource, "handleCreateFitYByX", "Fit Y by X menu entry must open the creation flow");
 
-assertSourceIncludes(workspaceSource, "fitYByX: []", "Project save must clear compatibility-only Fit Y by X values");
-assertSourceIncludes(workspaceSource, "fitYByXFolders: {}", "Project save must clear compatibility-only Fit Y by X folders");
+assertSourceIncludes(projectCommandsSource, "fitYByX: []", "Project save must clear compatibility-only Fit Y by X values");
+assertSourceIncludes(projectCommandsSource, "fitYByXFolders: {}", "Project save must clear compatibility-only Fit Y by X folders");
 assertSourceIncludes(workspaceSource, "fitYByX: (result.fitYByX", "Project open must pass legacy Fit Y by X values to Analysis migration");
 
 assertSourceExcludes(workspaceSource, "activeFitYByXId", "Workspace must use only the shared active Analysis id");
 assertSourceIncludes(workspaceSource, "showFitYByXDialog", "Workspace must track the Fit Y by X creation dialog");
-assertSourceIncludes(workspaceSource, "addAnalysis(created)", "Workspace must add newly created Fit Y by X analyses to the Analysis store");
+assertSourceIncludes(analysisCommandsSource, "resolvedDependencies.addAnalysis(item)", "Workspace must add newly created Fit Y by X analyses to the Analysis store");
 assertSourceExcludes(workspaceSource, "deleteFitYByXByDataset", "Deleting a source table must retain Fit Y by X Analysis documents");
 
 assertSourceExcludes(workspaceSource, "fitYByXByParent", "Tree grouping must use the shared Analysis collection");
-assertSourceIncludes(workspaceSource, "history.newFitYByX", "Creation must record Fit Y by X history");
+assertSourceIncludes(analysisCommandsSource, "history.newFitYByX", "Creation must record Fit Y by X history");
 assertSourceIncludes(workspaceSource, "history.renameAnalysis", "Rename must record shared Analysis history");
 assertSourceIncludes(workspaceSource, "history.deleteAnalysis", "Delete must record shared Analysis history");
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item} dataset={ds}", "Main pane must dispatch Fit Y by X through AnalysisView");

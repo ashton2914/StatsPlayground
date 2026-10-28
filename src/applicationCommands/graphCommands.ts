@@ -1,3 +1,4 @@
+import {projectDocumentNames} from "@/stores/documentStore";
 import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspaceLifecycle";
 import {
   createDefaultGraph2DState,
@@ -94,7 +95,7 @@ export function createGraphCommandHandlers(
   const resolvedDependencies: GraphCommandDependencies = {
     listDatasets: () => useDataStore.getState().datasets,
     listGraphs: () => useGraphBuilderStore.getState().items,
-    listGraphNamesForAllocation: () => useGraphBuilderStore.getState().items.map((item) => item.name),
+    listGraphNamesForAllocation: () => projectDocumentNames(["graph"], useGraphBuilderStore.getState().items.map((item) => item.name)),
     createGraphId: () => (
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()

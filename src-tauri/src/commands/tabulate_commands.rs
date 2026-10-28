@@ -1,4 +1,5 @@
-use tauri::State;
+use tauri::{Emitter,State};
+use crate::models::project_persistence::{ProjectWriteContext,ProjectMutationResult};
 
 use crate::error::AppError;
 use crate::models::tabulate::{
@@ -10,15 +11,23 @@ use crate::state::AppState;
 
 #[tauri::command(async)]
 pub fn materialize_tabulate_table(
+    app:tauri::AppHandle,
     state: State<'_, AppState>,
     request: TabulateMaterializeRequest,
-) -> Result<crate::models::table::DatasetMeta, AppError> {
+    context:Option<ProjectWriteContext>,
+) -> Result<ProjectMutationResult<crate::models::table::DatasetMeta>, AppError> {
+    if let Some(context) = context {
+        let commit=crate::services::project_native_service::NativeProjectService::new(&state).materialize_tabulate(&context,&request)?;
+        if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
+        return Ok(ProjectMutationResult::Committed(commit));
+    }
+    let _permit=state.save_coordinator.mutation_permit()?;
     let service = state
         .tabulate_sessions
         .read()
         .map_err(|error| AppError::Database(error.to_string()))?
         .clone();
-    service.materialize_table(&request)
+    service.materialize_table(&request).map(ProjectMutationResult::Legacy)
 }
 
 #[tauri::command]

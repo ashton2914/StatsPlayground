@@ -4,7 +4,10 @@ import type { ProjectLineageGraph, WorkflowDefinition, WorkflowRun } from "@/typ
 interface WorkflowPanelProps {
   lineageGraph: ProjectLineageGraph;
   workflows: WorkflowDefinition[];
+  directory?: Pick<WorkflowDefinition,"id"|"name">[];
+  lineageReady?: boolean;
   workflowRuns: WorkflowRun[];
+  selectedRunCount?:{id:string;revision:number;count:number};
   selectedId: string;
   onSelect: (id: string) => void;
 }
@@ -12,11 +15,15 @@ interface WorkflowPanelProps {
 export function WorkflowPanel({
   lineageGraph,
   workflows,
+  directory,
+  lineageReady=true,
   workflowRuns,
+  selectedRunCount,
   selectedId,
   onSelect,
 }: WorkflowPanelProps) {
   const { t } = useTranslation();
+  const entries=directory??workflows;
 
   return (
     <div className="workflow-panel">
@@ -32,18 +39,20 @@ export function WorkflowPanel({
           <i className="fa-solid fa-diagram-project" aria-hidden="true" />
           <span>
             <strong>{t("workflow.projectLineage", { defaultValue: "Project lineage" })}</strong>
-            <small>{t("workflow.nodeCount", { defaultValue: "{{count}} nodes", count: lineageGraph.nodes.length })}</small>
+            {lineageReady&&<small>{t("workflow.nodeCount", { defaultValue: "{{count}} nodes", count: lineageGraph.nodes.length })}</small>}
           </span>
         </button>
         <div className="workflow-panel-section-label">
           {t("workflow.saved", { defaultValue: "Saved workflows" })}
         </div>
-        {workflows.length === 0 ? (
+        {entries.length === 0 ? (
           <div className="empty-hint">
             {t("workflow.empty", { defaultValue: "No saved workflows" })}
           </div>
-        ) : workflows.map((workflow) => {
+        ) : entries.map((workflow) => {
+          const definition=workflows.find(item=>item.id===workflow.id);
           const runCount = workflowRuns.filter((run) => run.workflowId === workflow.id).length;
+          const savedCount=selectedRunCount?.id===workflow.id?selectedRunCount:undefined;
           return (
             <button
               type="button"
@@ -54,11 +63,11 @@ export function WorkflowPanel({
               <i className="fa-solid fa-code-branch" aria-hidden="true" />
               <span>
                 <strong>{workflow.name}</strong>
-                <small>{t("workflow.revisionRuns", {
+                {((!directory&&definition)||savedCount)&&<small>{t("workflow.revisionRuns", {
                   defaultValue: "Revision {{revision}} · {{count}} runs",
-                  revision: workflow.revision,
-                  count: runCount,
-                })}</small>
+                  revision: savedCount?.revision??definition!.revision,
+                  count: savedCount?.count??runCount,
+                })}</small>}
               </span>
             </button>
           );

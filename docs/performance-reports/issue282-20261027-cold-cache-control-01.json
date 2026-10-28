@@ -1,0 +1,137 @@
+{
+  "method": "macOS F_GLOBAL_NOCACHE (55) on operation-owned seeded fixture; held descriptor for child lifetime; restored caching in finally",
+  "methodSource": "https://github.com/apple/darwin-xnu/blob/main/bsd/sys/fcntl.h",
+  "cacheDisableReturn": 0,
+  "cacheRestoreReturn": 1,
+  "projectContentUnchanged": true,
+  "warmNativeObservation": {
+    "cache": {
+      "method": "same-process reopened database; OS cache not purged; initial fixture metadata read excluded",
+      "mode": "warm"
+    },
+    "fixture": {
+      "columns": 20,
+      "id": "f8190b92-94fa-4f1c-8c95-4d4de7b0bae5",
+      "rows": 300000,
+      "seed": 282,
+      "tier": "regular"
+    },
+    "processId": 59942,
+    "profiling": {
+      "method": null,
+      "verifiedNoFullScan": false
+    },
+    "samples": [
+      {
+        "backendMs": 100.360417,
+        "backendRetainedRows": null,
+        "checkpointBytes": 0,
+        "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+        "diskReadBytes": 163840,
+        "diskWriteBytes": 561152,
+        "forbiddenWork": {
+          "archiveRestoredRows": 0,
+          "archiveWriterCalls": 0,
+          "fullAnchorRebuilds": 0,
+          "fullBeforeImageCopies": 0,
+          "fullDatabaseCopies": 0,
+          "fullWindowCounts": 0
+        },
+        "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 diskio byte deltas",
+        "processId": 59942,
+        "processMemory": {
+          "baselineWorkingSetBytes": 74268672,
+          "deltaWorkingSetBytes": 1376256,
+          "peakWorkingSetBytes": 75644928
+        },
+        "retention": null,
+        "rssBytes": 75644928,
+        "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; sampled every 5ms plus endpoints",
+        "transferredBytes": 932,
+        "uiReadyMs": null,
+        "verification": {
+          "passed": true
+        },
+        "walBytes": 0
+      }
+    ],
+    "scenario": "catalog",
+    "schemaVersion": 1,
+    "source": {
+      "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+      "engineVersion": "v1.5.5",
+      "profile": "debug",
+      "storageVersion": "64",
+      "treeHash": "155cfc3d3380ffcda666a4f83cb3817da6f0ecf3"
+    },
+    "verification": {
+      "passed": true
+    }
+  },
+  "cacheDisabledNativeObservation": {
+    "cache": {
+      "method": "same-process reopened database; OS cache not purged; initial fixture metadata read excluded",
+      "mode": "warm"
+    },
+    "fixture": {
+      "columns": 20,
+      "id": "f8190b92-94fa-4f1c-8c95-4d4de7b0bae5",
+      "rows": 300000,
+      "seed": 282,
+      "tier": "regular"
+    },
+    "processId": 59952,
+    "profiling": {
+      "method": null,
+      "verifiedNoFullScan": false
+    },
+    "samples": [
+      {
+        "backendMs": 101.443458,
+        "backendRetainedRows": null,
+        "checkpointBytes": 0,
+        "checkpointMethod": "proc_pid_rusage diskio byteswritten delta around explicit CHECKPOINT; process-scoped",
+        "diskReadBytes": 0,
+        "diskWriteBytes": 561152,
+        "forbiddenWork": {
+          "archiveRestoredRows": 0,
+          "archiveWriterCalls": 0,
+          "fullAnchorRebuilds": 0,
+          "fullBeforeImageCopies": 0,
+          "fullDatabaseCopies": 0,
+          "fullWindowCounts": 0
+        },
+        "ioMethod": "proc_pid_rusage RUSAGE_INFO_V2 diskio byte deltas",
+        "processId": 59952,
+        "processMemory": {
+          "baselineWorkingSetBytes": 74399744,
+          "deltaWorkingSetBytes": 1392640,
+          "peakWorkingSetBytes": 75792384
+        },
+        "retention": null,
+        "rssBytes": 75792384,
+        "rssMethod": "proc_pidinfo PROC_PIDTASKINFO resident_size; sampled every 5ms plus endpoints",
+        "transferredBytes": 932,
+        "uiReadyMs": null,
+        "verification": {
+          "passed": true
+        },
+        "walBytes": 0
+      }
+    ],
+    "scenario": "catalog",
+    "schemaVersion": 1,
+    "source": {
+      "commit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+      "engineVersion": "v1.5.5",
+      "profile": "debug",
+      "storageVersion": "64",
+      "treeHash": "155cfc3d3380ffcda666a4f83cb3817da6f0ecf3"
+    },
+    "verification": {
+      "passed": true
+    }
+  },
+  "qualification": false,
+  "scope": "method calibration only; embedded default warm cache labels are not cold qualification"
+}

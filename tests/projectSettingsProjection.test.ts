@@ -1,0 +1,41 @@
+import assert from "node:assert/strict";
+import {createProjectPersistenceCoordinator} from "../src/projectPersistence/coordinator.ts";
+import {createProjectDocumentAdapters,applyCommittedProjectEffects,hydrateProjectSetting} from "../src/projectPersistence/documentAdapters.ts";
+import {useProjectStore} from "../src/stores/useProjectStore.ts";
+import {useDatasetFilterStore} from "../src/stores/useDatasetFilterStore.ts";
+import {useWorkflowStore} from "../src/stores/useWorkflowStore.ts";
+import {useTableTransformStore} from "../src/stores/useTableTransformStore.ts";
+import type {ProjectCommit} from "../src/types/projectPersistence.ts";
+const key="filter:source";
+const rule={id:"filter",op:"AND" as const,rule:{kind:"continuous" as const,field:{name:"value",columnId:"column",type:"continuous" as const},min:0,max:5}};
+let finish!:(commit:ProjectCommit<unknown>)=>void;
+const queue=createProjectPersistenceCoordinator({projectId:"project",epoch:7,committedRevision:1,now:()=>0,newOperationId:()=>"setting",setTimer:()=>1,clearTimer:()=>{},onCommit:applyCommittedProjectEffects,
+  transport:<T>()=>new Promise<ProjectCommit<T>>(resolve=>{finish=commit=>resolve(commit as ProjectCommit<T>);})});
+useDatasetFilterStore.getState().reset();useWorkflowStore.getState().reset();useTableTransformStore.getState().reset();useProjectStore.getState().installPersistence(queue);
+const adapters=createProjectDocumentAdapters({coordinator:queue,summaries:[]});const release=adapters.activate();
+try {
+  assert.equal(hydrateProjectSetting(key,{key,revision:1,value:[rule]},7),true);
+  assert.equal(queue.snapshot().pendingSequence,0,"loading one setting must not enqueue a write");
+  const edited={...rule,rule:{...rule.rule,max:10}};
+  useDatasetFilterStore.getState().replaceFilters("source",[edited]);
+  assert.equal(hydrateProjectSetting(key,{key,revision:1,value:[rule]},7),false,"a late read must preserve pending filter edits");
+  assert.equal((useDatasetFilterStore.getState().byDataset.source[0].rule as typeof rule.rule).max,10);
+  const flushed=queue.flushThrough(queue.captureBarrier());
+  finish({operationId:"setting",epoch:7,committedRevision:2,value:null,changedDatasetGenerations:[],changedDocumentRevisions:[],changedSettingRevisions:[{key,revision:2}]});await flushed;
+  assert.equal(hydrateProjectSetting(key,{key,revision:2,value:[edited]},7),true);
+  assert.equal(hydrateProjectSetting(key,{key,revision:1,value:[rule]},7),false);
+  assert.throws(()=>hydrateProjectSetting(key,{key,revision:3,value:[{id:"bad"}]},7),/project_setting_invalid/);
+  assert.equal((useDatasetFilterStore.getState().byDataset.source[0].rule as typeof rule.rule).max,10);
+  const lineage={id:"project-lineage",name:"Project lineage",graphVersion:0,graphHash:"",nodes:[],edges:[]};
+  assert.equal(hydrateProjectSetting("lineage",{key:"lineage",revision:1,value:lineage},8),false);
+  assert.equal(hydrateProjectSetting("lineage",{key:"lineage",revision:1,value:lineage},7),true);
+  assert.deepEqual(useWorkflowStore.getState().lineageGraph,lineage);
+  const binding={definitionId:"transform",definitionRevision:1,inputs:[{role:"source",tableDocumentId:"source"}],outputGeneration:0,lastRun:{definitionRevision:1,status:"succeeded",outputGeneration:0},schemaReports:[]};
+  assert.equal(hydrateProjectSetting("transformBinding:transform",{key:"transformBinding:transform",revision:1,value:binding},7),true);
+  assert.equal(useTableTransformStore.getState().bindings[0].lastRun?.status,"succeeded");
+  useProjectStore.setState({readOnly:true});
+  assert.equal(hydrateProjectSetting(key,{key,revision:2,value:[edited]},7),true,"read-only projects may hydrate settings");
+  assert.equal(queue.snapshot().pendingSequence,1);
+  useProjectStore.setState({readOnly:false});await queue.close();
+  console.log("setting projection: typed selected values, pending-edit fences, epochs and read-only hydration passed");
+} finally {release();useProjectStore.setState({persistence:null,persistenceSnapshot:null,readOnly:false});useDatasetFilterStore.getState().reset();useWorkflowStore.getState().reset();useTableTransformStore.getState().reset();}

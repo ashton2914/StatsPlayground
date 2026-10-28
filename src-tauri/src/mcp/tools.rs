@@ -147,6 +147,10 @@ pub struct ProjectCounts {
     pub analyses: u64,
     pub tabulates: u64,
     pub reports: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphs_new: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -318,6 +322,8 @@ pub type TableCreateToolOutput = ToolCommandResult<TableDescribeResultData>;
 pub enum ProjectDocumentKind {
     TableTransform,
     Graph,
+    GraphNew,
+    Workflow,
     Analysis,
     Tabulate,
     Report,
@@ -337,6 +343,8 @@ pub struct DocumentListToolInput {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectDocumentSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis_kind: Option<String>,
     pub kind: ProjectDocumentKind,
     pub id: String,
     pub name: String,
@@ -379,9 +387,53 @@ pub type DocumentGetToolOutput = ToolCommandResult<ProjectDocumentGetResultData>
 pub enum ProjectDocument {
     TableTransform(TableTransformDefinition),
     Graph(GraphBuilderItem),
+    GraphNew(GraphNewDocument),
+    Workflow(WorkflowDocument),
     Analysis(AnalysisDocument),
     Tabulate(TabulateItem),
     Report(ReportItem),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewDocument {
+    pub version: u32,
+    pub id: String,
+    pub name: String,
+    pub dataset_id: String,
+    pub layers: Vec<Value>,
+    pub x_column_id: Option<String>,
+    pub y_column_id: Option<String>,
+    pub overlay_column_id: Option<String>,
+    pub hidden_overlay_group_ids: Vec<String>,
+    pub x_mode: String,
+    pub camera: Option<GraphNewCamera>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewCamera {
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowDocument {
+    pub id: String,
+    pub name: String,
+    pub format_version: String,
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub input_slots: Vec<Value>,
+    pub operations: Vec<Value>,
+    pub edges: Vec<Value>,
+    pub output_declarations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -2458,6 +2510,26 @@ fn progress_notification(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_v5_catalog_document_contract_accepts_new_graphs_and_workflows() {
+        for kind in ["graphNew", "workflow"] {
+            let input: super::DocumentGetToolInput = serde_json::from_value(serde_json::json!({"kind":kind,"id":"document"})).unwrap();
+            assert_eq!(serde_json::to_value(input).unwrap()["kind"],kind);
+        }
+        let graph = serde_json::json!({"kind":"graphNew","id":"graph","document":{
+            "version":3,"id":"graph","name":"Graph","datasetId":"table","layers":[],
+            "xColumnId":null,"yColumnId":null,"overlayColumnId":null,"hiddenOverlayGroupIds":[],"xMode":"auto","camera":null
+        }});
+        let workflow=serde_json::json!({"kind":"workflow","id":"workflow","document":{
+            "id":"workflow","name":"Workflow","formatVersion":"1.0","revision":1,"inputSlots":[],"operations":[],"edges":[],"outputDeclarations":[]
+        }});
+        for value in [graph,workflow] {
+            let parsed: super::ProjectDocumentGetResultData=serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(),value);
+        }
+        let counts:super::ProjectCounts=serde_json::from_value(serde_json::json!({"tables":1,"tableTransforms":0,"graphs":0,"analyses":0,"tabulates":0,"reports":0,"graphsNew":1,"workflows":1})).unwrap();
+        assert_eq!(serde_json::to_value(counts).unwrap()["graphsNew"],1);
+    }
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
 

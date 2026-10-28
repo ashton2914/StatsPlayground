@@ -869,4 +869,17 @@ async function waitForRequestStatus(
   assert.equal(snapshot.some((entry) => entry.status === "cancelled"), true);
 }
 
+{
+  let writes = 0;
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ revision: {
+    get: () => 41,
+    set: () => { writes++; },
+    isAuthoritative: () => true,
+  } });
+  runtime.register("test.mutate", async () => ({ changed: true, data: { id: "durable" } }), { mode: "mutation" });
+  const result = await runtime.execute(mutate(), MCP_ACTOR);
+  assert.equal(result.projectRevision, 41);
+  assert.equal(writes, 0, "native persistence revisions must not be incremented by the command runtime");
+}
+
 console.log("application command runtime tests passed");

@@ -29,6 +29,20 @@ pub mod normal_capability;
 pub(crate) mod natural_row_order;
 pub mod path_authorization_service;
 pub mod project_service;
+pub mod project_database;
+pub mod project_schema;
+pub mod project_transaction;
+pub mod project_catalog;
+pub(crate) mod project_history_group;
+pub(crate) mod project_history_frontier;
+pub(crate) mod project_table_lifecycle;
+pub(crate) mod project_table_retirement;
+pub(crate) mod project_paste;
+pub(crate) mod project_column_settings;
+pub(crate) mod project_column_filters;
+pub mod project_output;
+pub(crate) mod project_table_import;
+pub(crate) mod project_staging;
 pub(crate) mod project_table_restore;
 pub(crate) mod row_order_update_boundary;
 pub mod save_coordinator;
@@ -39,6 +53,7 @@ pub(crate) mod streaming_table_reader;
 pub mod table_history_archive;
 pub mod table_mutation_coordinator;
 pub(crate) mod table_delta_mutation;
+pub(crate) mod project_cell_mutation;
 pub mod table_navigation_service;
 pub mod table_transform_domain;
 pub mod table_transform_service;
@@ -61,3 +76,19 @@ pub(crate) mod graph_new_layers_cache;
 
 pub(crate) mod graph_new_pixel_jitter;
 mod graph_new_line_pixels;
+
+pub mod project_native_service;
+
+pub mod project_drafts;
+pub mod project_snapshot;
+pub(crate) mod project_migration;
+pub(crate) mod project_migration_analysis;
+pub(crate) mod project_migration_order;
+pub(crate) mod project_migration_request;
+pub(crate) mod project_data_snapshot;
+pub(crate) mod project_workflow_runs;
+
+pub(crate) mod project_export;
+
+#[cfg(any(test, feature="perf-harness"))]
+pub(crate) mod project_work_counters;

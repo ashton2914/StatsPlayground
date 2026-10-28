@@ -1,0 +1,34 @@
+{
+  "sourceTreeHash": "c1804966527d6fcb4e920b2deb57882b97a550cf",
+  "baseCommit": "3a362f6ebed9dd9f2435aac56cdf5bd75a84052f",
+  "profile": "debug",
+  "features": [
+    "project-v5",
+    "perf-harness"
+  ],
+  "bundleIdentifier": "com.statsplayground.issue282.acceptance",
+  "binarySha256": "bc6b76f0d91a95752e0e024f19d464e4f0fd735c043d95fd6243b6a1b3b3c25c",
+  "os": "27.0.1",
+  "arch": "arm64",
+  "fixture": {
+    "rows": 2000000,
+    "columns": 20,
+    "seed": 282
+  },
+  "nativeViewportRepair": {
+    "passed": true,
+    "editedCell": "A1000001",
+    "value": 42424243,
+    "activeCellAfterCommit": "A1000002",
+    "logicalStartAfterCommit": 999981,
+    "visibleEditedRow": 1000001,
+    "visibleEditedValue": 42424243,
+    "cacheDiagnostic": "3500 rows; 4 entries; 1.2 MiB",
+    "savedIndicator": true
+  },
+  "qualification": {
+    "releaseLatency": false,
+    "userManualAcceptance": false
+  },
+  "applicationExited": true
+}

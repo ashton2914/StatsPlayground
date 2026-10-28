@@ -1,0 +1,624 @@
+{
+  "qualified": false,
+  "failures": [
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/catalog: sample 30: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/catalog: sample 36: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/catalog: sample 77: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/window: sample 97: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/window: sample 99: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/edit: sample 33: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/close: sample 56: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/close: sample 65: foreground UI phase proof unavailable or inconsistent",
+    "7a3b78a4-1c45-454a-86d4-27f97ea8f84d/close: sample 85: foreground UI phase proof unavailable or inconsistent",
+    "fcc1c1f9-274f-4811-a1fd-c605ff3717eb/window: sample 55: foreground UI phase proof unavailable or inconsistent",
+    "fcc1c1f9-274f-4811-a1fd-c605ff3717eb/scroll: sample 96: foreground UI phase proof unavailable or inconsistent",
+    "fcc1c1f9-274f-4811-a1fd-c605ff3717eb/edit: sample 61: foreground UI phase proof unavailable or inconsistent",
+    "fcc1c1f9-274f-4811-a1fd-c605ff3717eb/close: sample 2: foreground UI phase proof unavailable or inconsistent",
+    "4ef0d82d-01c3-4af1-abb0-db12261be9ff/catalog: sample 39: foreground UI phase proof unavailable or inconsistent",
+    "4ef0d82d-01c3-4af1-abb0-db12261be9ff/scroll: sample 12: foreground UI phase proof unavailable or inconsistent",
+    "4ef0d82d-01c3-4af1-abb0-db12261be9ff/close: sample 45: foreground UI phase proof unavailable or inconsistent",
+    "4ef0d82d-01c3-4af1-abb0-db12261be9ff/close: sample 90: foreground UI phase proof unavailable or inconsistent",
+    "b62d881d-2cb1-4917-aa64-f14e71358498/catalog: sample 2: foreground UI phase proof unavailable or inconsistent",
+    "b62d881d-2cb1-4917-aa64-f14e71358498/window: sample 9: foreground UI phase proof unavailable or inconsistent",
+    "b62d881d-2cb1-4917-aa64-f14e71358498/scroll: sample 13: foreground UI phase proof unavailable or inconsistent",
+    "b62d881d-2cb1-4917-aa64-f14e71358498/edit: sample 8: foreground UI phase proof unavailable or inconsistent"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 23.828459,
+        "uiP95Ms": 55,
+        "backendMedianMs": 23.52525,
+        "uiMedianMs": 54,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 30: foreground UI phase proof unavailable or inconsistent",
+          "sample 36: foreground UI phase proof unavailable or inconsistent",
+          "sample 77: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 36.28675,
+        "uiP95Ms": 64,
+        "backendMedianMs": 28.903270499999998,
+        "uiMedianMs": 59,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 97: foreground UI phase proof unavailable or inconsistent",
+          "sample 99: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 11.040167,
+        "uiP95Ms": 66,
+        "backendMedianMs": 9.9013545,
+        "uiMedianMs": 61,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 24.198,
+        "uiP95Ms": 77,
+        "backendMedianMs": 9.121271,
+        "uiMedianMs": 63,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 33: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 42.761418,
+        "uiP95Ms": 98,
+        "backendMedianMs": 26.929604,
+        "uiMedianMs": 81,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "7a3b78a4-1c45-454a-86d4-27f97ea8f84d",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 56: foreground UI phase proof unavailable or inconsistent",
+          "sample 65: foreground UI phase proof unavailable or inconsistent",
+          "sample 85: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 33.293625,
+        "uiP95Ms": 63,
+        "backendMedianMs": 30.1204165,
+        "uiMedianMs": 58,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 30.239083,
+        "uiP95Ms": 55,
+        "backendMedianMs": 24.028875,
+        "uiMedianMs": 51,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 30.399125,
+        "uiP95Ms": 63,
+        "backendMedianMs": 27.120896000000002,
+        "uiMedianMs": 57.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 55: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 11.75,
+        "uiP95Ms": 64,
+        "backendMedianMs": 10.5677085,
+        "uiMedianMs": 61.5,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 96: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 22.000958,
+        "uiP95Ms": 75,
+        "backendMedianMs": 8.51125,
+        "uiMedianMs": 48,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 61: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 42.654001,
+        "uiP95Ms": 112,
+        "backendMedianMs": 27.2724165,
+        "uiMedianMs": 80,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "fcc1c1f9-274f-4811-a1fd-c605ff3717eb",
+        "rows": 2000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 2: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 41.692584,
+        "uiP95Ms": 64,
+        "backendMedianMs": 34.818646,
+        "uiMedianMs": 59,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 5,
+        "backendP95Ms": 48.489667,
+        "uiP95Ms": 74,
+        "backendMedianMs": 24.239708,
+        "uiMedianMs": 48,
+        "budgetMs": 1000
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 39: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 34.999334,
+        "uiP95Ms": 62,
+        "backendMedianMs": 28.249520500000003,
+        "uiMedianMs": 58,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 12.267667,
+        "uiP95Ms": 64,
+        "backendMedianMs": 11.150209,
+        "uiMedianMs": 60,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 12: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 22.300583,
+        "uiP95Ms": 71,
+        "backendMedianMs": 8.774353999999999,
+        "uiMedianMs": 62,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 44.472083,
+        "uiP95Ms": 113,
+        "backendMedianMs": 30.445041500000002,
+        "uiMedianMs": 81,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "4ef0d82d-01c3-4af1-abb0-db12261be9ff",
+        "rows": 10000000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 45: foreground UI phase proof unavailable or inconsistent",
+          "sample 90: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 61.645417,
+        "uiP95Ms": 77,
+        "backendMedianMs": 49.175686999999996,
+        "uiMedianMs": 60,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "b62d881d-2cb1-4917-aa64-f14e71358498",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 2: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 129.667834,
+        "uiP95Ms": 150,
+        "backendMedianMs": 116.41704200000001,
+        "uiMedianMs": 139,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "b62d881d-2cb1-4917-aa64-f14e71358498",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 9: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 12.696125,
+        "uiP95Ms": 124,
+        "backendMedianMs": 11.754458,
+        "uiMedianMs": 99,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "b62d881d-2cb1-4917-aa64-f14e71358498",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 13: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 12.915958,
+        "uiP95Ms": 68,
+        "backendMedianMs": 9.5199995,
+        "uiMedianMs": 53,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "b62d881d-2cb1-4917-aa64-f14e71358498",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "sample 8: foreground UI phase proof unavailable or inconsistent"
+        ],
+        "sampleCount": 100,
+        "backendP95Ms": 50.643667,
+        "uiP95Ms": 189,
+        "backendMedianMs": 37.4336875,
+        "uiMedianMs": 171,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "b62d881d-2cb1-4917-aa64-f14e71358498",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "many-documents"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 43.034167,
+        "uiP95Ms": 120,
+        "backendMedianMs": 38.5840415,
+        "uiMedianMs": 105.5,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "82c6e7f2-4838-43ff-9b8d-989c5498fd43",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 35.966291,
+        "uiP95Ms": 63,
+        "backendMedianMs": 29.2529585,
+        "uiMedianMs": 60,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "82c6e7f2-4838-43ff-9b8d-989c5498fd43",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 38.931084,
+        "uiP95Ms": 97,
+        "backendMedianMs": 37.875271,
+        "uiMedianMs": 93,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "82c6e7f2-4838-43ff-9b8d-989c5498fd43",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 38.319042,
+        "uiP95Ms": 81,
+        "backendMedianMs": 35.838749500000006,
+        "uiMedianMs": 80,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "82c6e7f2-4838-43ff-9b8d-989c5498fd43",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 44.091209,
+        "uiP95Ms": 131,
+        "backendMedianMs": 41.15325,
+        "uiMedianMs": 114,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "82c6e7f2-4838-43ff-9b8d-989c5498fd43",
+        "rows": 300000,
+        "seed": 282,
+        "tier": "long-strings"
+      },
+      "assessment": {
+        "qualified": true,
+        "failures": [],
+        "sampleCount": 100,
+        "backendP95Ms": 35.453917,
+        "uiP95Ms": 63,
+        "backendMedianMs": 31.7149165,
+        "uiMedianMs": 59,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

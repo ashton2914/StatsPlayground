@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/phase-smoke-fixtures-05/long.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-phase-smoke-05/long-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-phase-smoke-05/long",
+  "sourceTreeHash": "783d1e594a0e4e91184c1913472b766bea9785b3",
+  "tier": "long-strings",
+  "samples": 3,
+  "cacheMode": "warm"
+}

@@ -1,4 +1,13 @@
 {
+  "projectPersistence": {
+    "pending": "更改等待保存…",
+    "saving": "正在保存…",
+    "saved": "所有更改已保存",
+    "error": "更改未能保存。",
+    "readOnly": "只读",
+    "retry": "重试保存",
+    "closeError": "更改未能保存，项目仍保持打开。请重试保存后再关闭。"
+  },
   "graphNewUi": {
     "addLayerHint": "添加图形元素以开始绘图",
     "columns": "列",
@@ -392,6 +401,14 @@
     "projectFile": "未命名项目.spprj"
   },
   "history": {
+    "nativeReplayFailed": "无法撤销或重做此操作。",
+    "nativeLoadFailed": "无法加载历史记录",
+    "nativeSnapshotLoadFailed": "无法加载快照。",
+    "loadMore": "加载更多",
+    "nativeTableUpdate": "更新表“{{name}}”",
+    "nativeTable": "数据表",
+    "nativeArchived": "原项目历史记录",
+    "nativeUndone": "已撤销",
     "title": "历史记录",
     "empty": "暂无历史记录",
     "snapshot": "快照",
@@ -484,6 +501,7 @@
     "noLineage": "当前暂无可用的工作流谱系。"
   },
   "workspace": {
+    "destinationPublished": "副本已写入目标位置。",
     "discardUnsavedChanges": "放弃当前项目未保存的更改？",
     "directory": "目录",
     "datasourceLabel": "数据源: {{name}}",
@@ -513,7 +531,17 @@
     "statMax": "最大值: ",
     "statSum": "求和: ",
     "statCount": "计数: ",
+    "migrationTitle": "转换项目",
+    "migrationConfirm": "此项目使用旧格式。请创建转换后的副本再打开，原文件将保留。大项目的首次转换可能需要一些时间。",
+    "migrationCreateCopy": "创建转换副本",
+    "migrationChooseDestination": "保存转换后的项目",
+    "migratingProject": "正在转换项目…",
+    "migrationCancel": "取消转换",
+    "migrationCancelling": "正在取消…",
     "openingProject": "正在打开项目…",
+    "documentLoadFailed": "无法打开此内容，请重试。",
+    "directoryPageLoadFailed": "无法加载更多项目内容",
+    "retryDocumentLoad": "重试",
     "creatingSnapshot": "正在创建快照…",
     "restoringSnapshot": "正在恢复快照…",
     "importingSqlite": "正在导入 SQLite 数据库…",
@@ -524,6 +552,8 @@
     "importProgressTable": "表 {{i}}/{{total}}: {{name}}",
     "importProgressRows": "行",
     "createSnapshotTitle": "创建快照",
+    "resolveFailedOperation": "继续保存其他更改",
+    "resolveFailedOperationHint": "取消尚未应用的失败操作，继续保存后续更改。已保存的更改会保留。",
     "savingProject": "正在保存项目…",
     "readOnlyWhileSaving": "保存期间为只读",
     "savePhase": {
@@ -933,6 +963,9 @@
     "totalPercentage": "Total %"
   },
   "welcome": {
+    "recoverProject": "恢复未命名项目",
+    "recoverProjectHint": "之前的工作已保留。请选择要继续的项目，或新建项目。",
+    "untitledProject": "未命名项目",
     "subtitle": "轻量级 · 跨平台 · 开源数据分析工具",
     "newProject": "新建项目",
     "openProject": "打开项目",
@@ -1211,6 +1244,8 @@
     }
   },
   "dataTable": {
+    "pasteResultUnavailable": "无法确认粘贴结果。请重试保存以恢复状态。",
+    "pasteTargetChanged": "准备粘贴时表格视图发生了变化，请重试。",
     "loading": "加载中...",
     "type": {
       "VARCHAR": "文本",

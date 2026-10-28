@@ -46,94 +46,101 @@ impl<'a> FitModelService<'a> {
         &self,
         request: SaveFitModelColumnsRequest,
     ) -> Result<SaveFitModelColumnsResult, AppError> {
-        validate_confidence_level(request.confidence_level)?;
-        if request.metrics.is_empty() {
-            return Err(AppError::InvalidParam(
-                "at least one Fit Model metric must be selected".into(),
-            ));
-        }
-        let mut unique_metrics = std::collections::HashSet::new();
-        if request
-            .metrics
-            .iter()
-            .any(|metric| !unique_metrics.insert(metric.clone()))
-        {
-            return Err(AppError::InvalidParam(
-                "Fit Model save metrics must be unique".into(),
-            ));
-        }
-        let prefix = clean_model_name(&request.model_name)?;
-
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        let fit_input = prepare_fit_input(
-            &db,
-            &request.dataset_id,
-            request.expected_generation,
-            &request.response_column,
-            &request.terms,
-            request.centering_method,
-        )?;
-        let computation = fit_linear_model_with_diagnostics(fit_input, request.confidence_level)
-            .map_err(map_engine_error)?;
-        if !matches!(computation.result, FitModelResult::Fitted(_)) {
-            return Err(AppError::InvalidParam(
-                "Fit Model diagnostic columns require a computable fit".into(),
-            ));
-        }
-
-        let requested_names = request
-            .metrics
-            .iter()
-            .map(|metric| format!("{prefix} {}", metric_label(metric)))
-            .collect::<Vec<_>>();
-        let resolved_names =
-            db.resolve_valued_column_names(&request.dataset_id, &requested_names)?;
-        let columns = request
-            .metrics
-            .iter()
-            .zip(&requested_names)
-            .map(|(metric, name)| {
-                let values = computation
-                    .diagnostic_rows
-                    .iter()
-                    .map(|row| metric_value(row, metric).map(|value| (row.row_index, Some(value))))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| {
-                        AppError::InvalidParam(format!(
-                            "Fit Model metric is not estimable: {}",
-                            metric_label(metric)
-                        ))
-                    })?;
-                Ok(ValuedColumn {
-                    name: name.clone(),
-                    column_type: "DOUBLE".into(),
-                    values,
-                })
-            })
-            .collect::<Result<Vec<_>, AppError>>()?;
-        let (change_set_id, generation) = db.add_valued_columns_with_change_set(
-            &request.dataset_id,
-            &columns,
-            request.expected_generation,
-        )?;
-        Ok(SaveFitModelColumnsResult {
-            change_set_id,
-            generation,
-            columns: request
-                .metrics
-                .into_iter()
-                .zip(resolved_names)
-                .map(|(metric, column_name)| FitModelSavedColumn {
-                    metric,
-                    column_name,
-                })
-                .collect(),
-        })
+        let db = self.state.db.lock().map_err(|error| AppError::Database(error.to_string()))?;
+        save_columns_with(&db, request.clone(), |columns| db.add_valued_columns_with_change_set(&request.dataset_id, columns, request.expected_generation))
     }
+}
+
+pub(crate) fn save_columns_in_transaction(
+    db: &DuckDbEngine, request: &SaveFitModelColumnsRequest,
+) -> Result<SaveFitModelColumnsResult, AppError> {
+    save_columns_with(db, request.clone(), |columns| {
+        crate::services::table_delta_mutation::add_valued_columns_compact_in_transaction(db, &request.dataset_id, columns, request.expected_generation)
+    })
+}
+
+fn save_columns_with(
+    db: &DuckDbEngine, request: SaveFitModelColumnsRequest,
+    persist: impl FnOnce(&[ValuedColumn]) -> Result<(String, u64), AppError>,
+) -> Result<SaveFitModelColumnsResult, AppError> {
+    validate_confidence_level(request.confidence_level)?;
+    if request.metrics.is_empty() {
+        return Err(AppError::InvalidParam(
+            "at least one Fit Model metric must be selected".into(),
+        ));
+    }
+    let mut unique_metrics = std::collections::HashSet::new();
+    if request
+        .metrics
+        .iter()
+        .any(|metric| !unique_metrics.insert(metric.clone()))
+    {
+        return Err(AppError::InvalidParam(
+            "Fit Model save metrics must be unique".into(),
+        ));
+    }
+    let prefix = clean_model_name(&request.model_name)?;
+
+    let fit_input = prepare_fit_input(
+        db,
+        &request.dataset_id,
+        request.expected_generation,
+        &request.response_column,
+        &request.terms,
+        request.centering_method,
+    )?;
+    let computation = fit_linear_model_with_diagnostics(fit_input, request.confidence_level)
+        .map_err(map_engine_error)?;
+    if !matches!(computation.result, FitModelResult::Fitted(_)) {
+        return Err(AppError::InvalidParam(
+            "Fit Model diagnostic columns require a computable fit".into(),
+        ));
+    }
+
+    let requested_names = request
+        .metrics
+        .iter()
+        .map(|metric| format!("{prefix} {}", metric_label(metric)))
+        .collect::<Vec<_>>();
+    let resolved_names =
+        db.resolve_valued_column_names(&request.dataset_id, &requested_names)?;
+    let columns = request
+        .metrics
+        .iter()
+        .zip(&requested_names)
+        .map(|(metric, name)| {
+            let values = computation
+                .diagnostic_rows
+                .iter()
+                .map(|row| metric_value(row, metric).map(|value| (row.row_index, Some(value))))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!(
+                        "Fit Model metric is not estimable: {}",
+                        metric_label(metric)
+                    ))
+                })?;
+            Ok(ValuedColumn {
+                name: name.clone(),
+                column_type: "DOUBLE".into(),
+                values,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let (change_set_id, generation) = persist(&columns)?;
+    Ok(SaveFitModelColumnsResult {
+        change_set_id,
+        generation,
+        columns: request
+            .metrics
+            .into_iter()
+            .zip(resolved_names)
+            .map(|(metric, column_name)| FitModelSavedColumn {
+                metric,
+                column_name,
+            })
+            .collect(),
+    })
 }
 
 fn prepare_fit_input(

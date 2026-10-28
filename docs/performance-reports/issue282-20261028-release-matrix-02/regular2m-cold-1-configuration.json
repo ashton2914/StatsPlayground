@@ -1,0 +1,9 @@
+{
+  "fixturePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/.superpowers/sdd/2026-10-16-issue-282-persistent-project/release-matrix-fixtures-02/regular2m.spprj",
+  "profilePath": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-02/regular2m-profile.json",
+  "reportRoot": "/Users/ashton/git/ashton2914/StatsPlayground.worktrees/282-persistent-project/docs/performance-reports/issue282-20261028-release-matrix-02/regular2m-cold-1",
+  "sourceTreeHash": "f151e9d27e10b51a8c574c051c3cc453e5f6e614",
+  "tier": "regular",
+  "samples": 1,
+  "cacheMode": "cold"
+}

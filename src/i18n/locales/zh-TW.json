@@ -1,4 +1,13 @@
 {
+  "projectPersistence": {
+    "pending": "變更等待儲存…",
+    "saving": "正在儲存…",
+    "saved": "所有變更已儲存",
+    "error": "無法儲存變更。",
+    "readOnly": "唯讀",
+    "retry": "重試儲存",
+    "closeError": "無法儲存變更，專案仍保持開啟。請重試儲存後再關閉。"
+  },
   "graphNew": {
     "jitterBudget": "抖動計算超出資源預算；目前顯示完整原始散點。", "pointRadius": "點半徑（像素）" },
   "graphNewUi": {
@@ -349,6 +358,14 @@
     "projectFile": "未命名專案.spprj"
   },
   "history": {
+    "nativeReplayFailed": "無法復原或重做此操作。",
+    "nativeLoadFailed": "無法載入歷史記錄",
+    "nativeSnapshotLoadFailed": "無法載入快照。",
+    "loadMore": "載入更多",
+    "nativeTableUpdate": "更新資料表「{{name}}」",
+    "nativeTable": "資料表",
+    "nativeArchived": "原專案歷程記錄",
+    "nativeUndone": "已復原",
     "title": "歷史紀錄",
     "empty": "尚無歷史紀錄",
     "snapshot": "快照",
@@ -440,6 +457,7 @@
     "noLineage": "目前沒有可用的工作流程譜系。"
   },
   "workspace": {
+    "destinationPublished": "副本已寫入目標位置。",
     "directory": "目錄",
     "datasourceLabel": "資料來源：{{name}}",
     "datasourceDeleted": "資料來源已刪除",
@@ -468,7 +486,17 @@
     "statMax": "最大值：",
     "statSum": "總和：",
     "statCount": "計數：",
+    "migrationTitle": "轉換專案",
+    "migrationConfirm": "此專案使用舊格式。請建立轉換後的副本再開啟，原始檔案將保留。大型專案的首次轉換可能需要一些時間。",
+    "migrationCreateCopy": "建立轉換副本",
+    "migrationChooseDestination": "儲存轉換後的專案",
+    "migratingProject": "正在轉換專案…",
+    "migrationCancel": "取消轉換",
+    "migrationCancelling": "正在取消…",
     "openingProject": "正在開啟專案…",
+    "documentLoadFailed": "無法開啟此內容，請重試。",
+    "directoryPageLoadFailed": "無法載入更多專案內容",
+    "retryDocumentLoad": "重試",
     "creatingSnapshot": "正在建立快照…",
     "restoringSnapshot": "正在還原快照…",
     "importingSqlite": "正在匯入 SQLite 資料庫…",
@@ -479,6 +507,8 @@
     "importProgressTable": "資料表 {{i}}/{{total}}：{{name}}",
     "importProgressRows": "列",
     "createSnapshotTitle": "建立快照",
+    "resolveFailedOperation": "繼續儲存其他變更",
+    "resolveFailedOperationHint": "取消尚未套用的失敗操作，繼續儲存後續變更。已儲存的變更會保留。",
     "savingProject": "正在儲存專案…",
     "readOnlyWhileSaving": "儲存期間為唯讀",
     "savePhase": {
@@ -862,6 +892,9 @@
     "totalPercentage": "Total %"
   },
   "welcome": {
+    "recoverProject": "恢復未命名專案",
+    "recoverProjectHint": "先前的工作已保留。請選擇要繼續的專案，或建立新專案。",
+    "untitledProject": "未命名專案",
     "subtitle": "輕量化 · 跨平台 · 開放原始碼資料分析工具",
     "newProject": "新增專案",
     "openProject": "開啟專案",
@@ -1140,6 +1173,8 @@
     }
   },
   "dataTable": {
+    "pasteResultUnavailable": "無法確認貼上結果。請重試儲存以恢復狀態。",
+    "pasteTargetChanged": "準備貼上時表格檢視發生了變化，請重試。",
     "loading": "載入中...",
     "type": {
       "VARCHAR": "文字",

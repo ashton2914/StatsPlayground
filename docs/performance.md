@@ -1464,3 +1464,145 @@ Measured stage values:
 Artifact:
 
 - [task-1-benchmark.json](../.superpowers/sdd/2026-09-17-10m-row-table-random-navigation/task-1-benchmark.json)
+
+## Persistent project v5 qualification
+
+The v5 feature remains disabled by default. The child-process recovery and
+bulk-work tests are correctness evidence, not a latency qualification.
+Build and exercise the probes with:
+
+```sh
+cargo build --release --manifest-path src-tauri/Cargo.toml --features project-v5,perf-harness --example project_persistence_v5
+cargo test --manifest-path src-tauri/Cargo.toml --features project-v5,perf-harness --test project_v5_recovery --test project_v5_forbidden_work
+npm run test:project-v5-budget
+node scripts/runProjectV5Budget.mjs collect --binary /absolute/path/to/target/release/examples/project_persistence_v5 --fixture /absolute/path/to/new-fixture.spprj --output /absolute/path/to/new-report-directory --rows 300000 --columns 20 --samples 100
+node scripts/runProjectV5Budget.mjs assess --report /absolute/path/to/raw/catalog.json --output /absolute/path/to/new-assessment.json
+```
+
+Collection refuses an existing fixture or report directory. Every raw result and
+process status is written once; failures remain available for inspection. The
+binary embeds a fingerprint over tracked and untracked source, tests, scripts,
+and build configuration. Collection compares this fingerprint before seeding,
+after each process and against the current source. Measurement output under
+`docs/` is excluded from this source fingerprint. A source change requires a
+rebuild and a new report directory; failed results must not be silently replaced.
+
+The native probe measures project open plus the first catalog page, the actual
+500-row navigation route, scrolling, committed cell edits, and unchanged close.
+Each sample verifies logical data and metadata outside the timing interval;
+edit verification also closes and reopens the database. Actual bulk boundaries
+count archive rows restored, archive-writer calls, whole-database copies, coarse
+history before-images and full anchor rebuilds. Independent positive controls
+must increment every counter. Committed and uncommitted crash probes are killed
+in real child processes; fresh processes verify exact table/document/history
+state and idempotent receipts.
+
+On macOS, disk bytes are `proc_pid_rusage(RUSAGE_INFO_V2)` process deltas and RSS
+is sampled using `proc_pidinfo` every 5 ms plus endpoints. Reported peak RSS is
+the observed sampling peak. Unsupported platforms report unavailable metrics.
+WAL size is a file length, not an estimate of disk writes. On macOS, explicit
+CHECKPOINT boundaries separately record proc_pid_rusage write-byte deltas; a
+real committed-edit/close positive control verifies a nonzero observation. This
+is process-attributed IO during explicit checkpoints, not file growth or an
+observation of implicit engine shutdown writes. Unsupported checkpoint metrics,
+rendered UI readiness, frontend aggregate retention and SQL profiling
+remain unavailable in the native-only collector. They are emitted as null or
+explicitly unverified; assessment fails closed. Repeated same-process opens are
+warm observations; independent process IDs alone do not demonstrate cold OS
+cache. No cold-cache or end-user latency qualification is currently claimed.
+
+Final qualification requires one frozen release source/build, 300k/2M/10M by
+20-column fixtures, many-document and long-string tiers, five independently
+verified cold opens, and at least 100 warm samples per scenario. Budgets are
+1 s cold directory median, 500 ms warm directory P95, 300 ms first window,
+100 ms scroll, 200 ms durable edit and 500 ms unchanged close. Backend and
+visible UI timings must be reported separately, with checkpoint outliers and
+cache method retained.
+
+The [2026-10-26 collector smoke](performance-reports/issue282-20261026-native-collector-smoke-01/assessment.json)
+retains two debug samples per scenario on a 30k × 20 fixture. All ten logical
+checks passed and all five bulk-work counters stayed zero. Its assessment is
+**unqualified** (debug build, insufficient samples and missing UI/profiling/
+checkpoint/retention observations). It is collector validation only. Source
+fingerprint: `5ebd4ebb151afd71c2db62437e002feae47b2cfc`. Whole-process write
+counts were nonzero even for catalog and close; they include temporary database
+lifecycle work. A separate untimed catalog probe retained the same SHA-256 of
+the 20,983,808-byte project file before/after, recorded in the raw directory.
+This file-hash verification is a diagnostic control, never part of ordinary
+project opening or its measured interval.
+
+### Explicit native project UI probe
+
+Build the production App with `VITE_PROJECT_V5_BENCHMARK=1`, and build the Tauri
+bundle and `project_persistence_v5` example with the same environment variable
+and `project-v5,perf-harness` features. Use a separate bundle identifier/product
+name for this probe. The flag is required in release builds too; ordinary builds
+do not activate the runner. Runtime configuration is additionally required.
+
+`node scripts/runProjectV5UiBudget.mjs` accepts absolute `--harness`, `--app`
+(the bundle executable), `--output` and `--fixtures` paths. Both output and fixture
+roots must be new. Defaults are 100 samples and regular 300k/2M/10M × 20 fixtures,
+plus 500 extra tables / 10,000 extra report documents and a 300k × 20 fixture
+with 512-character strings in columns c1–c19. `--cases regular300k` selects a
+smaller diagnostic run; `--samples 2 --allow-debug` explicitly permits an
+unqualified smoke run. The fixture seeding stage performs the initial full write.
+The host checks the embedded source fingerprint before seeding and after each
+process, preserves raw SQL profiles and native reports, and stops on logical
+failure. For each regular fixture, five independent cold directory processes run before
+warm edits. `--cold-opens 0` explicitly skips them and leaves the matrix
+unqualified.
+
+Catalog readiness ends when the bounded first page is visible. In the many-document
+fixture reports precede tables; the runner pages to Data.sptb in an explicitly
+untimed setup step after that catalog measurement. It still measures all five
+warm scenarios with the same sample counts; first-page opening does not include
+that later metadata traversal. Cold catalog samples do not page to the table.
+
+The real App opens the catalog, selects Data.sptb, jumps to distant uncached rows,
+edits through the formula bar, waits for automatic durability and closes through
+the project lifecycle. Exact visible values and selection must be correct before
+two animation frames complete the UI observation. Native spans include the
+foreground query, edit acknowledgement/refresh and close paths; prefetch is
+excluded. Native timing version2 records monotonic interval endpoints and uses
+their union for `backendMs`, counting overlapping invocations once.
+`backendAggregateMs` retains the sum of invocation durations and
+`backendOverlapMs` exposes their overlap; these are elapsed intervals, not CPU
+sampling. The assessor recomputes all three values from the raw intervals and
+rejects missing/inconsistent proof or mixed timing versions. Earlier sum-based
+reports remain unchanged. Reply size counts serialized native payloads, excluding IPC envelopes.
+RSS is the sampled native main-process peak and excludes WebContent. Retained
+cache bytes use the existing UTF-16 payload estimate. WAL bytes are the actual
+post-operation file size; an absent WAL is zero. Two animation frames are an
+application readiness observation, not compositor presentation timing.
+
+Keep the dedicated native window visible during sampling. Scheduling stalls and
+checkpoint outliers stay in the raw samples. The runner terminates only its own
+process after reports; failed fixtures and WAL remain available for diagnosis.
+The initial debug UI smokes exposed a cached scroll with no native observation
+and a duplicate Enter/blur formula commit. Both failed reports remain under
+`docs/performance-reports/issue282-20261027-ui-smoke-{01,02}`; neither qualifies
+performance. Cold-cache calibration using F_GLOBAL_NOCACHE also remains
+unqualified and its original flag was restored.
+
+Cold preparation runs in the native begin command after fixture/profile validation
+and after the untimed setup project has fully closed. On macOS it maps only the
+owned fixture, calls `msync(MS_SYNC|MS_INVALIDATE)`, then requires `mincore` to
+report zero resident pages before starting IO/RSS/timing observations. No global
+cache or service settings change. Other platforms reject this cold method.
+Each cold sample records device/inode, size/page count and before/after residency.
+Qualification also requires actual positive disk reads; the cold label alone is
+insufficient. Host aggregation retains all five individual process reports.
+
+The isolated raw-read calibration observed 65,536 and 41,431,040 physical bytes
+with zero pre-read resident pages, followed by zero-byte warm controls (see
+`issue282-20261027-cold-mincore-read-control-01.json`). An earlier CLI catalog
+control remained unqualified because its pre-timing fixture validation already
+warmed metadata; that preparation order is avoided by native per-sample eviction.
+[Apple's mman.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/mman.h)
+and [msync implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_mman.c)
+define the mapping flags and invalidation behavior. This calibration is separate
+from actual cold App timings, which still require matching release reports.
+
+## Issue282 final frozen native qualification (2026-10-28)
+
+Release source `dd76cb32bc150d708b34d80a0800bff5344ee31b` qualifies on macOS:2500 warm operations and15 independent cold opens, all original latency/logical/foreground gates pass. See [full summary, methods, I/O/checkpoint ranges and raw reports](performance-reports/issue282-20261028-release-matrix-09/README.md). Matrix08 remains unqualified due to one direct native focus loss; all historical raw failures are retained. Default enablement, human native acceptance, Windows/Linux and publication are pending.

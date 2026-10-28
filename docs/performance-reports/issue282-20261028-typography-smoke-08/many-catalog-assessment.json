@@ -1,0 +1,15 @@
+{
+  "qualified": false,
+  "failures": [
+    "release source/build/engine provenance required",
+    "at least 100 warm samples required",
+    "native latency exceeds budget",
+    "UI latency exceeds budget"
+  ],
+  "sampleCount": 3,
+  "backendP95Ms": 743.820709,
+  "uiP95Ms": 771,
+  "backendMedianMs": 731.042834,
+  "uiMedianMs": 759,
+  "budgetMs": 500
+}

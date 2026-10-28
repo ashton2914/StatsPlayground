@@ -16,3 +16,5 @@ pub mod project_commands;
 pub mod stats_commands;
 pub mod table_commands;
 pub mod tabulate_commands;
+
+pub mod project_ui_probe_commands;

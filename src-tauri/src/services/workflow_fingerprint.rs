@@ -115,6 +115,7 @@ fn strip_runtime_fields(value: Value) -> Value {
                             | "createdAt"
                             | "updatedAt"
                             | "executionTimestamp"
+                            | "executedAt"
                             | "elapsedTime"
                             | "elapsedMs"
                             | "runtimeState"
@@ -211,4 +212,15 @@ mod tests {
             table_content_hash(&columns, &[vec![Value::Null], vec![Value::Null]]).unwrap()
         );
     }
+    #[test]
+    fn hypothesis_execution_audit_time_does_not_change_validation_hash() {
+        let first=json!({"primaryResult":{"estimate":1.25},"methodAudit":{"methodVersion":"1","executedAt":"100"}});
+        let later=json!({"primaryResult":{"estimate":1.25},"methodAudit":{"methodVersion":"1","executedAt":"101"}});
+        assert_eq!(canonical_document_hash(&first).unwrap(),canonical_document_hash(&later).unwrap(),"execution time is provenance, not a statistical result change");
+        let changed=json!({"primaryResult":{"estimate":2.5},"methodAudit":{"methodVersion":"1","executedAt":"101"}});
+        assert_ne!(canonical_document_hash(&first).unwrap(),canonical_document_hash(&changed).unwrap());
+        let method_changed=json!({"primaryResult":{"estimate":1.25},"methodAudit":{"methodVersion":"2","executedAt":"101"}});
+        assert_ne!(canonical_document_hash(&first).unwrap(),canonical_document_hash(&method_changed).unwrap());
+    }
+
 }

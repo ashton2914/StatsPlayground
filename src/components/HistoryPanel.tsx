@@ -1,3 +1,6 @@
+import {useProjectDataSnapshotStore} from "@/stores/useProjectDataSnapshotStore";
+import {useProjectHistoryStore} from "@/stores/useProjectHistoryStore";
+import {useDataStore} from "@/stores/useDataStore";
 import { useState, useRef, useEffect, useCallback, type MutableRefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { useHistoryStore } from "@/stores/useHistoryStore";
@@ -39,14 +42,31 @@ export function HistoryPanel({
   const { t } = useTranslation();
   const locale = useLocaleStore((s) => s.locale);
   const dirty = useProjectStore((s) => s.dirty);
+  const persistence = useProjectStore((s) => s.persistence);
+  const persistenceRevision = useProjectStore((s) => s.persistenceSnapshot?.committedRevision);
+  const nativeHistory=useProjectHistoryStore();
+  const nativeSnapshots=useProjectDataSnapshotStore();
+  const datasets=useDataStore(s=>s.datasets);
+  useEffect(()=>{
+    if(!persistence) return;
+    const snapshot=persistence.snapshot();
+    useProjectHistoryStore.getState().install(snapshot.epoch,persistenceRevision??snapshot.committedRevision);
+    void useProjectHistoryStore.getState().loadNextPage();
+    useProjectDataSnapshotStore.getState().install(snapshot.epoch,persistenceRevision??snapshot.committedRevision);
+    void useProjectDataSnapshotStore.getState().loadNextPage();
+    return ()=>{useProjectHistoryStore.getState().reset();useProjectDataSnapshotStore.getState().reset();};
+  },[persistence,persistenceRevision]);
   const readOnly = useProjectStore((s) => s.readOnly);
   const {
     history,
-    snapshots,
+    snapshots:legacySnapshots,
     currentIdx,
     createSnapshot,
     jumpTo,
   } = useHistoryStore();
+  const snapshots=persistence?nativeSnapshots.items.map(item=>({id:item.id,name:item.name,timestamp:item.createdAt})):legacySnapshots;
+  const [snapshotError,setSnapshotError]=useState<string|null>(null);
+  const snapshotActionRef=useRef(false);
   const persistedHistoryPct = useLayoutPreferencesStore((state) => state.sizes[HISTORY_STACK_PANEL_ID]);
   const setPanelSize = useLayoutPreferencesStore((state) => state.setPanelSize);
   const resetPanelSize = useLayoutPreferencesStore((state) => state.resetPanelSize);
@@ -98,7 +118,8 @@ export function HistoryPanel({
     resetPanelSize(HISTORY_STACK_PANEL_ID);
   }, [resetPanelSize]);
 
-  const handleRenameSubmit = (id: string) => {
+  const handleRenameSubmit = async (id: string) => {
+    if(snapshotActionRef.current)return;
     if (readOnly) {
       setRenamingId(null);
       return;
@@ -136,17 +157,22 @@ export function HistoryPanel({
       }
       return;
     }
-    if (resolved.basename !== snap.name) {
-      const { renameSnapshot } = useHistoryStore.getState();
-      renameSnapshot(id, resolved.basename);
-    }
     setRenamingId(null);
+    if (resolved.basename !== snap.name) {
+      snapshotActionRef.current=true;setSnapshotError(null);
+      try {await useHistoryStore.getState().renameSnapshot(id,resolved.basename);}
+      catch(error){setSnapshotError(String(error));}
+      finally {snapshotActionRef.current=false;}
+    }
   };
 
   const handleCreateSnapshot = async () => {
-    if (readOnly) return;
+    if (readOnly||snapshotActionRef.current) return;
+    snapshotActionRef.current=true;setSnapshotError(null);
     setBusyMessage(t("workspace.creatingSnapshot"));
-    const unlisten = await listen<{
+    let unlisten=()=>{};
+    try {
+      unlisten = await listen<{
       datasetIndex: number;
       datasetTotal: number;
       datasetName: string;
@@ -155,10 +181,11 @@ export function HistoryPanel({
       if (datasetTotal > 0 && datasetIndex < datasetTotal) {
         setBusyMessage(`${t("workspace.creatingSnapshot")} ${t("workspace.importProgressTable", { i: datasetIndex + 1, total: datasetTotal, name: datasetName })}`);
       }
-    });
-    try {
+      });
       await createSnapshot();
-    } finally {
+    } catch(error) {setSnapshotError(String(error));}
+    finally {
+      snapshotActionRef.current=false;
       unlisten();
       setBusyMessage(null);
     }
@@ -191,10 +218,24 @@ export function HistoryPanel({
       <div className="history-section" style={{ flex: `0 0 ${historyPct}%` }}>
         <div className="history-section-header">
           <h3>{t("history.title")}</h3>
-          <span className="history-count">{history.filter(e => e.description !== "__init__").length}</span>
+          <span className="history-count">{persistence?`${nativeHistory.items.length}${nativeHistory.nextCursor?"+":""}`:history.filter(e => e.description !== "__init__").length}</span>
         </div>
         <div className="history-list">
-          {history.filter(e => e.description !== "__init__").length === 0 ? (
+          {persistence? <>
+            {nativeHistory.items.map(entry=>(
+              <div key={entry.id} className="history-item">
+                <div className="history-item-body">
+                  <span className="history-item-desc">{entry.operation==="archived"?entry.description:t(entry.operation==="create_table"?"history.newTable":entry.operation==="delete_table"?"history.deleteTable":"history.nativeTableUpdate",{name:datasets.find(dataset=>dataset.id===entry.datasetId)?.name??entry.datasetName??t("history.nativeTable")})}</span>
+                  {entry.operation==="archived"&&<span className="history-item-time" title={entry.timestamp?formatTime(entry.timestamp):undefined}>{t("history.nativeArchived")}</span>}
+                  {!entry.applied&&<span className="history-item-time">{t("history.nativeUndone")}</span>}
+                </div>
+              </div>
+            ))}
+            {nativeHistory.loading&&<div role="status">{t("common.loading")}</div>}
+            {nativeHistory.error&&<div role="alert">{t("history.nativeLoadFailed")} <button type="button" onClick={()=>void nativeHistory.loadNextPage()}>{t("workspace.retryDocumentLoad")}</button></div>}
+            {!nativeHistory.loading&&!nativeHistory.error&&nativeHistory.items.length===0&&<div className="empty-hint">{t("history.empty")}</div>}
+            {!nativeHistory.error&&nativeHistory.nextCursor&&<button type="button" disabled={nativeHistory.loading} onClick={()=>void nativeHistory.loadNextPage()}>{t("history.loadMore")}</button>}
+          </>:history.filter(e => e.description !== "__init__").length === 0 ? (
             <div className="empty-hint">{t("history.empty")}</div>
           ) : (
             history.filter(e => e.description !== "__init__").map((entry) => {
@@ -256,6 +297,9 @@ export function HistoryPanel({
           </button>
         </div>
         <div className="snapshot-list">
+          {snapshotError&&<div role="alert">{snapshotError}</div>}
+          {persistence&&nativeSnapshots.loading&&<div role="status">{t("common.loading")}</div>}
+          {persistence&&nativeSnapshots.error&&<div role="alert">{t("history.nativeSnapshotLoadFailed",{defaultValue:"Could not load snapshots."})} <button type="button" onClick={()=>void nativeSnapshots.loadNextPage()}>{t("workspace.retryDocumentLoad")}</button></div>}
           {snapshots.length === 0 ? (
             <div className="empty-hint">{t("history.snapshotEmpty")}</div>
           ) : (
@@ -300,6 +344,7 @@ export function HistoryPanel({
               </div>
             ))
           )}
+          {persistence&&nativeSnapshots.nextCursor&&!nativeSnapshots.error&&<button type="button" disabled={nativeSnapshots.loading} onClick={()=>void nativeSnapshots.loadNextPage()}>{t("history.loadMore")}</button>}
         </div>
       </div>
 

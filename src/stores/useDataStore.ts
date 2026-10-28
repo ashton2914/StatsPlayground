@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { DatasetMeta } from "@/types/data";
+import {useProjectStore} from "./useProjectStore";
 import { dataService } from "@/services/dataService";
 
 interface SelectionStats {
@@ -48,6 +49,8 @@ interface DataStore {
   setStatusInfo: (info: StatusInfo | null) => void;
 }
 
+let refreshSequence=0;
+
 export const useDataStore = create<DataStore>((set) => ({
   activeDatasetId: null,
   datasets: [],
@@ -56,7 +59,13 @@ export const useDataStore = create<DataStore>((set) => ({
   setActiveDataset: (id) => set({ activeDatasetId: id }),
 
   refreshDatasets: async () => {
+    const {persistence:owner,project}=useProjectStore.getState();
+    const revision=owner?.snapshot().committedRevision;
+    const request=++refreshSequence;
     const datasets = await dataService.listDatasets();
+    const current=useProjectStore.getState();
+    if(current.persistence!==owner||(!owner&&current.project!==project)||request!==refreshSequence
+      ||owner?.snapshot().committedRevision!==revision) return;
     set({ datasets });
   },
 

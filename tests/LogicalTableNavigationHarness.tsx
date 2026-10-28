@@ -1,3 +1,4 @@
+import {createProjectPersistenceCoordinator} from "../src/projectPersistence/coordinator";
 import { StrictMode, useEffect, useRef, useState } from "react";
 
 import { DataTableView } from "../src/components/DataTableView";
@@ -215,9 +216,15 @@ interface LogicalTableNavigationHarnessProps {
   delayMutationDescriptors?: boolean;
   reportZeroColumnsOnDelete?: boolean;
   strictMode?: boolean;
+  nativeCellAcknowledgement?: boolean;
+  holdNativeMutationPrefetch?: boolean;
+  valuePadding?: number;
+  nativeHistoryReceipt?: boolean;
 }
 
 interface NavigationRequestObservation {
+  count: number;
+  generation: number;
   requestId: string;
   start: number;
   sessionId: string | null;
@@ -245,6 +252,10 @@ export function LogicalTableNavigationHarness({
   delayMutationDescriptors = false,
   reportZeroColumnsOnDelete = false,
   strictMode = false,
+  nativeCellAcknowledgement = false,
+  holdNativeMutationPrefetch = false,
+  valuePadding = 0,
+  nativeHistoryReceipt = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
@@ -260,6 +271,7 @@ export function LogicalTableNavigationHarness({
   const [dataset, setDataset] = useState(() => createDataset(rowCount, columnCount));
   const [navigationRequestStarts, setNavigationRequestStarts] = useState<number[]>([]);
   const [resolvedNavigationRequestStarts, setResolvedNavigationRequestStarts] = useState<number[]>([]);
+  const [allResolvedNavigationStarts,setAllResolvedNavigationStarts]=useState<number[]>([]);
   const [cancelledNavigationRequestStarts, setCancelledNavigationRequestStarts] = useState<number[]>([]);
   const [navigationRequestSessionIds, setNavigationRequestSessionIds] = useState<string[]>([]);
   const [navigationRequestObservations, setNavigationRequestObservations] = useState<NavigationRequestObservation[]>([]);
@@ -277,6 +289,7 @@ export function LogicalTableNavigationHarness({
     generation: number;
   }>>([]);
   const [refreshDatasetsCalls, setRefreshDatasetsCalls] = useState(0);
+  const [windowReadRanges,setWindowReadRanges]=useState<Array<{start:number;count:number;generation:number|undefined}>>([]);
   const [scopedMutationRequests, setScopedMutationRequests] = useState<string[]>([]);
   const [releaseAttempts, setReleaseAttempts] = useState(0);
   const [cancelAttempts, setCancelAttempts] = useState(0);
@@ -446,6 +459,9 @@ export function LogicalTableNavigationHarness({
     });
     useTableViewportStore.setState({ ...previousViewportState, byDataset: {} });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
+    if(nativeCellAcknowledgement) useProjectStore.getState().installPersistence(createProjectPersistenceCoordinator({
+      projectId:"native-cell-fixture",epoch:42,committedRevision:0,now:()=>0,newOperationId:()=>"unused",setTimer:()=>0,clearTimer:()=>{},transport:async()=>{throw Error("cell fixture projects the native acknowledgement directly");},
+    }));
     useHistoryStore.setState({ ...previousHistoryState, historyRevision: 0, historyError: null, pendingRestore: null });
     useTableZoomStore.setState({ zoom });
 
@@ -461,6 +477,7 @@ export function LogicalTableNavigationHarness({
     dataService.queryTableWindow = async ({ start, count, filters, generation }) => {
       const effectiveStart = typeof start === "number" ? start : 0;
       const effectiveCount = typeof count === "number" ? count : 500;
+      setWindowReadRanges(previous=>[...previous,{start:effectiveStart,count:effectiveCount,generation}]);
       setTableWindowRequests((previous) => [
         ...previous,
         { start: effectiveStart, generation },
@@ -478,7 +495,7 @@ export function LogicalTableNavigationHarness({
       } else if (effectiveStart > 0) {
         await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS));
       }
-      return buildWindow(
+      const result = buildWindow(
         sortModeRef.current === "value-desc"
           ? SORTED_TOTAL_ROWS
           : mode === "none"
@@ -493,8 +510,11 @@ export function LogicalTableNavigationHarness({
         datasetRef.current.generation,
         naturalRowIdsRef.current ?? undefined,
       );
+      if(valuePadding) for(const row of result.rows) row[row.length-1]="x".repeat(valuePadding);
+      return result;
     };
     dataService.queryTableNavigationWindow = async (request) => {
+      if(holdNativeMutationPrefetch&&request.generation>GENERATION&&request.requestId.startsWith("table-nav-prefetch:")) return new Promise<never>((_resolve,reject)=>{navigationCancellersRef.current.set(request.requestId,()=>reject(new Error("Cancelled: held prefetch")));});
       navigationRequestStartsByIdRef.current.set(request.requestId, request.start);
       setNavigationRequestStarts((previous) => [...previous, request.start]);
       setNavigationRequestSessionIds((previous) => [...previous, request.sessionId ?? "natural"]);
@@ -506,6 +526,7 @@ export function LogicalTableNavigationHarness({
         ...previous,
         {
           requestId: request.requestId,
+          count: request.count,generation:request.generation,
           start: request.start,
           sessionId: request.sessionId ?? null,
           kind: request.requestId.startsWith("table-nav-prefetch:") ? "prefetch" : "active",
@@ -557,6 +578,8 @@ export function LogicalTableNavigationHarness({
         sortMode,
         naturalRowIdsRef.current ?? undefined,
       );
+      if(valuePadding) for(const row of result.rows) row[row.length-1]="x".repeat(valuePadding);
+      setAllResolvedNavigationStarts(previous=>[...previous,request.start]);
       if (!request.requestId.startsWith("table-nav-prefetch:")) {
         setResolvedNavigationRequestStarts((previous) => [...previous, request.start]);
       }
@@ -644,6 +667,13 @@ export function LogicalTableNavigationHarness({
     dataService.getColumnDisplayProps = async () => [];
     dataService.updateCell = async (_datasetId, rowId, columnName, value) => {
       editsRef.current.set(`${rowId}:${columnName}`, value === "" ? null : value);
+      if(nativeCellAcknowledgement) {
+        const next={...datasetRef.current,generation:datasetRef.current.generation+1};datasetRef.current=next;setDataset(next);
+        useDataStore.getState().applyDatasetMutationMeta(next.id,{generation:next.generation});
+        if(nativeHistoryReceipt) useHistoryStore.getState().recordCommittedTableMutation({id:`native-cell-${next.generation}`,datasetId:next.id,operation:"update_cells",applied:true,generation:next.generation});
+        // A native receipt projects metadata before the caller finishes refreshing.
+        await new Promise(resolve=>setTimeout(resolve,30));
+      }
     };
     dataService.addRows = async (_datasetId, count, beforeRowId, expectedGeneration) => {
       setAddRowsRequests((previous) => [
@@ -799,6 +829,8 @@ export function LogicalTableNavigationHarness({
     };
   }, [
     columnCount,
+    valuePadding,
+    nativeHistoryReceipt,
     delayDatasetRefresh,
     delayMutationDescriptors,
     failDatasetRefresh,
@@ -807,6 +839,7 @@ export function LogicalTableNavigationHarness({
     failNavigationInvalidation,
     failSessionRelease,
     initialFilterMode,
+    nativeCellAcknowledgement,
     rejectCancelledNavigation,
     reportZeroColumnsOnDelete,
     rowCount,
@@ -841,6 +874,7 @@ export function LogicalTableNavigationHarness({
       <div data-testid="dataset-count">{useDataStore.getState().datasets.length}</div>
       <div data-testid="unrelated-dataset-generation">{unrelatedDataset?.generation ?? -1}</div>
       <div data-testid="add-rows-requests">{JSON.stringify(addRowsRequests)}</div>
+      <div data-testid="window-read-ranges">{JSON.stringify(windowReadRanges)}</div>
       <div data-testid="table-window-requests">{JSON.stringify(tableWindowRequests)}</div>
       <div data-testid="refresh-datasets-calls">{refreshDatasetsCalls}</div>
       <div data-testid="scoped-mutation-requests">{scopedMutationRequests.join("|")}</div>
@@ -850,6 +884,7 @@ export function LogicalTableNavigationHarness({
       <div data-testid="latest-history-action">{JSON.stringify(latestHistoryAction)}</div>
       <div data-testid="mutation-pending">{pendingAction ?? ""}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
+      <div data-testid="nav-all-resolved-starts">{allResolvedNavigationStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-cancelled-starts">{cancelledNavigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-session-ids">{navigationRequestSessionIds.join(",")}</div>

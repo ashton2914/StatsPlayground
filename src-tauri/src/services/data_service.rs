@@ -732,7 +732,7 @@ impl<'a> DataService<'a> {
         validate_portable_basename(name, "Dataset name").map_err(AppError::InvalidParam)
     }
 
-    fn resolve_create_dataset_name(
+    pub(crate) fn resolve_create_dataset_name(
         db: &crate::engine::duckdb_engine::DuckDbEngine,
         requested_name: &str,
     ) -> Result<String, AppError> {
@@ -748,7 +748,7 @@ impl<'a> DataService<'a> {
         Ok(resolved)
     }
 
-    fn validate_display_without_index(
+    pub(crate) fn validate_display_without_index(
         display: &ColumnDisplayPropsWithoutIndex,
     ) -> Result<(), AppError> {
         if let Some(width) = display.width {
@@ -838,10 +838,19 @@ impl<'a> DataService<'a> {
         db.query_table(dataset_id, page, page_size, sort_by, sort_order)
     }
 
+    fn ensure_project_navigation(&self, dataset_id: &str, generation: u64) -> Result<(), AppError> {
+        let database = self.state.project_database.read().map_err(|e| AppError::Database(e.to_string()))?.clone();
+        if let Some(database) = database { database.ensure_navigation(dataset_id, generation)?; }
+        Ok(())
+    }
+
     pub fn query_table_window(
         &self,
         request: &TableWindowRequest,
     ) -> Result<TableWindowResult, AppError> {
+        if request.sort.is_none() && request.filters.is_empty() {
+            self.ensure_project_navigation(&request.dataset_id, request.generation)?;
+        }
         let db = self
             .state
             .db
@@ -854,6 +863,9 @@ impl<'a> DataService<'a> {
         &self,
         request: &TableNavigationRequest,
     ) -> Result<TableNavigationResult, AppError> {
+        if request.sort.is_none() && request.filters.is_empty() {
+            self.ensure_project_navigation(&request.dataset_id, request.generation)?;
+        }
         let navigation = self
             .state
             .table_navigation
@@ -861,6 +873,14 @@ impl<'a> DataService<'a> {
             .map_err(|error| AppError::Database(error.to_string()))?
             .clone();
         navigation.query_table_navigation_window(request)
+    }
+
+    pub fn query_table_navigation_row_ids(&self, request:&TableNavigationRequest) -> Result<TableNavigationResult,AppError> {
+        if request.sort.is_none() && request.filters.is_empty() {
+            self.ensure_project_navigation(&request.dataset_id,request.generation)?;
+        }
+        let navigation=self.state.table_navigation.read().map_err(|error|AppError::Database(error.to_string()))?.clone();
+        navigation.query_table_navigation_row_ids(request)
     }
 
     #[cfg(any(test, feature = "perf-harness"))]
@@ -1090,10 +1110,9 @@ impl<'a> DataService<'a> {
         Ok(self.create_managed_table_outcome(request)?.dataset)
     }
 
-    pub fn create_managed_table_outcome(
-        &self,
-        request: &CreateManagedTableRequest,
-    ) -> Result<ManagedTableCreateResult, AppError> {
+    pub(crate) fn prepare_managed_table(
+        db:&crate::engine::duckdb_engine::DuckDbEngine,request:&CreateManagedTableRequest,
+    ) -> Result<(CreateTableFromRowsRequest,Vec<ColumnDisplayProps>,Vec<ManagedTableCreateColumn>),AppError> {
         if request.columns.is_empty() {
             if !request.rows.is_empty() {
                 return Err(AppError::InvalidParam(
@@ -1114,17 +1133,6 @@ impl<'a> DataService<'a> {
                 }
             }
         }
-
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        let mut display_guard = self
-            .state
-            .column_display
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?;
 
         let mut display_props = Vec::new();
         let mut canonical_column_types = Vec::with_capacity(request.columns.len());
@@ -1182,36 +1190,23 @@ impl<'a> DataService<'a> {
             });
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
-        let resolved_name = Self::resolve_create_dataset_name(&db, &request.name)?;
+        let resolved_name=Self::resolve_create_dataset_name(db,&request.name)?;
+        Ok((CreateTableFromRowsRequest {
+            name:resolved_name,column_names:request.columns.iter().map(|column|column.name.clone()).collect(),
+            column_types:canonical_column_types,rows:request.rows.clone(),
+        },display_props,canonical_columns))
+    }
 
-        let created = if request.columns.is_empty() {
-            db.create_empty_table(&id, &resolved_name, &[], &[])?
-        } else {
-            let resolved_request = CreateTableFromRowsRequest {
-                name: resolved_name,
-                column_names: request
-                    .columns
-                    .iter()
-                    .map(|column| column.name.clone())
-                    .collect(),
-                column_types: canonical_column_types,
-                rows: request.rows.clone(),
-            };
-            db.create_table_from_rows(&id, &resolved_request)?
-        };
-
-        if display_props.is_empty() {
-            display_guard.remove(&id);
-        } else {
-            display_guard.insert(id.clone(), display_props);
-        }
-
-        Ok(ManagedTableCreateResult {
-            generation: created.generation,
-            dataset: created,
-            columns: canonical_columns,
-        })
+    pub fn create_managed_table_outcome(&self,request:&CreateManagedTableRequest) -> Result<ManagedTableCreateResult,AppError> {
+        let db=self.state.db.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        let mut display_guard=self.state.column_display.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        let (resolved,display_props,canonical_columns)=Self::prepare_managed_table(&db,request)?;
+        let id=uuid::Uuid::new_v4().to_string();
+        let created=if resolved.column_names.is_empty() { db.create_empty_table(&id,&resolved.name,&[],&[])? }
+            else { db.create_table_from_rows(&id,&resolved)? };
+        if display_props.is_empty() { display_guard.remove(&id); }
+        else { display_guard.insert(id,display_props); }
+        Ok(ManagedTableCreateResult { generation:created.generation,dataset:created,columns:canonical_columns })
     }
 
     pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {

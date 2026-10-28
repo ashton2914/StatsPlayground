@@ -1,0 +1,12 @@
+{
+  "qualified": false,
+  "failures": [
+    "UI latency exceeds budget"
+  ],
+  "sampleCount": 100,
+  "backendP95Ms": 9.252209,
+  "uiP95Ms": 133,
+  "backendMedianMs": 7.8476665,
+  "uiMedianMs": 132,
+  "budgetMs": 100
+}

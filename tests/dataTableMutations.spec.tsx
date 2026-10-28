@@ -218,6 +218,8 @@ test("retains committed mutation state when query-session release fails", async 
   await expect.poll(async () =>
     (await component.getByTestId("prepared-session-ids").textContent()) ?? "",
   ).not.toBe("");
+  await expect(component.getByTestId("nav-request-resolved-starts")).not.toHaveText("");
+  await expect(component.locator('td[data-row="0"][data-col="0"]')).toHaveText("ev-row-2-col-1");
   await component.locator(".sp-corner").click({ button: "right" });
   await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
 
@@ -255,6 +257,8 @@ test("surfaces deferred query invalidation failure without an unhandled rejectio
     />,
   );
 
+  // This race needs an admitted initial prefetch, not merely a queued idle task.
+  await expect.poll(async()=>JSON.parse(await component.getByTestId("nav-request-observations").textContent()??"[]").some((request:any)=>request.kind==="prefetch")).toBe(true);
   await component.locator(".sp-corner").click({ button: "right" });
   await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
   await expect(component.getByTestId("dataset-generation")).toHaveText("2");
@@ -462,6 +466,8 @@ test("composes stale recovery errors and still attempts authoritative reload", a
   await expect.poll(async () =>
     (await component.getByTestId("prepared-session-ids").textContent()) ?? "",
   ).not.toBe("");
+  await expect(component.getByTestId("nav-request-resolved-starts")).not.toHaveText("");
+  await expect(component.locator('td[data-row="0"][data-col="0"]')).toHaveText("ev-row-2-col-1");
   await component.locator(".sp-corner").click({ button: "right" });
   await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
 
@@ -496,4 +502,86 @@ test("shows composite stale recovery error when metadata refresh fails", async (
   await expect.poll(async () => readJson<AddRowsRequest[]>(
     await component.getByTestId("add-rows-requests").textContent(),
   )).toHaveLength(1);
+});
+
+for(const mode of ["inline","formula"] as const) test(`native ${mode} cell acknowledgement preserves a distant viewport`,async({mount})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000} nativeCellAcknowledgement/>);
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A5001");await reference.press("Enter");
+ const cell=component.locator('td[data-row="5000"][data-col="0"]');await expect(cell).toBeVisible();
+ const rail=component.getByRole("scrollbar");await expect.poll(async()=>Number(await rail.getAttribute("aria-valuenow"))).toBeGreaterThan(4900);
+ if(mode==="inline"){await cell.dblclick();const editor=component.locator(".sp-cell-input");await editor.fill("native-edited-value");await editor.press("Enter");}
+ else{const editor=component.locator(".sp-formula-input");await editor.fill("native-edited-value");await editor.press("Enter");}
+ await expect(component.getByTestId("dataset-generation")).toHaveText("2");
+ await expect(cell).toHaveText("native-edited-value");
+ await expect.poll(async()=>Number(await rail.getAttribute("aria-valuenow"))).toBeGreaterThan(4900);
+ await expect(reference).toHaveValue("A5002");
+ await expect(component.locator(".sp-toast-error")).toHaveCount(0);
+});
+
+test('formula Enter followed by focus loss commits one native cell only',async({mount,page})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000} nativeCellAcknowledgement/>);
+ const reference=component.locator('.sp-formula-ref-input');await reference.fill('A5001');await reference.press('Enter');
+ await expect(component.locator('td[data-row="5000"][data-col="0"]')).toBeVisible();
+ const editor=component.locator('.sp-formula-input');await editor.fill('once-only');await editor.press('Enter');
+ // Native acknowledgement precedes the owned window refresh. A blur during
+ // that refresh must not enqueue the same formula a second time.
+ await reference.focus();
+ await expect(reference).toHaveValue('A5002');
+ await page.waitForTimeout(350);
+ await expect(component.getByTestId('dataset-generation')).toHaveText('2');
+ await expect(component.locator('.sp-toast-error')).toHaveCount(0);
+});
+
+
+test("native edit reload covers a viewport crossing a page boundary without relying on prefetch",async({mount})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000} nativeCellAcknowledgement holdNativeMutationPrefetch/>);
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A5001");await reference.press("Enter");
+ const cell=component.locator('td[data-row="5000"][data-col="0"]');await expect(cell).toBeVisible();
+ const editor=component.locator(".sp-formula-input");await editor.fill("own-refresh-value");await editor.press("Enter");
+ await expect(component.getByTestId("dataset-generation")).toHaveText("2");
+ await expect.poll(async()=>JSON.parse(await component.getByTestId("window-read-ranges").textContent()??"[]").filter((range:any)=>range.generation===2)).toEqual([expect.objectContaining({count:1000})]);
+ await expect(cell).toHaveText("own-refresh-value");await expect(reference).toHaveValue("A5002");
+});
+
+test("a committed reference jump starts its foreground request before the wheel settle interval",async({mount,page})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000}/>);
+ await expect(component.locator('td[data-row="0"][data-col="0"]')).toContainText("row-");
+ await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+200));
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A8001");await reference.press("Enter");
+ await page.clock.runFor(32);
+ const requests=JSON.parse(await component.getByTestId("nav-request-observations").textContent()??"[]");
+ expect(requests.some((request:any)=>request.kind==="active"&&request.start>=7500)).toBe(true);
+});
+
+
+test("a cached window expands its visible rows when its start stays the same",async({mount})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000}/>);
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A5201");await reference.press("Enter");
+ await expect(component.locator('td[data-row="5200"][data-col="0"]')).toContainText("row-5201-");
+ await expect.poll(async()=>((await component.getByTestId("nav-all-resolved-starts").textContent())??"").split(",").includes("5500")).toBe(true);
+ await reference.fill("A5501");await reference.press("Enter");
+ await expect(component.locator('td[data-row="5500"][data-col="0"]')).toContainText("row-5501-");
+});
+
+
+test("editing a large-string page keeps reload and foreground reads small across an empty refresh",async({mount})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000} columnCount={2} valuePadding={10000} nativeCellAcknowledgement holdNativeMutationPrefetch/>);
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A5501");await reference.press("Enter");
+ const cell=component.locator('td[data-row="5500"][data-col="0"]');await expect(cell).toContainText("row-5501-");
+ const editor=component.locator(".sp-formula-input");await editor.fill("small-refresh-value");await editor.press("Enter");
+ await expect(cell).toHaveText("small-refresh-value");await expect(reference).toHaveValue("A5502");
+ const reloads=JSON.parse(await component.getByTestId("window-read-ranges").textContent()??"[]").filter((r:any)=>r.generation===2);
+ const active=JSON.parse(await component.getByTestId("nav-request-observations").textContent()??"[]").filter((r:any)=>r.generation===2&&r.kind==="active");
+ expect(reloads.length).toBeGreaterThan(0);expect([...reloads,...active].every((r:any)=>r.count<=128)).toBe(true);
+});
+
+test("native history receipt does not trigger a second legacy refresh after a small-page edit",async({mount})=>{
+ const component=await mount(<LogicalTableNavigationHarness rowCount={10000} columnCount={2} valuePadding={10000} nativeCellAcknowledgement nativeHistoryReceipt holdNativeMutationPrefetch/>);
+ const reference=component.locator(".sp-formula-ref-input");await reference.fill("A5501");await reference.press("Enter");
+ const cell=component.locator('td[data-row="5500"][data-col="0"]');await expect(cell).toContainText("row-5501-");
+ const editor=component.locator(".sp-formula-input");await editor.fill("small-refresh-value");await editor.press("Enter");
+ await expect(cell).toHaveText("small-refresh-value");await expect(reference).toHaveValue("A5502");
+ const reloads=JSON.parse(await component.getByTestId("window-read-ranges").textContent()??"[]").filter((r:any)=>r.generation===2);
+ const active=JSON.parse(await component.getByTestId("nav-request-observations").textContent()??"[]").filter((r:any)=>r.generation===2&&r.kind==="active");
+ expect(reloads).toHaveLength(1);expect([...reloads,...active].every((r:any)=>r.count<=128)).toBe(true);
 });

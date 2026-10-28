@@ -1,3 +1,6 @@
+import { createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
+import { useProjectStore } from "./useProjectStore";
+import { assertProjectMutable } from "../utils/saveReadOnly";
 import { create } from "zustand";
 import type {
   LogicalFolder,
@@ -30,19 +33,23 @@ const EMPTY_LINEAGE: ProjectLineageGraph = {
   edges: [],
 };
 
-export const useWorkflowStore = create<WorkflowStore>((set) => ({
+export const useWorkflowStore = create<WorkflowStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("workflow", rawSet, get, (state) => state.workflows);
+  return ({
   workflows: [],
   logicalFolders: [],
   workflowRuns: [],
   lineageGraph: EMPTY_LINEAGE,
-  loadFromProject: (data) => set(data),
-  addWorkflow: (workflow) => set((state) => ({
-    workflows: [...state.workflows, workflow],
-  })),
-  reset: () => set({
+  loadFromProject: (data) => withoutDocumentPersistence(() => set(data)),
+  addWorkflow: (workflow) => {
+    assertProjectMutable(useProjectStore.getState().readOnly);
+    set((state) => ({ workflows: [...state.workflows, workflow] }));
+  },
+  reset: () => withoutDocumentPersistence(() => set({
     workflows: [],
     logicalFolders: [],
     workflowRuns: [],
     lineageGraph: EMPTY_LINEAGE,
-  }),
-}));
+  })),
+});
+});

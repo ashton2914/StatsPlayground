@@ -1,0 +1,12 @@
+{
+  "qualified": false,
+  "failures": [
+    "at least five cold opens required"
+  ],
+  "sampleCount": 1,
+  "backendP95Ms": 28.956542,
+  "uiP95Ms": 62,
+  "backendMedianMs": 28.956542,
+  "uiMedianMs": 62,
+  "budgetMs": 1000
+}

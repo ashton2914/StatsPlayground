@@ -1,0 +1,210 @@
+{
+  "qualified": false,
+  "failures": [
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: release source/build/engine provenance required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: SQL profiling evidence required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: at least 100 warm samples required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: sample 0: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: sample 0: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: sample 1: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/catalog: sample 1: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: release source/build/engine provenance required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: SQL profiling evidence required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: at least 100 warm samples required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 0: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 0: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 0: viewport retention missing or exceeds cap",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 1: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 1: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/window: sample 1: viewport retention missing or exceeds cap",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: release source/build/engine provenance required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: SQL profiling evidence required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: at least 100 warm samples required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 0: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 0: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 0: viewport retention missing or exceeds cap",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 1: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 1: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/scroll: sample 1: viewport retention missing or exceeds cap",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: release source/build/engine provenance required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: SQL profiling evidence required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: at least 100 warm samples required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: sample 0: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: sample 0: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: sample 1: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/edit: sample 1: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: release source/build/engine provenance required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: SQL profiling evidence required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: at least 100 warm samples required",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: sample 0: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: sample 0: checkpointBytes unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: sample 1: uiReadyMs unavailable or invalid",
+    "5040b9b4-4c8b-4a73-8795-7628bb768a6c/close: sample 1: checkpointBytes unavailable or invalid",
+    "missing 300000x20 catalog/cold",
+    "missing 300000x20 catalog/warm",
+    "missing 300000x20 window/warm",
+    "missing 300000x20 scroll/warm",
+    "missing 300000x20 edit/warm",
+    "missing 300000x20 close/warm",
+    "missing 2000000x20 catalog/cold",
+    "missing 2000000x20 catalog/warm",
+    "missing 2000000x20 window/warm",
+    "missing 2000000x20 scroll/warm",
+    "missing 2000000x20 edit/warm",
+    "missing 2000000x20 close/warm",
+    "missing 10000000x20 catalog/cold",
+    "missing 10000000x20 catalog/warm",
+    "missing 10000000x20 window/warm",
+    "missing 10000000x20 scroll/warm",
+    "missing 10000000x20 edit/warm",
+    "missing 10000000x20 close/warm",
+    "missing many-documents tier",
+    "missing long-strings tier"
+  ],
+  "results": [
+    {
+      "scenario": "catalog",
+      "fixture": {
+        "columns": 20,
+        "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+        "rows": 30000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "SQL profiling evidence required",
+          "at least 100 warm samples required",
+          "sample 0: uiReadyMs unavailable or invalid",
+          "sample 0: checkpointBytes unavailable or invalid",
+          "sample 1: uiReadyMs unavailable or invalid",
+          "sample 1: checkpointBytes unavailable or invalid"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 111.530042,
+        "uiP95Ms": null,
+        "backendMedianMs": 111.519271,
+        "uiMedianMs": null,
+        "budgetMs": 500
+      }
+    },
+    {
+      "scenario": "window",
+      "fixture": {
+        "columns": 20,
+        "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+        "rows": 30000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "SQL profiling evidence required",
+          "at least 100 warm samples required",
+          "sample 0: uiReadyMs unavailable or invalid",
+          "sample 0: checkpointBytes unavailable or invalid",
+          "sample 0: viewport retention missing or exceeds cap",
+          "sample 1: uiReadyMs unavailable or invalid",
+          "sample 1: checkpointBytes unavailable or invalid",
+          "sample 1: viewport retention missing or exceeds cap"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 64.668792,
+        "uiP95Ms": null,
+        "backendMedianMs": 59.382729499999996,
+        "uiMedianMs": null,
+        "budgetMs": 300
+      }
+    },
+    {
+      "scenario": "scroll",
+      "fixture": {
+        "columns": 20,
+        "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+        "rows": 30000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "SQL profiling evidence required",
+          "at least 100 warm samples required",
+          "sample 0: uiReadyMs unavailable or invalid",
+          "sample 0: checkpointBytes unavailable or invalid",
+          "sample 0: viewport retention missing or exceeds cap",
+          "sample 1: uiReadyMs unavailable or invalid",
+          "sample 1: checkpointBytes unavailable or invalid",
+          "sample 1: viewport retention missing or exceeds cap"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 57.322125,
+        "uiP95Ms": null,
+        "backendMedianMs": 55.364791499999995,
+        "uiMedianMs": null,
+        "budgetMs": 100
+      }
+    },
+    {
+      "scenario": "edit",
+      "fixture": {
+        "columns": 20,
+        "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+        "rows": 30000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "SQL profiling evidence required",
+          "at least 100 warm samples required",
+          "sample 0: uiReadyMs unavailable or invalid",
+          "sample 0: checkpointBytes unavailable or invalid",
+          "sample 1: uiReadyMs unavailable or invalid",
+          "sample 1: checkpointBytes unavailable or invalid"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 85.262,
+        "uiP95Ms": null,
+        "backendMedianMs": 82.2345,
+        "uiMedianMs": null,
+        "budgetMs": 200
+      }
+    },
+    {
+      "scenario": "close",
+      "fixture": {
+        "columns": 20,
+        "id": "5040b9b4-4c8b-4a73-8795-7628bb768a6c",
+        "rows": 30000,
+        "seed": 282,
+        "tier": "regular"
+      },
+      "assessment": {
+        "qualified": false,
+        "failures": [
+          "release source/build/engine provenance required",
+          "SQL profiling evidence required",
+          "at least 100 warm samples required",
+          "sample 0: uiReadyMs unavailable or invalid",
+          "sample 0: checkpointBytes unavailable or invalid",
+          "sample 1: uiReadyMs unavailable or invalid",
+          "sample 1: checkpointBytes unavailable or invalid"
+        ],
+        "sampleCount": 2,
+        "backendP95Ms": 38.529209,
+        "uiP95Ms": null,
+        "backendMedianMs": 38.4593755,
+        "uiMedianMs": null,
+        "budgetMs": 500
+      }
+    }
+  ]
+}

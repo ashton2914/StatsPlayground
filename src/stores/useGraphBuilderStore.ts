@@ -1,3 +1,4 @@
+import { createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 /**
  * 图表构建器全局状态。
  *
@@ -59,7 +60,9 @@ interface GraphBuilderStore {
   setDocumentRevision: (id: string, revision: number) => void;
 }
 
-export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
+export const useGraphBuilderStore = create<GraphBuilderStore>((rawSet, get) => {
+  const set = createPersistedDocumentSetter("graph", rawSet, get, (state) => state.items);
+return ({
   items: [],
   documentRevisions: {},
   counter: 0,
@@ -136,15 +139,15 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
       });
     },
   loadFromProject: (items) =>
-    set(() => {
+    withoutDocumentPersistence(() => set(() => {
       const normalized = items.map(normalizeStoredGraphBuilderItem);
       const maxNum = items.reduce((m, it) => {
         const match = it.name.match(/^图表(\d+)$/);
         return match ? Math.max(m, parseInt(match[1], 10)) : m;
       }, 0);
       return { items: normalized, documentRevisions: {}, counter: maxNum };
-    }),
-  reset: () => set({ items: [], documentRevisions: {}, counter: 0 }),
+    })),
+  reset: () => withoutDocumentPersistence(() => set({ items: [], documentRevisions: {}, counter: 0 })),
   bumpCounter: (n) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set({ counter: n });
@@ -158,4 +161,5 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
       },
     }));
   },
-}));
+});
+});

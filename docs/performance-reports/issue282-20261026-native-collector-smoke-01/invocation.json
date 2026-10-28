@@ -1,0 +1,11 @@
+{
+  "binary": "/Users/ashton/git/ashton2914/StatsPlayground/src-tauri/target/debug/examples/project_persistence_v5",
+  "fixture": "/tmp/statsplayground-282-20261026-native-collector-smoke-01.spprj",
+  "rows": 30000,
+  "columns": 20,
+  "seed": 282,
+  "samples": 2,
+  "sourceTreeHash": "5ebd4ebb151afd71c2db62437e002feae47b2cfc",
+  "startedAt": "2026-10-26T06:31:48.667Z",
+  "scope": "native backend only; UI readiness, cold OS cache and checkpoint-write observations unavailable"
+}

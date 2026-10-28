@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex,Condvar};
 use std::time::{Duration, Instant};
 
 use duckdb::InterruptHandle;
@@ -36,7 +36,7 @@ impl Default for TableNavigationPolicy {
 }
 
 struct TableNavigationReader {
-    engine: Mutex<DuckDbEngine>,
+    engine: Mutex<Option<DuckDbEngine>>,
     interrupt_handle: Arc<InterruptHandle>,
 }
 
@@ -59,6 +59,7 @@ struct PreparedSessionEntry {
     dataset_id: String,
     generation: u64,
     signature: String,
+    row_identity_signature: String,
     mapping_table_name: String,
     mapping_index_name: String,
     engine: Mutex<DuckDbEngine>,
@@ -76,6 +77,7 @@ impl PreparedSessionEntry {
         dataset_id: String,
         generation: u64,
         signature: String,
+        row_identity_signature: String,
         engine: DuckDbEngine,
         interrupt_handle: Arc<InterruptHandle>,
     ) -> Self {
@@ -90,6 +92,7 @@ impl PreparedSessionEntry {
             dataset_id,
             generation,
             signature,
+            row_identity_signature,
             mapping_table_name,
             mapping_index_name,
             engine: Mutex::new(engine),
@@ -244,14 +247,73 @@ impl Drop for ActiveRequestGuard<'_> {
 
 pub struct TableNavigationService {
     readers: Vec<TableNavigationReader>,
-    session_clone_source: Mutex<DuckDbEngine>,
+    session_clone_source: Mutex<Option<DuckDbEngine>>,
+    closed:AtomicBool,
+    shutdown_complete:AtomicBool,
+    shutdown_gate:Mutex<()>,
+    in_flight:Mutex<usize>,
+    calls_finished:Condvar,
+    preparation_jobs:Mutex<Vec<std::thread::JoinHandle<()>>>,
     next_reader: AtomicUsize,
     active_requests: Mutex<HashMap<String, Arc<InterruptHandle>>>,
     query_sessions: Mutex<QuerySessionRegistry>,
     policy: TableNavigationPolicy,
 }
 
+struct NavigationCall<'a>(&'a TableNavigationService);
+impl Drop for NavigationCall<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active)=self.0.in_flight.lock() {*active-=1;if *active==0 {self.0.calls_finished.notify_all();}}
+    }
+}
+
+impl Drop for TableNavigationService {
+    fn drop(&mut self) {let _=self.shutdown();}
+}
+
 impl TableNavigationService {
+    fn begin_call(&self)->Result<NavigationCall<'_>,AppError> {
+        let mut active=self.in_flight.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        if self.closed.load(Ordering::Acquire) {return Err(AppError::Cancelled("table_navigation_closed".into()));}
+        *active+=1;Ok(NavigationCall(self))
+    }
+
+    pub fn shutdown(&self)->Result<(),AppError> {
+        let _shutdown=self.shutdown_gate.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        if self.shutdown_complete.load(Ordering::Acquire) {return Ok(());}
+        self.closed.store(true,Ordering::Release);
+        {
+            let requests=self.active_requests.lock().map_err(|error|AppError::Database(error.to_string()))?;
+            for interrupt in requests.values() {interrupt.interrupt();}
+        }
+        let sessions=self.query_sessions.lock().map_err(|error|AppError::Database(error.to_string()))?.sessions_by_id.values().cloned().collect::<Vec<_>>();
+        for session in &sessions {session.released.store(true,Ordering::Release);session.interrupt_handle.interrupt();}
+        let mut active=self.in_flight.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        while *active>0 {
+            active=self.calls_finished.wait_timeout(active,Duration::from_millis(10)).map_err(|error|AppError::Database(error.to_string()))?.0;
+            if *active>0 {
+                drop(active);
+                for interrupt in self.active_requests.lock().map_err(|error|AppError::Database(error.to_string()))?.values() {interrupt.interrupt();}
+                for session in &sessions {session.interrupt_handle.interrupt();}
+                active=self.in_flight.lock().map_err(|error|AppError::Database(error.to_string()))?;
+            }
+        }
+        drop(active);
+        let jobs=std::mem::take(&mut *self.preparation_jobs.lock().map_err(|error|AppError::Database(error.to_string()))?);
+        while jobs.iter().any(|job|!job.is_finished()) {
+            for session in &sessions {session.interrupt_handle.interrupt();}
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut join_failed=false;for job in jobs {join_failed|=job.join().is_err();}
+        *self.query_sessions.lock().map_err(|error|AppError::Database(error.to_string()))?=QuerySessionRegistry::default();
+        drop(sessions);
+        for reader in &self.readers {reader.engine.lock().map_err(|error|AppError::Database(error.to_string()))?.take();}
+        self.session_clone_source.lock().map_err(|error|AppError::Database(error.to_string()))?.take();
+        self.shutdown_complete.store(true,Ordering::Release);
+        if join_failed {return Err(AppError::Database("table_navigation_worker_panicked".into()));}
+        Ok(())
+    }
+
     pub fn new(engine: &DuckDbEngine, reader_count: usize) -> Result<Self, AppError> {
         Self::new_with_policy(engine, reader_count, TableNavigationPolicy::default())
     }
@@ -271,13 +333,15 @@ impl TableNavigationService {
             let reader_engine = engine.try_clone()?;
             let interrupt_handle = reader_engine.conn().interrupt_handle();
             readers.push(TableNavigationReader {
-                engine: Mutex::new(reader_engine),
+                engine: Mutex::new(Some(reader_engine)),
                 interrupt_handle,
             });
         }
         Ok(Self {
             readers,
-            session_clone_source: Mutex::new(engine.try_clone()?),
+            session_clone_source: Mutex::new(Some(engine.try_clone()?)),
+            closed:AtomicBool::new(false),shutdown_complete:AtomicBool::new(false),shutdown_gate:Mutex::new(()),
+            in_flight:Mutex::new(0),calls_finished:Condvar::new(),preparation_jobs:Mutex::new(vec![]),
             next_reader: AtomicUsize::new(0),
             active_requests: Mutex::new(HashMap::new()),
             query_sessions: Mutex::new(QuerySessionRegistry::default()),
@@ -289,6 +353,7 @@ impl TableNavigationService {
         &self,
         request: &TableQuerySessionRequest,
     ) -> Result<TableQuerySessionStatus, AppError> {
+        let _call=self.begin_call()?;
         if request.sort.is_none() && request.filters.is_empty() {
             return Err(AppError::InvalidParam(
                 "natural-order navigation does not use prepared sessions".into(),
@@ -315,6 +380,7 @@ impl TableNavigationService {
             .session_clone_source
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?
+            .as_ref().ok_or_else(||AppError::Cancelled("table_navigation_closed".into()))?
             .try_clone()?;
         let interrupt_handle = session_engine.conn().interrupt_handle();
         let session_id = Uuid::new_v4().to_string();
@@ -323,6 +389,7 @@ impl TableNavigationService {
             request.dataset_id.clone(),
             request.generation,
             signature.clone(),
+            Self::build_query_session_signature(&TableQuerySessionRequest {column_ids:vec![],..request.clone()})?,
             session_engine,
             interrupt_handle,
         ));
@@ -351,7 +418,7 @@ impl TableNavigationService {
             self.release_session_entry(entry)?;
         }
 
-        self.spawn_prepare_session(Arc::clone(&session), request.clone());
+        self.spawn_prepare_session(Arc::clone(&session), request.clone())?;
         session.status()
     }
 
@@ -359,6 +426,7 @@ impl TableNavigationService {
         &self,
         session_id: &str,
     ) -> Result<TableQuerySessionStatus, AppError> {
+        let _call=self.begin_call()?;
         self.sweep_released_and_expired_sessions()?;
         let session = self.get_session(session_id)?;
         if session.is_expired(Instant::now(), self.policy.idle_ttl)? {
@@ -380,6 +448,8 @@ impl TableNavigationService {
     }
 
     pub fn release_table_query_session(&self, session_id: &str) -> Result<(), AppError> {
+        if self.closed.load(Ordering::Acquire) {return Ok(());}
+        let _call=self.begin_call()?;
         let session = {
             let mut registry = self
                 .query_sessions
@@ -397,18 +467,30 @@ impl TableNavigationService {
         &self,
         request: &TableNavigationRequest,
     ) -> Result<TableNavigationResult, AppError> {
+        self.query_navigation(request,false)
+    }
+
+    pub fn query_table_navigation_row_ids(&self, request:&TableNavigationRequest) -> Result<TableNavigationResult,AppError> {
+        self.query_navigation(request,true)
+    }
+
+    fn query_navigation(&self, request:&TableNavigationRequest, identities_only:bool) -> Result<TableNavigationResult,AppError> {
+        let _call=self.begin_call()?;
         if Self::can_handle(request) {
             let reader_index =
                 self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
-            let reader = self.readers[reader_index]
+            let reader_guard = self.readers[reader_index]
                 .engine
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
+            let reader=reader_guard.as_ref().ok_or_else(||AppError::Cancelled("table_navigation_closed".into()))?;
             let _active_request = self.register_active_request(
                 request.request_id.clone(),
                 Arc::clone(&self.readers[reader_index].interrupt_handle),
             )?;
-            return DuckDbEngine::query_natural_navigation_window(reader.conn(), request)
+            let mut projection_request=request.clone();
+            if identities_only {projection_request.column_ids.clear();}
+            return DuckDbEngine::query_natural_navigation_window(reader.conn(), &projection_request)
                 .map_err(|error| Self::map_interrupted_query_error(&request.request_id, error));
         }
 
@@ -433,8 +515,10 @@ impl TableNavigationService {
                 request.generation
             )));
         }
-        let request_signature = Self::build_navigation_request_signature(request)?;
-        if request_signature != session.signature {
+        let request_signature = if identities_only {
+            Self::build_navigation_request_signature(&TableNavigationRequest {column_ids:vec![],..request.clone()})?
+        } else {Self::build_navigation_request_signature(request)?};
+        if request_signature != if identities_only {&session.row_identity_signature} else {&session.signature}.as_str() {
             return Err(AppError::InvalidParam(format!(
                 "table query session {session_id} does not match the requested signature"
             )));
@@ -473,7 +557,7 @@ impl TableNavigationService {
             session_engine.conn(),
             request,
             &session.mapping_table_name,
-            &ready_state.projection,
+            if identities_only {&[]} else {&ready_state.projection},
             ready_state.total_rows,
         )
         .map_err(|error| Self::map_interrupted_query_error(&request.request_id, error))?;
@@ -503,6 +587,7 @@ impl TableNavigationService {
         self.session_clone_source
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?
+            .as_ref().ok_or_else(||AppError::Cancelled("table_navigation_closed".into()))?
             .get_dataset_generation(dataset_id)
     }
 
@@ -730,8 +815,11 @@ impl TableNavigationService {
         &self,
         session: Arc<PreparedSessionEntry>,
         request: TableQuerySessionRequest,
-    ) {
-        std::thread::spawn(move || {
+    )->Result<(),AppError> {
+        let mut jobs=self.preparation_jobs.lock().map_err(|error|AppError::Database(error.to_string()))?;
+        jobs.retain(|job|!job.is_finished());
+        jobs.push(std::thread::spawn(move || {
+            if session.released.load(Ordering::Acquire) {let _=session.mark_cancelled();return;}
             let preparation = (|| -> Result<PreparedTableQuerySessionInfo, AppError> {
                 let engine = session
                     .engine
@@ -782,7 +870,8 @@ impl TableNavigationService {
                     }
                 }
             }
-        });
+        }));
+        Ok(())
     }
 
     fn build_query_session_signature(
@@ -925,10 +1014,9 @@ impl TableNavigationService {
         request_id: String,
         interrupt_handle: Arc<InterruptHandle>,
     ) -> Result<ActiveRequestGuard<'_>, AppError> {
-        self.active_requests
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?
-            .insert(request_id.clone(), interrupt_handle);
+        let mut requests=self.active_requests.lock().map_err(|error| AppError::Database(error.to_string()))?;
+        if self.closed.load(Ordering::Acquire) {return Err(AppError::Cancelled("table_navigation_closed".into()));}
+        requests.insert(request_id.clone(), interrupt_handle);
         Ok(ActiveRequestGuard {
             requests: &self.active_requests,
             request_id,
@@ -957,11 +1045,13 @@ impl TableNavigationService {
         request_id: &str,
         sql: &str,
     ) -> Result<(), AppError> {
+        let _call=self.begin_call()?;
         let reader_index = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
-        let reader = self.readers[reader_index]
+        let reader_guard = self.readers[reader_index]
             .engine
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
+        let reader=reader_guard.as_ref().ok_or_else(||AppError::Cancelled("table_navigation_closed".into()))?;
         let _active_request = self.register_active_request(
             request_id.to_string(),
             Arc::clone(&self.readers[reader_index].interrupt_handle),
@@ -1082,6 +1172,26 @@ mod tests {
     }
 
     #[test]
+    fn navigation_row_identity_window_reuses_sorted_session_without_values() {
+        let engine=DuckDbEngine::new_in_memory().unwrap();
+        engine.seed_benchmark_table("source","Source",3000,2).unwrap();
+        let service=TableNavigationService::new(&engine,1).unwrap();
+        let column_ids=engine.get_user_column_descriptors("source").unwrap().into_iter().map(|c|c.column_id).collect::<Vec<_>>();
+        let prepared=service.prepare_table_query_session(&TableQuerySessionRequest {dataset_id:"source".into(),generation:0,sort:Some(TableWindowSort {column:"value_1".into(),descending:true}),filters:vec![],column_ids:column_ids.clone()}).unwrap();
+        let ready=wait_for_ready_status(&service,&prepared.session_id).unwrap();assert_eq!(ready.state.as_str(),"ready");
+        let mut request=TableNavigationRequest {version:1,request_id:"row-identities".into(),dataset_id:"source".into(),generation:0,start:2500,count:3,column_ids,sort:Some(TableWindowSort {column:"value_1".into(),descending:true}),filters:vec![],session_id:Some(prepared.session_id.clone()),include_transport_diagnostics:false};
+        let visible=service.query_table_navigation_window(&request).unwrap();
+        request.column_ids.clear(); // Row identity is independent of the visible value projection.
+        let identities=service.query_table_navigation_row_ids(&request).unwrap();
+        assert_eq!(identities.columns,vec!["_row_id"]);assert_eq!(identities.rows,visible.rows.iter().map(|r|vec![r[0].clone()]).collect::<Vec<_>>());
+        assert_eq!(identities.rows.len(),3);assert_eq!(identities.session_id,Some(prepared.session_id));
+        request.count=2001;assert!(service.query_table_navigation_row_ids(&request).is_err());
+        request.count=3;request.sort.as_mut().unwrap().descending=false;assert!(service.query_table_navigation_row_ids(&request).is_err());
+        request.sort=None;request.session_id=None;request.start=2800;
+        let natural=service.query_table_navigation_row_ids(&request).unwrap();assert_eq!(natural.columns,vec!["_row_id"]);assert_eq!(natural.rows.len(),3);
+    }
+
+    #[test]
     fn natural_navigation_service_builds_requested_reader_pool() {
         let engine = DuckDbEngine::new_in_memory().expect("engine");
 
@@ -1173,6 +1283,61 @@ mod tests {
             reset_result.rows,
             vec![vec![serde_json::json!(1), serde_json::json!(9)]]
         );
+    }
+
+    #[test]
+    fn project_v5_lifecycle_navigation_shutdown_releases_file_handles_with_retained_arc() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("navigation-close.spprj");
+        let database=crate::services::project_database::ProjectDatabase::create(&path,false).unwrap();
+        let navigation=Arc::new(database.with_engine(|engine|TableNavigationService::new(engine,2)).unwrap());
+        let retained=Arc::clone(&navigation);
+        database.shutdown().unwrap();
+        let probe=||std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","services::table_navigation_service::tests::project_v5_lifecycle_navigation_child_probe","--test-threads=1"])
+            .env("STATSPG_NAV_SHUTDOWN_PROBE_PATH",&path).output().unwrap();
+        assert!(retained.readers.iter().all(|reader|reader.engine.lock().unwrap().is_some()));
+        navigation.shutdown().unwrap();
+        let after=probe();assert!(after.status.success(),"a retained service Arc must not retain the file lock after shutdown: {}",String::from_utf8_lossy(&after.stdout));
+        assert!(retained.readers.iter().all(|reader|reader.engine.lock().unwrap().is_none()));
+        assert!(retained.session_clone_source.lock().unwrap().is_none());
+        let reopened=crate::services::project_database::ProjectDatabase::open(&path,true).unwrap();
+        assert!(retained.get_table_query_session_status("old").is_err());
+        reopened.shutdown().unwrap();navigation.shutdown().unwrap();
+    }
+
+    #[test]
+    fn project_v5_lifecycle_navigation_child_probe() {
+        let Some(path)=std::env::var_os("STATSPG_NAV_SHUTDOWN_PROBE_PATH") else {return;};
+        let database=crate::services::project_database::ProjectDatabase::open(std::path::Path::new(&path),false).unwrap();
+        database.shutdown().unwrap();
+    }
+
+    #[test]
+    fn project_v5_lifecycle_navigation_shutdown_interrupts_active_query() {
+        let engine=DuckDbEngine::new_in_memory().unwrap();
+        let navigation=Arc::new(TableNavigationService::new(&engine,1).unwrap());
+        let worker=Arc::clone(&navigation);
+        let job=std::thread::spawn(move||worker.execute_interruptible_test_query("closing","select count(*) from range(10000000) t1, range(1000000) t2"));
+        let deadline=Instant::now()+Duration::from_secs(2);
+        while !navigation.active_requests.lock().unwrap().contains_key("closing") {
+            assert!(Instant::now()<deadline,"request did not start");std::thread::yield_now();
+        }
+        navigation.shutdown().unwrap();
+        assert!(matches!(job.join().unwrap(),Err(AppError::Cancelled(_))));
+        assert!(navigation.execute_interruptible_test_query("late","select 1").is_err());
+    }
+
+    #[test]
+    fn project_v5_lifecycle_navigation_shutdown_joins_preparation_jobs() {
+        let engine=DuckDbEngine::new_in_memory().unwrap();engine.seed_benchmark_table("source","Source",10000,1).unwrap();
+        let navigation=TableNavigationService::new(&engine,1).unwrap();
+        let ids=engine.get_table_column_descriptors("source").unwrap().into_iter().map(|item|item.column_id).collect();
+        let request=TableQuerySessionRequest{dataset_id:"source".into(),generation:0,sort:Some(TableWindowSort{column:"value_1".into(),descending:true}),filters:vec![],column_ids:ids};
+        let session=navigation.prepare_table_query_session(&request).unwrap();
+        navigation.shutdown().unwrap();
+        assert!(navigation.query_sessions.lock().unwrap().sessions_by_id.is_empty());
+        assert!(navigation.get_table_query_session_status(&session.session_id).is_err());
+        assert!(navigation.prepare_table_query_session(&request).is_err());
     }
 
     #[test]

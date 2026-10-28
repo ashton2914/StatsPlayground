@@ -214,9 +214,28 @@ pub fn compile_formula_sql(
     expression: &TypedCalculatedExpression,
     columns: &[FormulaSqlColumn],
 ) -> Result<CompiledCalculatedExpression, FormulaError> {
+    compile_formula_sql_with_output_policy(expression,columns,false)
+}
+
+/// Existing materialized floating outputs can retain their type after a source
+/// becomes integral. Narrowing and changes between numeric/boolean types fail.
+pub(crate) fn compile_materialized_formula_sql(
+    expression:&TypedCalculatedExpression,columns:&[FormulaSqlColumn],
+)->Result<CompiledCalculatedExpression,FormulaError> {
+    compile_formula_sql_with_output_policy(expression,columns,true)
+}
+
+fn compile_formula_sql_with_output_policy(
+    expression:&TypedCalculatedExpression,columns:&[FormulaSqlColumn],allow_integral_to_float:bool,
+)->Result<CompiledCalculatedExpression,FormulaError> {
     let catalog = FormulaSqlCatalog::new(columns)?;
-    let compiled = compile_sql_expression(&expression.expression, &catalog)?;
-    if compiled.output_type != formula_type_from_public(expression.output_type) {
+    let mut compiled = compile_sql_expression(&expression.expression, &catalog)?;
+    let expected=formula_type_from_public(expression.output_type);
+    if allow_integral_to_float && compiled.output_type==FormulaType::BigInt && expected==FormulaType::Double {
+        compiled.value_sql=format!("CAST(({}) AS DOUBLE)",compiled.value_sql);
+        compiled.output_type=FormulaType::Double;
+    }
+    if compiled.output_type != expected {
         return Err(FormulaError::Type {
             message: "typed SQL compiler received an expression with mismatched output type"
                 .to_string(),

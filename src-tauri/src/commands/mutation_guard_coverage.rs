@@ -14,6 +14,8 @@ mod tests {
         Mutation,
         ReadOnly,
         SaveFlow,
+        NativeCommit,
+        ProbeControl,
     }
 
     fn parse_registered_commands(lib_source: &str) -> Vec<String> {
@@ -37,6 +39,58 @@ mod tests {
 
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
+            // Explicit benchmark builds/runtime configuration own these artifacts.
+            ("commands::project_ui_probe_commands::project_ui_probe_configuration",CommandClass::ProbeControl),
+            ("commands::project_ui_probe_commands::project_ui_probe_begin",CommandClass::ProbeControl),
+            ("commands::project_ui_probe_commands::project_ui_probe_finish",CommandClass::ProbeControl),
+            ("commands::project_ui_probe_commands::project_ui_probe_publish",CommandClass::ProbeControl),
+            (
+                "commands::project_commands::open_project_v5",
+                CommandClass::SaveFlow,
+            ),
+            ("commands::project_commands::project_v5_enabled", CommandClass::ReadOnly),
+            ("commands::project_commands::preflight_project_migration",CommandClass::ReadOnly),
+            ("commands::project_commands::migrate_project_v5",CommandClass::SaveFlow),
+            ("commands::project_commands::cancel_project_migration",CommandClass::SaveFlow),
+            ("commands::project_commands::list_recoverable_project_drafts", CommandClass::ReadOnly),
+            ("commands::project_commands::create_project_draft_v5", CommandClass::SaveFlow),
+            ("commands::project_commands::recover_project_draft_v5", CommandClass::SaveFlow),
+            ("commands::project_commands::close_project_v5", CommandClass::SaveFlow),
+            ("commands::project_commands::snapshot_project_v5", CommandClass::SaveFlow),
+            ("commands::project_commands::checkpoint_project_v5", CommandClass::SaveFlow),
+            (
+                "commands::project_commands::list_project_catalog",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::project_commands::get_project_document",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::project_commands::get_project_setting",
+                CommandClass::ReadOnly,
+            ),
+            ("commands::project_commands::get_project_workflow_run_state",CommandClass::ReadOnly),
+            ("commands::project_commands::get_project_table_lifecycle_event",CommandClass::ReadOnly),
+            ("commands::project_commands::get_project_history_frontier",CommandClass::ReadOnly),
+            ("commands::project_commands::apply_project_table_lifecycle",CommandClass::NativeCommit),
+            (
+                "commands::project_commands::list_project_history",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::project_commands::get_project_persistence_status",
+                CommandClass::ReadOnly,
+            ),
+            ("commands::project_commands::resolve_project_operation",CommandClass::NativeCommit),
+            ("commands::project_commands::capture_project_data_snapshot",CommandClass::NativeCommit),
+            ("commands::project_commands::restore_project_data_snapshot",CommandClass::NativeCommit),
+            ("commands::project_commands::delete_project_data_snapshot",CommandClass::NativeCommit),
+            ("commands::project_commands::list_project_data_snapshots",CommandClass::ReadOnly),
+            (
+                "commands::project_commands::commit_project_records",
+                CommandClass::NativeCommit,
+            ),
             (
                 "commands::mcp_commands::plan_vscode_mcp_launch",
                 CommandClass::ReadOnly,
@@ -178,6 +232,10 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::data_commands::query_table_navigation_row_ids",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::data_commands::prepare_table_navigation_benchmark",
                 CommandClass::ReadOnly,
             ),
@@ -207,7 +265,7 @@ mod tests {
             ),
             (
                 "commands::fit_model_commands::save_fit_model_columns",
-                CommandClass::Mutation,
+                CommandClass::NativeCommit,
             ),
             (
                 "commands::data_commands::locate_table_row",
@@ -397,7 +455,7 @@ mod tests {
             ),
             (
                 "commands::tabulate_commands::materialize_tabulate_table",
-                CommandClass::Mutation,
+                CommandClass::NativeCommit,
             ),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (
@@ -494,7 +552,7 @@ mod tests {
             ),
             (
                 "commands::project_commands::run_workflow",
-                CommandClass::Mutation,
+                CommandClass::NativeCommit,
             ),
             (
                 "commands::project_commands::acknowledge_workflow_commit",
@@ -510,7 +568,7 @@ mod tests {
             ),
             (
                 "commands::project_commands::import_table",
-                CommandClass::Mutation,
+                CommandClass::NativeCommit,
             ),
             (
                 "commands::project_commands::import_graph",
@@ -651,12 +709,31 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn mutation_coverage_extracts_exact_function_name() {
+        let source =
+            "pub fn create_table_from_rows() { native(); }\npub fn create_table() { legacy(); }";
+        assert_eq!(
+            extract_function_slice(source, "create_table"),
+            "pub fn create_table() { legacy(); }"
+        );
+        assert_eq!(
+            extract_function_slice(
+                "pub fn entry_extended() {} pub(crate) fn entry<F>() { guarded(); }",
+                "entry"
+            ),
+            "pub(crate) fn entry<F>() { guarded(); }"
+        );
+    }
+
     fn extract_function_slice<'a>(module_source: &'a str, function_name: &str) -> &'a str {
-        let public_header = format!("pub fn {function_name}");
-        let crate_header = format!("pub(crate) fn {function_name}");
-        let function_start = module_source
-            .find(&public_header)
-            .or_else(|| module_source.find(&crate_header))
+        let function_start = ["pub fn ", "pub(crate) fn "]
+            .iter()
+            .flat_map(|prefix| {
+                ['(', '<'].map(|delimiter| format!("{prefix}{function_name}{delimiter}"))
+            })
+            .filter_map(|header| module_source.find(&header))
+            .min()
             .unwrap_or_else(|| panic!("{function_name} must exist for mutation coverage"));
         let function_body = &module_source[function_start..];
 
@@ -699,6 +776,75 @@ mod tests {
             .split_once('{')
             .map(|(_, rest)| rest)
             .unwrap_or(function_slice);
+        // Native context branches use the receipt service; the remaining legacy
+        // branch must still acquire its permit before doing any work.
+        let body = if body
+            .trim_start()
+            .starts_with("if let Some(context) = context {")
+        {
+            let expected_file=match function_name {
+                "upsert_calculated_column"|"convert_calculated_column_to_values"=>"calculated_column_commands.rs",
+                "save_fit_model_columns"=>"fit_model_commands.rs",
+                "import_table"=>"project_commands.rs",
+                _=>"data_commands.rs",
+            };
+            assert_eq!(file_name, expected_file);
+            let native_method = match function_name {
+                "save_fit_model_columns" => "save_fit_model_columns",
+                "upsert_calculated_column" => "upsert_calculated_column",
+                "convert_calculated_column_to_values"=>"convert_calculated_column_to_values",
+                "alter_column_with_change_set"=>"alter_column",
+                "alter_columns_type_with_change_set"=>"alter_column_types",
+                "delete_dataset"=>"delete_dataset",
+                "paste_at_position_with_change_set"=>"paste",
+                "add_rows" => "add_rows",
+                "add_columns_with_change_set" => "add_columns",
+                "reorder_column_if_generation" => "reorder_columns",
+                "delete_columns_with_change_set" => "delete_columns",
+                "delete_rows_with_change_set" => "delete_rows",
+                "update_cells" => "update_cells",
+                "clear_cells" => "clear_cells",
+                "apply_table_change_set" => "apply_change_set",
+                "import_file" => "import_file",
+                "import_table" => "import_sptb",
+                "create_table_from_sql_query" => "materialize_sql",
+                "create_table_from_rows" => "create_table_from_rows",
+                "create_managed_table" => "create_managed_table",
+                "set_column_display_props" => "set_column_display_props",
+                "rename_dataset" => "rename_dataset",
+                _ => panic!("native mutation route needs explicit coverage: {function_name}"),
+            };
+            let start = body.find('{').unwrap();
+            let mut depth = 0;
+            let end = body[start..]
+                .char_indices()
+                .find_map(|(offset, character)| {
+                    if character == '{' {
+                        depth += 1;
+                    }
+                    if character == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(start + offset + 1);
+                        }
+                    }
+                    None
+                })
+                .expect("native branch must terminate");
+            let native: String = body[..end]
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            assert!(native.contains(&format!(
+                "NativeProjectService::new(&state).{native_method}(&context,"
+            )));
+            assert!(native.contains("returnOk(ProjectMutationResult::Committed(commit));"));
+            assert!(!native.contains("DataService::new"));
+            assert!(!native.contains(".db.lock("));
+            &body[end..]
+        } else {
+            body
+        };
         let first_statement = body
             .lines()
             .map(str::trim)
@@ -793,7 +939,7 @@ mod tests {
         assert_eq!(registered_tabulate.len(), 7);
         for command in registered_tabulate {
             let expected = if command.ends_with("::materialize_tabulate_table") {
-                CommandClass::Mutation
+                CommandClass::NativeCommit
             } else {
                 CommandClass::ReadOnly
             };
@@ -821,6 +967,45 @@ mod tests {
             );
             assert_has_permit_statement(data_source, command, "data_commands.rs");
         }
+    }
+
+    #[test]
+    fn native_project_record_commit_uses_the_epoch_bound_receipt_service() {
+        let classes = command_classes();
+        assert_eq!(
+            classes["commands::project_commands::commit_project_records"],
+            CommandClass::NativeCommit
+        );
+        let source = include_str!("project_commands.rs");
+        let body = source
+            .split("pub fn commit_project_records(")
+            .nth(1)
+            .expect("native command")
+            .split("#[tauri::command")
+            .next()
+            .unwrap();
+        let compact_body: String = body
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert!(compact_body
+            .contains("NativeProjectService::new(&state).commit_records(&context,&patch)?"));
+        assert!(!body.contains("state.db.lock"));
+        let service = include_str!("../services/project_native_service.rs");
+        let compact_service: String = service
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert!(compact_service
+            .contains("self.database(context.expected_epoch)?.commit_records(context,patch)"));
+    }
+
+    #[test]
+    fn native_operation_resolution_uses_epoch_bound_writer() {
+        assert_eq!(command_classes()["commands::project_commands::resolve_project_operation"],CommandClass::NativeCommit);
+        let source=include_str!("project_commands.rs");let body=extract_function_slice(source,"resolve_project_operation");let compact:String=body.chars().filter(|character|!character.is_whitespace()).collect();
+        assert!(compact.contains("NativeProjectService::new(&state).resolve_operation(&context)?"));assert!(!compact.contains(".db.lock("));
+        let source=include_str!("../services/project_native_service.rs");let body=extract_function_slice(source,"resolve_operation");let compact:String=body.chars().filter(|character|!character.is_whitespace()).collect();assert!(compact.contains("self.database(context.expected_epoch)?.resolve_operation(context)"));
     }
 
     #[test]

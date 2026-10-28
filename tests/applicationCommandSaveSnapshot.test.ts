@@ -59,7 +59,7 @@ function assertSourceIncludesAny(source: string, needles: string[], message: str
 
 const handleSaveSource = sourceBetween(
   workspaceSource,
-  "const handleSave = async () => {",
+  "const handleSave = async (",
   "handleSaveRef.current = handleSave;",
 );
 assertSourceIncludesAny(handleSaveSource, [
