@@ -76,7 +76,8 @@
     "tests/tableViewport.test.ts",
     "tests/tableWindowCache.test.ts",
     "tests/tableNavigationScheduler.test.ts",
-    "tests/tableViewportStore.test.ts"
+    "tests/tableViewportStore.test.ts",
+    "tests/projectTableTopology.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

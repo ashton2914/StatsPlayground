@@ -425,6 +425,13 @@ impl<'a> NativeProjectService<'a> {
         })
     }
 
+    pub fn topology(&self,epoch:u64)->Result<crate::models::project_topology::ProjectTopology,AppError>{
+        self.database(epoch)?.with_reader(epoch,|engine|super::project_topology::read_topology(engine,epoch))
+    }
+    pub fn preview_table_action(&self,epoch:u64,table_id:&str,scope:crate::models::project_topology::ProjectActionScope)->Result<crate::models::project_topology::ProjectActionPreview,AppError>{
+        self.topology(epoch)?.preview(table_id,scope)
+    }
+
     pub fn commit_records(
         &self,
         context: &ProjectWriteContext,

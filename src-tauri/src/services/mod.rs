@@ -92,3 +92,5 @@ pub(crate) mod project_export;
 
 #[cfg(any(test, feature="perf-harness"))]
 pub(crate) mod project_work_counters;
+
+pub(crate) mod project_topology;

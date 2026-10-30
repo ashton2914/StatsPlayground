@@ -1013,3 +1013,12 @@ pub fn delete_project_data_snapshot(app:AppHandle,state:State<'_,AppState>,conte
     let commit=db.delete_data_snapshot(&context,&id,expected_revision)?;
     if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
 }
+
+#[tauri::command(async)]
+pub fn get_project_topology(state:State<'_,AppState>,epoch:u64)->Result<crate::models::project_topology::ProjectTopology,AppError>{
+    crate::services::project_native_service::NativeProjectService::new(&state).topology(epoch)
+}
+#[tauri::command(async)]
+pub fn preview_project_table_action(state:State<'_,AppState>,epoch:u64,table_id:String,scope:crate::models::project_topology::ProjectActionScope)->Result<crate::models::project_topology::ProjectActionPreview,AppError>{
+    crate::services::project_native_service::NativeProjectService::new(&state).preview_table_action(epoch,&table_id,scope)
+}

@@ -122,3 +122,29 @@ export interface ProjectWorkflowRunState {
  workflowId:string; workflowRevision:number; committedRevision:number; totalCount:number;
  latestRunId:string|null; latestOutputBindings:import("./workflow").WorkflowOutputBinding[]|null;
 }
+
+/** Metadata-only table ownership and Transform connectivity at one project revision. */
+export interface ProjectTableNode { id:string; name:string; folder:string; revision:number }
+export interface ProjectTransformInput { role:string; tableId:string }
+export interface ProjectTransformLink {
+  id:string; name:string; revision:number; operationKind:string;
+  inputs:ProjectTransformInput[]; outputTableId:string;
+}
+export interface ProjectOwnedDocument { id:string; kind:ProjectDocumentKind; tableId:string; revision:number }
+export interface ProjectTopologyDiagnostic { code:string; id:string }
+export interface ProjectTopology {
+  epoch:number; committedRevision:number; tables:ProjectTableNode[];
+  transforms:ProjectTransformLink[]; ownedDocuments:ProjectOwnedDocument[];
+  diagnostics:ProjectTopologyDiagnostic[];
+}
+export type ProjectActionScope = 'component' | 'descendants';
+export interface ProjectActionPreview {
+  epoch:number; committedRevision:number; targetTableId:string; scope:ProjectActionScope;
+  tableIds:string[]; transformIds:string[]; ownedDocumentIds:string[];
+  blockers:ProjectTopologyDiagnostic[];
+}
+export interface ProjectGroupMoveRequest { targetTableId:string; destinationFolder:string; expectedTopologyRevision:number }
+export interface ProjectGroupCopyRequest extends ProjectGroupMoveRequest {}
+export interface ProjectGroupCopyResult { tableIds:string[]; idMap:Record<string,string> }
+export interface ProjectGroupExportRequest { targetTableId:string; filePath:string; expectedTopologyRevision:number }
+export interface ProjectGroupImportRequest { filePath:string; destinationFolder:string }
