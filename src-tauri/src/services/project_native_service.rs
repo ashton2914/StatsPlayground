@@ -432,7 +432,7 @@ impl<'a> NativeProjectService<'a> {
         self.database(epoch)?.with_reader(epoch,|engine|super::project_topology::read_topology(engine,epoch))
     }
     pub fn preview_table_action(&self,epoch:u64,table_id:&str,scope:crate::models::project_topology::ProjectActionScope)->Result<crate::models::project_topology::ProjectActionPreview,AppError>{
-        self.topology(epoch)?.preview(table_id,scope)
+        self.database(epoch)?.with_reader(epoch,|engine|super::project_group_history::preview(engine,epoch,table_id,scope))
     }
 
     pub fn commit_records(
@@ -971,10 +971,7 @@ impl<'a> NativeProjectService<'a> {
     pub fn delete_dataset(&self,context:&ProjectWriteContext,dataset_id:&str)->Result<ProjectCommit<()>,AppError> {
         if !context.dataset_generations.iter().any(|item|item.id==dataset_id) {return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
         self.database(context.expected_epoch)?.commit_with_effects(context,&("delete_dataset",dataset_id),|engine| {
-            super::project_table_lifecycle::retire_storage(engine,dataset_id)?;
-            let event=super::project_table_lifecycle::record_deletion(engine,dataset_id)?;
-            let effects=super::project_table_retirement::retire_metadata(engine,&event)?;
-            Ok(super::project_transaction::CommitEffects {value:(),dataset_ids:vec![],document_ids:effects.document_ids,setting_ids:effects.setting_ids})
+            super::project_group_history::delete_cascade(engine,context.expected_epoch,dataset_id)
         })
     }
 
@@ -991,6 +988,7 @@ impl<'a> NativeProjectService<'a> {
             let event=super::project_table_lifecycle::authorize_replay(engine,id,event_revision,undo)?;
             let active_before=(event.operation=="create_table")==event.applied;
             if active_before&&!context.dataset_generations.iter().any(|item|item.id==event.dataset_id) {return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
+            if let Some(effects)=super::project_group_history::replay(engine,context,&event,undo)?{return Ok(effects);}
             let activate=(event.operation=="delete_table")==undo;
             let effects=if activate {
                 super::project_table_lifecycle::restore_storage(engine,&event.dataset_id)?;

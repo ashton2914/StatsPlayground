@@ -19,6 +19,7 @@ import { useWorkflowStore } from "../stores/useWorkflowStore";
 import { useTableTransformStore } from "../stores/useTableTransformStore";
 import {folderAncestors} from "../stores/useFolderStore";
 import { useFolderStore } from "../stores/useFolderStore";
+import {useWorkspaceSelectionStore} from "../stores/useWorkspaceSelectionStore";
 import type { ReportItem } from "../types/report";
 import type { GraphBuilderItem } from "../types/graphBuilder";
 import type { PersistedGraphBuilderNewDocument } from "../types/graphBuilderNew";
@@ -106,6 +107,7 @@ function projectDirectoryDeletion(kind:ProjectDocumentKind,id:string,preserveHis
       case "graphNew":useGraphBuilderNewStore.setState(state=>({items:remove(state.items),sessions:remove(state.sessions)}));break;
       case "analysis":useAnalysisStore.setState(state=>({items:remove(state.items)}));break;
       case "tabulate":useTabulateStore.setState(state=>({items:remove(state.items)}));break;
+      case "transform":useTableTransformStore.setState(state=>({definitions:remove(state.definitions),bindings:state.bindings.filter(item=>item.definitionId!==id),pendingById:Object.fromEntries(Object.entries(state.pendingById).filter(([key])=>key!==id))}));break;
     }
     const folders=useFolderStore.getState();
     const changes:Partial<Record<typeof DIRECTORY_MAP_KEYS[number],Record<string,string>>>={};
@@ -395,6 +397,10 @@ export function createProjectDocumentAdapters(input: { coordinator: ProjectPersi
       if(commit.committedRevision>tableHistoryFloor)for (const entry of commit.changedHistoryEntries ?? []) useHistoryStore.getState().recordCommittedTableMutation(entry);
       const lifecycleRemovals=new Set(commit.committedRevision>tableHistoryFloor
         ? (commit.changedHistoryEntries??[]).filter(entry=>(entry.operation==="delete_table"&&entry.applied)||(entry.operation==="create_table"&&!entry.applied)).map(entry=>entry.datasetId) : []);
+      if((commit.changedHistoryEntries??[]).some(entry=>entry.operation==="delete_table"&&entry.applied)) {
+        for(const id of commit.deletedDirectoryIds??[]) if(summaries.get(id)?.kind==="table") lifecycleRemovals.add(id);
+      }
+      const removedSelectionIds=new Set<string>();
       for (const id of commit.deletedDirectoryIds ?? []) {
         if((metadataRevisions.get(id)??0)>commit.committedRevision) continue;
         metadataRevisions.set(id,commit.committedRevision);committedDeletes.set(id,commit.committedRevision);
@@ -402,9 +408,11 @@ export function createProjectDocumentAdapters(input: { coordinator: ProjectPersi
         summaries.delete(id);
         if((pending.get(id)?.sequence??0)<=acknowledged) {
           deleted.add(id);bodyRevisions.delete(id);
-          if(removed) projectDirectoryDeletion(removed.kind,id,lifecycleRemovals.has(id));
+          if(removed) {projectDirectoryDeletion(removed.kind,id,lifecycleRemovals.has(id));removedSelectionIds.add(id);}
         }
       }
+      const selected=useWorkspaceSelectionStore.getState().selection;
+      if(Object.values(selected).some(id=>id!==null&&removedSelectionIds.has(id))) useWorkspaceSelectionStore.getState().clear();
       for (const summary of commit.changedDirectoryEntries ?? []) {
         if((metadataRevisions.get(summary.id)??0)>commit.committedRevision||summary.revision<(summaries.get(summary.id)?.revision??0)) continue;
         metadataRevisions.set(summary.id,commit.committedRevision);

@@ -171,6 +171,7 @@ pub(crate) fn discard_for_snapshot(engine: &DuckDbEngine) -> Result<Vec<String>,
             .execute_batch("DELETE FROM _project_table_lifecycle_events")?;
     }
     super::project_table_retirement::discard_metadata_for_snapshot(engine)?;
+    super::project_group_history::discard_all(engine)?;
     super::project_history_frontier::reset(engine)?;
     Ok(ids)
 }
@@ -183,7 +184,8 @@ pub(crate) fn committed_summaries(
     if !has_events(engine)? {
         return Ok(vec![]);
     }
-    let events=engine.conn().prepare("SELECT id,dataset_id,operation,applied FROM _project_table_lifecycle_events WHERE project_revision=? ORDER BY id")?.query_map([revision],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,bool>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let visibility=super::project_group_history::visible(engine,"l")?;
+    let events=engine.conn().prepare(&format!("SELECT id,dataset_id,operation,applied FROM _project_table_lifecycle_events l WHERE project_revision=? AND {visibility} ORDER BY id"))?.query_map([revision],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,bool>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
     if events.is_empty() {
         return Ok(vec![]);
     }
@@ -228,11 +230,13 @@ pub(crate) fn history_source(engine: &DuckDbEngine) -> Result<String, AppError> 
         return Ok("SELECT NULL::VARCHAR AS id,NULL::VARCHAR AS dataset_id,NULL::VARCHAR AS operation,FALSE AS applied,0::UBIGINT AS generation,NULL::VARCHAR AS dataset_name WHERE FALSE".into());
     }
     let retired:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='_project_retired_datasets')",[],|row|row.get(0))?;
-    Ok(if retired {
+    let source:String=if retired {
         "SELECT l.id,l.dataset_id,l.operation,l.applied,COALESCE(m.generation,r.generation,0) AS generation,COALESCE(m.name,r.name) AS dataset_name FROM _project_table_lifecycle_events l LEFT JOIN _meta_datasets m ON m.id=l.dataset_id LEFT JOIN _project_retired_datasets r ON r.id=l.dataset_id"
     } else {
         "SELECT l.id,l.dataset_id,l.operation,l.applied,COALESCE(m.generation,0) AS generation,m.name AS dataset_name FROM _project_table_lifecycle_events l LEFT JOIN _meta_datasets m ON m.id=l.dataset_id"
-    }.into())
+    }.into();
+    let visibility=super::project_group_history::visible(engine,"entries")?;
+    Ok(format!("SELECT * FROM ({source}) entries WHERE {visibility}"))
 }
 
 /// A creation event may share the UUID of its existing output-publication marker.
@@ -256,6 +260,7 @@ pub(crate) fn prune_redo(engine: &DuckDbEngine, _dataset: &str) -> Result<(), Ap
         let has_retired:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='_project_retired_datasets')",[],|row|row.get(0))?;
         for (id,dataset,operation) in &events {
             super::project_table_retirement::discard_event_metadata(engine,id)?;
+            super::project_group_history::discard(engine,id)?;
             if operation=="create_table" && has_retired {
                 let hidden:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM _project_retired_datasets WHERE id=?) AND NOT EXISTS(SELECT 1 FROM _meta_datasets WHERE id=?)",duckdb::params![dataset,dataset],|row|row.get(0))?;
                 if hidden {

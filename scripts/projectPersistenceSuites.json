@@ -79,7 +79,8 @@
     "tests/tableViewportStore.test.ts",
     "tests/projectTableTopology.test.ts",
     "tests/projectTableGroupMoves.test.ts",
-    "tests/projectOwnedDocumentFolders.test.ts"
+    "tests/projectOwnedDocumentFolders.test.ts",
+    "tests/projectTableCascadeDeletion.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

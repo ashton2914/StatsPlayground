@@ -136,7 +136,7 @@ pub(crate) mod tests {
         assert!(db.commit_records(&context(&db,"unbind"),&patch).is_err());
         assert_eq!(db.committed_revision().unwrap(),3);
     }
-    fn create_subset(db:&ProjectDatabase,source:&str,name:&str)->Result<ProjectCommit<crate::services::table_transform_service::TableTransformCommandResult>,AppError>{
+    pub(crate) fn create_subset(db:&ProjectDatabase,source:&str,name:&str)->Result<ProjectCommit<crate::services::table_transform_service::TableTransformCommandResult>,AppError>{
         let mut ctx=context(db,name);ctx.dataset_generations=vec![DatasetGeneration{id:source.into(),generation:db.with_engine(|e|e.get_dataset_generation(source)).unwrap()}];
         db.create_project_transform(&ctx,&crate::services::project_output::ProjectTransformCreate{
             draft:serde_json::from_value(serde_json::json!({"name":name,"outputName":name,"operation":{"kind":"subset","columns":["value"]}})).unwrap(),
