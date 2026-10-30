@@ -1029,3 +1029,9 @@ pub fn move_project_table_group(app:AppHandle,state:State<'_,AppState>,context:P
     if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
     Ok(commit)
 }
+
+#[tauri::command(async)]
+pub fn copy_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupMoveRequest)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).copy_table_group(&context,&request,||false)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
+}

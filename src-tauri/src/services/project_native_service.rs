@@ -425,6 +425,9 @@ impl<'a> NativeProjectService<'a> {
         })
     }
 
+    pub fn copy_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest,cancelled:impl Fn()->bool)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+        self.database(context.expected_epoch)?.copy_table_group(context,request,cancelled)
+    }
     pub fn move_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest)->Result<ProjectCommit<()>,AppError>{
         self.database(context.expected_epoch)?.move_table_group(context,request)
     }

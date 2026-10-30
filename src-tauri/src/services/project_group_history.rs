@@ -25,8 +25,11 @@ pub(crate) fn discard_all(engine:&DuckDbEngine)->Result<(),AppError>{
 }
 /// Used for confirmation and authorization; external references never silently break.
 pub(crate) fn preview(engine:&DuckDbEngine,epoch:u64,table_id:&str,scope:ProjectActionScope)->Result<ProjectActionPreview,AppError>{
+    action_preview(engine,epoch,table_id,scope,scope==ProjectActionScope::Descendants)
+}
+fn action_preview(engine:&DuckDbEngine,epoch:u64,table_id:&str,scope:ProjectActionScope,check_references:bool)->Result<ProjectActionPreview,AppError>{
     let topology=super::project_topology::read_topology(engine,epoch)?;let mut result=topology.preview(table_id,scope)?;
-    if scope==ProjectActionScope::Descendants {
+    if check_references {
         let removed:BTreeSet<_>=result.table_ids.iter().chain(&result.transform_ids).chain(&result.owned_document_ids).map(String::as_str).collect();
         let mut after=None;
         loop{let page=ProjectCatalog::new(engine).list(&CatalogPageRequest{after,limit:1000})?;for item in page.items {
@@ -104,6 +107,11 @@ fn restore_connectors(engine:&DuckDbEngine,root:&str)->Result<(Vec<String>,Vec<S
     }
     catalog.apply_patch(&ProjectRecordPatch{settings:writes,..Default::default()})?;Ok((docs,settings))
 }
+/// A fresh copied/imported component is one public creation action, not N partial undos.
+pub(crate) fn group_creations(engine:&DuckDbEngine,topology:&ProjectTopology,tables:&[String],events:&[LifecycleEvent])->Result<(),AppError>{
+    let ordered=order(topology,tables)?;let root=events.iter().find(|e|Some(&e.dataset_id)==ordered.first()).ok_or_else(||invalid("project_cascade_metadata_missing"))?;storage(engine)?;
+    for (ordinal,table) in ordered.iter().enumerate(){let event=events.iter().find(|e|e.dataset_id==*table).ok_or_else(||invalid("project_cascade_metadata_missing"))?;engine.conn().execute("INSERT INTO _project_cascade_members VALUES(?,?,?)",params![&root.id,ordinal as u32,&event.id])?;}Ok(())
+}
 pub(crate) fn delete_cascade(engine:&DuckDbEngine,epoch:u64,table_id:&str)->Result<CommitEffects<()>,AppError>{
     let preview=preview(engine,epoch,table_id,ProjectActionScope::Descendants)?;if !preview.blockers.is_empty(){return Err(AppError::InvalidParam(format!("project_deletion_external_reference: {}",preview.blockers.iter().map(|b|b.id.as_str()).collect::<Vec<_>>().join(", "))));}
     let topology=super::project_topology::read_topology(engine,epoch)?;let ordered=order(&topology,&preview.table_ids)?;
@@ -135,7 +143,8 @@ pub(crate) fn replay(engine:&DuckDbEngine,context:&ProjectWriteContext,event:&Li
         let (connectors,binding_settings)=restore_connectors(engine,&event.id)?;docs.extend(connectors);settings.extend(binding_settings);
         if !super::project_topology::read_topology(engine,context.expected_epoch)?.diagnostics.is_empty(){return Err(invalid("project_cascade_parent_missing"));}
     }else{
-        let preview=preview(engine,context.expected_epoch,&event.dataset_id,ProjectActionScope::Descendants)?;
+        let scope=if event.operation=="create_table"&&events.len()>1{ProjectActionScope::Component}else{ProjectActionScope::Descendants};
+        let preview=action_preview(engine,context.expected_epoch,&event.dataset_id,scope,true)?;
         let expected:BTreeSet<_>=events.iter().map(|e|e.dataset_id.as_str()).collect();if preview.table_ids.iter().map(String::as_str).collect::<BTreeSet<_>>()!=expected||!preview.blockers.is_empty(){return Err(invalid("project_cascade_scope_changed"));}
         for member in events.iter().rev(){lifecycle::retire_storage(engine,&member.dataset_id)?;let effects=retirement::retire_metadata(engine,member)?;docs.extend(effects.document_ids);settings.extend(effects.setting_ids);}
         let (connectors,binding_settings)=retire_connectors(engine,&event.id,&preview)?;docs.extend(connectors);settings.extend(binding_settings);

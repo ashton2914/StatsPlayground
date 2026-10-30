@@ -29,3 +29,9 @@ export async function moveTableGroup(targetTableId:string,destinationFolder:stri
   await persistence.submit({command:'move_project_table_group',payload:{request:{targetTableId,destinationFolder,expectedTopologyRevision}}});
   assertCurrent(persistence,epoch);
 }
+
+export async function copyTableGroup(targetTableId:string,destinationFolder:string,expectedTopologyRevision:number) {
+  const persistence=owner();const epoch=persistence.snapshot().epoch;
+  const commit=await persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'copy_project_table_group',payload:{request:{targetTableId,destinationFolder,expectedTopologyRevision}}});
+  assertCurrent(persistence,epoch);return commit.value;
+}

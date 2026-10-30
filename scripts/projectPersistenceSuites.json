@@ -80,7 +80,8 @@
     "tests/projectTableTopology.test.ts",
     "tests/projectTableGroupMoves.test.ts",
     "tests/projectOwnedDocumentFolders.test.ts",
-    "tests/projectTableCascadeDeletion.test.ts"
+    "tests/projectTableCascadeDeletion.test.ts",
+    "tests/projectTableGroupCopy.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

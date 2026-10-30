@@ -630,7 +630,7 @@ impl<'a> TableTransformService<'a> {
         }
     }
 
-    fn build_lineage(
+    pub(crate) fn build_lineage(
         &self,
         definition: &TableTransformDefinition,
         binding: &TableTransformProjectBinding,
