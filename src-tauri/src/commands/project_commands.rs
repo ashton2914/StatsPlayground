@@ -1022,3 +1022,10 @@ pub fn get_project_topology(state:State<'_,AppState>,epoch:u64)->Result<crate::m
 pub fn preview_project_table_action(state:State<'_,AppState>,epoch:u64,table_id:String,scope:crate::models::project_topology::ProjectActionScope)->Result<crate::models::project_topology::ProjectActionPreview,AppError>{
     crate::services::project_native_service::NativeProjectService::new(&state).preview_table_action(epoch,&table_id,scope)
 }
+
+#[tauri::command(async)]
+pub fn move_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupMoveRequest)->Result<crate::models::project_persistence::ProjectCommit<()>,AppError>{
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).move_table_group(&context,&request)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
+    Ok(commit)
+}

@@ -94,3 +94,5 @@ pub(crate) mod project_export;
 pub(crate) mod project_work_counters;
 
 pub(crate) mod project_topology;
+
+pub(crate) mod project_group_operations;

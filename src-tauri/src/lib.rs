@@ -193,6 +193,7 @@ pub fn run() {
             commands::project_commands::project_v5_enabled,
             commands::project_commands::list_project_catalog,
             commands::project_commands::get_project_topology,
+            commands::project_commands::move_project_table_group,
             commands::project_commands::preview_project_table_action,
             commands::project_commands::get_project_document,
             commands::project_commands::get_project_setting,

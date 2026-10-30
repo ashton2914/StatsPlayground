@@ -345,6 +345,7 @@ impl crate::services::project_database::ProjectDatabase {
                     return Err(invalid("project_record_requires_typed_operation"));
                 }
             }
+            super::project_group_operations::validate_record_moves(engine,patch)?;
             ProjectCatalog::new(engine).apply_patch(patch)?;
             Ok(crate::services::project_transaction::CommitEffects {
                 value:(),dataset_ids:vec![],

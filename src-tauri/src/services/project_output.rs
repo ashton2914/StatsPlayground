@@ -281,6 +281,9 @@ impl ProjectDatabase {
                 ));
             }
             let catalog = ProjectCatalog::new(engine);
+            let input_folders=request.inputs.iter().map(|input|catalog.summary(&input.table_document_id).map(|s|s.folder)).collect::<Result<std::collections::BTreeSet<_>,AppError>>()?;
+            if input_folders.len()!=1{return Err(AppError::InvalidParam("project_group_folder_normalization_required".into()));}
+            let output_folder=input_folders.first().cloned().ok_or_else(||AppError::InvalidParam("project_transform_inputs_missing".into()))?;
             let setting = catalog.get_setting("lineage")?;
             let mut lineage = match &setting {
                 Some((_, json)) => serde_json::from_value(json.clone())
@@ -313,7 +316,7 @@ impl ProjectDatabase {
                 .output
                 .as_ref()
                 .ok_or_else(|| AppError::Database("project_transform_output_missing".into()))?;
-            let event=catalog.publish_new_table(output, &request.folder)?;
+            let event=catalog.publish_new_table(output, &output_folder)?;
             catalog.apply_patch(&ProjectRecordPatch {
                 documents: vec![DocumentWrite {
                     expected_revision: None,
@@ -323,7 +326,7 @@ impl ProjectDatabase {
                             kind: ProjectDocumentKind::Transform,
                             analysis_kind: None,
                             name: definition.name.clone(),
-                            folder: request.folder.clone(),
+                            folder: output_folder.clone(),
                             revision: 1,
                             dependencies: request
                                 .inputs
@@ -399,7 +402,11 @@ impl ProjectDatabase {
             let persisted:PersistedTableTransformBinding=serde_json::from_value(saved.1).map_err(|_|AppError::InvalidParam("project_transform_binding_invalid".into()))?;
             if persisted.binding!=request.binding {return Err(AppError::InvalidParam("project_transform_binding_stale".into()));}
             let mut binding=persisted.binding;
-            if let Some(inputs)=&request.input_bindings {binding.inputs=inputs.clone();}
+            if let Some(inputs)=&request.input_bindings {
+                let keys=|items:&[crate::services::table_transform_service::TableTransformInputBinding]|items.iter().map(|i|(i.role.clone(),i.table_document_id.clone())).collect::<std::collections::BTreeSet<_>>();
+                if keys(inputs)!=keys(&binding.inputs){return Err(AppError::InvalidParam("project_transform_detach_not_allowed".into()));}
+                binding.inputs=inputs.clone();
+            }
             for id in binding.inputs.iter().map(|input|input.table_document_id.as_str()).chain(std::iter::once(request.definition.output.table_document_id.as_str())) {
                 if !context.dataset_generations.iter().any(|item|item.id==id) {return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
             }

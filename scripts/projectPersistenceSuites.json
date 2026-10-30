@@ -77,7 +77,9 @@
     "tests/tableWindowCache.test.ts",
     "tests/tableNavigationScheduler.test.ts",
     "tests/tableViewportStore.test.ts",
-    "tests/projectTableTopology.test.ts"
+    "tests/projectTableTopology.test.ts",
+    "tests/projectTableGroupMoves.test.ts",
+    "tests/projectOwnedDocumentFolders.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

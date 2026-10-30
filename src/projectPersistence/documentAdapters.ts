@@ -151,9 +151,12 @@ export function createProjectDocumentAdapters(input: { coordinator: ProjectPersi
     const body = bodyFor(kind, item);
     if(expectedRevision===undefined&&old&&!bodyRevisions.has(item.id)) throw new Error("Document body is not loaded at an acknowledged revision");
     const expected = expectedRevision === undefined ? bodyRevisions.get(item.id) ?? null : expectedRevision;
+    const sourceIds=dependencies(kind,body);
+    const owned=["graph","graphNew","analysis","tabulate"].includes(kind);
+    const inheritedFolder=owned&&sourceIds.length===1?summaries.get(sourceIds[0])?.folder:undefined;
     const summary: ProjectDocumentSummary = { id: item.id, name: item.name, kind,
       ...(kind==="analysis"?{analysisKind:(item as AnalysisDocument).analysisKind}:{}),
-      folder: folderFor(kind, item.id, old?.folder ?? ""), revision: (expected ?? 0) + 1, dependencies: dependencies(kind, body) };
+      folder: inheritedFolder??folderFor(kind, item.id, old?.folder ?? ""), revision: (expected ?? 0) + 1, dependencies: sourceIds };
     deleted.delete(item.id);
     const sequence = input.coordinator.enqueueDocument({ expectedRevision: expected, document: { summary, body, schemaVersion: 1 } });
     pending.set(item.id, { sequence, summary });

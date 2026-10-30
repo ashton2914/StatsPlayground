@@ -5,7 +5,7 @@ import type {
 
 export type ProjectMutationCommand =
   | "capture_project_data_snapshot" | "restore_project_data_snapshot" | "delete_project_data_snapshot"
-  | "commit_project_records" | "update_cells" | "clear_cells" | "add_rows"
+  | "move_project_table_group" | "commit_project_records" | "update_cells" | "clear_cells" | "add_rows"
   | "delete_rows_with_change_set" | "add_columns_with_change_set"
   | "delete_columns_with_change_set" | "alter_column_with_change_set"
   | "alter_columns_type_with_change_set" | "paste_at_position_with_change_set"
