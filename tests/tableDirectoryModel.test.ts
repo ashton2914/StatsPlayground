@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {buildTableDirectory,groupDragPayload} from '../src/components/directory/tableDirectoryModel';
+import type {ProjectTopology} from '../src/types/projectPersistence';
+const topology:ProjectTopology={epoch:4,committedRevision:8,diagnostics:[],tables:['C','X','B','A','Z'].map(id=>({id,name:id==='Z'?'Experiment.sptb':id,revision:1,folder:id==='Z'?'elsewhere':''})),transforms:[{id:'ab',name:'Subset',revision:1,operationKind:'subset',inputs:[{role:'source',tableId:'A'}],outputTableId:'B'},{id:'bc',name:'Join',revision:1,operationKind:'join',inputs:[{role:'left',tableId:'B'},{role:'right',tableId:'X'}],outputTableId:'C'}],ownedDocuments:['graph','graphNew','analysis','tabulate'].map((kind,i)=>({id:`child${i}`,kind:kind as 'graph',tableId:'B',revision:1}))};
+const model=buildTableDirectory(topology,[{id:'child2',name:'Analysis late page',kind:'analysis',folder:'',revision:1,dependencies:['B'],analysisKind:'distribution'}]);
+assert.equal(model.groups.length,2);const linked=model.groups.find(g=>g.tables.some(t=>t.id==='A'))!;
+assert.equal(new Set(linked.tables.map(t=>t.id)).size,4);
+const order=linked.tables.map(t=>t.id);assert.ok(order.indexOf('A')<order.indexOf('B'));assert.ok(order.indexOf('B')<order.indexOf('C'));assert.ok(order.indexOf('X')<order.indexOf('C'));
+assert.deepEqual(linked.tables.find(t=>t.id==='B')!.children.map(d=>d.kind),['graph','graphNew','analysis','tabulate']);
+assert.equal(linked.tables.find(t=>t.id==='B')!.children[2].name,'Analysis late page');
+assert.equal(model.groups.find(g=>g.tables[0].id==='Z')!.tables[0].name,'Experiment.sptb');
+assert.equal(linked.tables[0].name,'A');assert.deepEqual(groupDragPayload(model,'child2'),groupDragPayload(model,'B'));assert.equal(groupDragPayload(model,'C')!.revision,8);
+const renamed=buildTableDirectory({...topology,tables:topology.tables.map(t=>({...t,name:t.name+' renamed'}))},[]);assert.equal(renamed.groups.find(g=>g.tables.some(t=>t.id==='A'))!.id,linked.id);
+console.log('table directory ownership, Join order, complete metadata, literal names and group drag passed');

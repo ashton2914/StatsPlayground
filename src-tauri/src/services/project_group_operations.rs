@@ -7,7 +7,7 @@ pub(crate) fn validate_record_moves(engine:&crate::engine::duckdb_engine::DuckDb
     if patch.directory_moves.is_empty()&&patch.documents.is_empty()&&!relationship_write{return Ok(());}
     let topology=super::project_topology::read_topology(engine,0)?;
     let catalog=ProjectCatalog::new(engine);
-    for id in &patch.deleted_document_ids {if topology.transforms.iter().any(|t|t.id==*id){return Err(AppError::InvalidParam("project_transform_requires_table_deletion".into()));}}
+    for id in &patch.deleted_document_ids {if catalog.summary(id)?.kind==ProjectDocumentKind::Transform{return Err(AppError::InvalidParam("project_transform_requires_table_deletion".into()));}}
     for setting in &patch.settings {if let Some(id)=setting.key.strip_prefix("transformBinding:") {
         let old=catalog.get_setting(&setting.key)?.ok_or_else(||AppError::InvalidParam("project_transform_requires_typed_operation".into()))?.1;
         let inputs=|value:&serde_json::Value|->Option<BTreeSet<(String,String)>>{Some(value.get("inputs")?.as_array()?.iter().map(|v|Some((v.get("role")?.as_str()?.to_string(),v.get("tableDocumentId")?.as_str()?.to_string()))).collect::<Option<_>>()?)};
@@ -22,6 +22,7 @@ pub(crate) fn validate_record_moves(engine:&crate::engine::duckdb_engine::DuckDb
             if write.document.body.pointer("/output/tableDocumentId").and_then(serde_json::Value::as_str)!=Some(existing.output_table_id.as_str()){return Err(AppError::InvalidParam("project_transform_detach_not_allowed".into()));}
         }
         if matches!(summary.kind,ProjectDocumentKind::Graph|ProjectDocumentKind::GraphNew|ProjectDocumentKind::Analysis|ProjectDocumentKind::Tabulate) {
+            if let Ok(old)=catalog.summary(&summary.id) {if old.dependencies!=summary.dependencies{return Err(AppError::InvalidParam("project_document_reparent_not_allowed".into()));}}
             if let Some(table)=summary.dependencies.first().filter(|_|summary.dependencies.len()==1) {
                 let owner=catalog.summary(table)?;
                 let folder=patch.directory_moves.iter().find(|m|m.id==*table).map(|m|m.folder.as_str()).unwrap_or(&owner.folder);
@@ -34,13 +35,16 @@ pub(crate) fn validate_record_moves(engine:&crate::engine::duckdb_engine::DuckDb
         let summary=&write.document.summary;
         if let Ok(old)=catalog.summary(&summary.id) {movements.push(DirectoryMove{id:summary.id.clone(),expected_revision:old.revision,folder:summary.folder.clone(),name:None});}
     }
+    let mut validated=BTreeSet::new();
     for movement in &movements {
         let old=catalog.summary(&movement.id)?;
         if old.folder==movement.folder{continue;}
         let table=if old.kind==ProjectDocumentKind::Table{Some(old.id.as_str())}
             else{topology.owned_documents.iter().find(|d|d.id==old.id).map(|d|d.table_id.as_str()).or_else(||topology.transforms.iter().find(|t|t.id==old.id).map(|t|t.output_table_id.as_str()))};
         if let Some(table)=table {
+            if validated.contains(table){continue;}
             let preview=topology.preview(table,ProjectActionScope::Component)?;
+            validated.extend(preview.table_ids.iter().cloned());
             for id in preview.table_ids.iter().chain(&preview.transform_ids).chain(&preview.owned_document_ids){
                 let current=catalog.summary(id)?;
                 let destination=proposed.get(id.as_str()).copied().unwrap_or(&current.folder);
@@ -93,6 +97,23 @@ pub(crate) mod tests {
         }).unwrap();
     }
     fn folder(db:&ProjectDatabase,id:&str)->String{db.with_reader(db.epoch(),|e|Ok(ProjectCatalog::new(e).summary(id)?.folder)).unwrap()}
+    #[test]
+    fn project_linked_groups_move_owned_document_cannot_change_parent_or_delete_broken_connector(){
+        let (_dir,db,ids)=fixture();
+        let doc=ProjectDocumentBody{summary:ProjectDocumentSummary{id:"graph-b".into(),kind:ProjectDocumentKind::Graph,name:"graph-b".into(),folder:String::new(),revision:2,dependencies:vec![ids[2].clone()],analysis_kind:None},schema_version:1,body:serde_json::json!({"id":"graph-b","name":"graph-b","sourceDatasetId":ids[2]})};
+        assert!(db.commit_records(&context(&db,"reparent-child"),&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:Some(1),document:doc}],..Default::default()}).is_err());
+        db.with_engine(|e|{e.conn().execute("DELETE FROM _project_settings WHERE key='transformBinding:ab'",[])?;Ok(())}).unwrap();
+        assert!(db.commit_records(&context(&db,"unlink-broken"),&ProjectRecordPatch{deleted_document_ids:vec!["ab".into()],..Default::default()}).is_err());
+    }
+    #[test]
+    fn project_linked_groups_move_folder_rename_and_promotion_include_all_members(){
+        let (_dir,db,ids)=fixture();db.move_table_group(&context(&db,"folder-source"),&ProjectGroupMoveRequest{target_table_id:ids[0].clone(),destination_folder:"F/N".into(),expected_topology_revision:3}).unwrap();
+        for (name,from,to) in [("rename","F/N","G/N"),("promote","G/N","")] {
+            let patch=db.with_reader(db.epoch(),|e|{let topology=super::super::project_topology::read_topology(e,db.epoch())?;let preview=topology.preview(&ids[0],ProjectActionScope::Component)?;let catalog=ProjectCatalog::new(e);Ok(ProjectRecordPatch{directory_moves:preview.table_ids.iter().chain(&preview.transform_ids).chain(&preview.owned_document_ids).map(|id|{let summary=catalog.summary(id)?;assert_eq!(summary.folder,from);Ok(DirectoryMove{id:id.clone(),expected_revision:summary.revision,folder:to.into(),name:None})}).collect::<Result<_,AppError>>()?,deleted_folders:vec![from.into()],..Default::default()})}).unwrap();
+            db.commit_records(&context(&db,name),&patch).unwrap();for id in [&ids[0],&ids[1],"ab","graph-b","analysis-b","tabulate-b"]{assert_eq!(folder(&db,id),to);}assert_eq!(folder(&db,&ids[2]),"");
+        }
+        assert!(db.with_reader(db.epoch(),|e|super::super::project_topology::read_topology(e,db.epoch())).unwrap().diagnostics.is_empty());
+    }
     #[test]
     fn project_linked_groups_move_entire_component_to_new_folder_and_root(){
         let (_dir,db,ids)=fixture();

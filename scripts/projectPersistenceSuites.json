@@ -82,7 +82,10 @@
     "tests/projectOwnedDocumentFolders.test.ts",
     "tests/projectTableCascadeDeletion.test.ts",
     "tests/projectTableGroupCopy.test.ts",
-    "tests/projectTableGroupTransfer.test.ts"
+    "tests/projectTableGroupTransfer.test.ts",
+    "tests/tableDirectoryModel.test.ts",
+    "tests/projectGroupFolders.test.ts",
+    "tests/projectLogicalNames.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

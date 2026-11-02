@@ -1,0 +1,14 @@
+.sp-table-directory { min-width:0; }
+.sp-table-group { display:flex; position:relative; margin:5px 2px; min-width:0; }
+.sp-table-group-tables { min-width:0; flex:1; }
+.sp-table-group-linked>.sp-table-group-tables { border-left:2px solid var(--accent, #367b91); border-radius:8px; margin-left:4px; padding:3px 0 3px 6px; }
+.sp-table-group-controls { width:23px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+.sp-table-group-controls button,.sp-table-group-controls summary,.sp-directory-toggle { border:0; background:transparent; color:inherit; cursor:pointer; padding:3px; }
+.sp-directory-toggle { width:16px; flex-shrink:0; }
+.sp-directory-toggle:disabled { cursor:default; }
+.sp-table-directory-row { min-height:29px; padding:4px 6px; }
+.sp-table-owned { padding-left:38px; }
+.sp-table-owned .dataset-item { padding-left:4px; }
+.sp-table-transform-list { position:absolute; z-index:10; background:var(--bg-secondary,#eee); box-shadow:0 2px 8px #0003; display:grid; min-width:130px; }
+.sp-table-transform-list button { text-align:left; padding:8px; }
+.sp-directory-warning { display:block; font-size:11px; padding:4px; color:var(--fg-secondary,#777); }

@@ -133,7 +133,7 @@ export interface ProjectTransformLink {
 export interface ProjectOwnedDocument { id:string; kind:ProjectDocumentKind; tableId:string; revision:number; name?:string; folder?:string; analysisKind?:string | null }
 export interface ProjectTopologyDiagnostic { code:string; id:string }
 export interface ProjectTopology {
-  epoch:number; committedRevision:number; tables:ProjectTableNode[];
+  epoch:number; committedRevision:number; folders?:string[]; tables:ProjectTableNode[];
   transforms:ProjectTransformLink[]; ownedDocuments:ProjectOwnedDocument[];
   diagnostics:ProjectTopologyDiagnostic[];
 }

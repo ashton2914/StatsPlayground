@@ -6,7 +6,7 @@ fn invalid(code:&str)->AppError {AppError::InvalidParam(code.into())}
 impl ProjectTopology {
     pub fn from_parts(epoch:u64,committed_revision:u64,summaries:Vec<ProjectDocumentSummary>,transforms:Vec<ProjectTransformLink>,owned_documents:Vec<ProjectOwnedDocument>)->Self {
         let tables=summaries.into_iter().filter(|s|s.kind==ProjectDocumentKind::Table).map(|s|ProjectTableNode{id:s.id,name:s.name,folder:s.folder,revision:s.revision}).collect();
-        let mut result=Self{epoch,committed_revision,tables,transforms,owned_documents,diagnostics:vec![]};
+        let mut result=Self{epoch,committed_revision,folders:vec![],tables,transforms,owned_documents,diagnostics:vec![]};
         result.validate();result
     }
     fn diagnose(&mut self,code:&str,id:&str) {self.diagnostics.push(ProjectTopologyDiagnostic{code:code.into(),id:id.into()});}
@@ -49,16 +49,20 @@ impl ProjectTopology {
     }
 }
 
-/// ProjectCatalog pages are traversed under the caller's single read transaction.
+/// The complete relationship inventory is projected under one read transaction.
 /// SQL projects only Transform relationship fields; no graph/analysis/table body is fetched.
 pub(crate) fn read_topology(engine:&DuckDbEngine,epoch:u64)->Result<ProjectTopology,AppError>{
-    let catalog=super::project_catalog::ProjectCatalog::new(engine);let mut summaries=vec![];let mut after=None;
-    let revision=loop{let page=catalog.list(&CatalogPageRequest{after,limit:1000})?;summaries.extend(page.items);after=page.next_cursor;if after.is_none(){break page.committed_revision;}};
+    let subtype:bool=engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='_project_document_subtypes')",[],|r|r.get(0))?;
+    let subtype=if subtype {"(SELECT analysis_kind FROM _project_document_subtypes s WHERE s.id=d.id)"}else{"NULL"};
+    let mut stmt=engine.conn().prepare(&format!("SELECT d.id,d.kind,d.name,d.folder,d.revision,d.dependencies_json,{subtype} FROM _project_directory d WHERE d.kind IN ('table','transform','graph','graphNew','analysis','tabulate') ORDER BY d.id"))?;
+    let summaries=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<String>>(6)?)))?.map(|row|{let (id,kind,name,folder,revision,dependencies,analysis_kind)=row?;Ok(ProjectDocumentSummary{id,kind:serde_json::from_value(serde_json::json!(kind)).map_err(|_|invalid("project_kind_invalid"))?,name,folder,revision,dependencies:serde_json::from_str(&dependencies).map_err(|_|invalid("project_catalog_invalid"))?,analysis_kind})}).collect::<Result<Vec<_>,AppError>>()?;
+    let revision=engine.conn().query_row("SELECT committed_revision FROM _project_header",[],|r|r.get(0))?;
+    let summary_folders:BTreeMap<_,_>=summaries.iter().map(|s|(s.id.clone(),s.folder.clone())).collect();
     let table_ids:BTreeSet<_>=summaries.iter().filter(|s|s.kind==ProjectDocumentKind::Table).map(|s|s.id.clone()).collect();
     let mut owned=vec![];let mut diagnostics=vec![];
     for summary in &summaries {if matches!(summary.kind,ProjectDocumentKind::Graph|ProjectDocumentKind::GraphNew|ProjectDocumentKind::Analysis|ProjectDocumentKind::Tabulate){
         let owners:Vec<_>=summary.dependencies.iter().filter(|id|table_ids.contains(*id)).collect();
-        if owners.len()==1{owned.push(ProjectOwnedDocument{id:summary.id.clone(),kind:summary.kind,table_id:owners[0].clone(),revision:summary.revision});}
+        if owners.len()==1{owned.push(ProjectOwnedDocument{id:summary.id.clone(),kind:summary.kind,table_id:owners[0].clone(),revision:summary.revision,name:summary.name.clone(),folder:summary.folder.clone(),analysis_kind:summary.analysis_kind.clone()});}
         else{diagnostics.push(ProjectTopologyDiagnostic{code:"project_document_owner_invalid".into(),id:summary.id.clone()});}
     }}
     let mut statement=engine.conn().prepare("SELECT d.id,d.name,d.revision,json_extract_string(b.body_json,'$.id'),json_extract_string(b.body_json,'$.revision'),json_extract_string(b.body_json,'$.operation.kind'),json_extract_string(b.body_json,'$.output.tableDocumentId'),CAST(json_extract(b.body_json,'$.inputSlots[*].role') AS VARCHAR),json_extract_string(s.value_json,'$.definitionId'),json_extract_string(s.value_json,'$.definitionRevision'),CAST(json_extract(s.value_json,'$.inputs') AS VARCHAR) FROM _project_directory d LEFT JOIN _project_documents b ON b.id=d.id AND b.revision=d.revision LEFT JOIN _project_settings s ON s.key='transformBinding:'||d.id WHERE d.kind='transform' ORDER BY d.id")?;
@@ -72,11 +76,13 @@ pub(crate) fn read_topology(engine:&DuckDbEngine,epoch:u64)->Result<ProjectTopol
             let inputs:Vec<Input>=serde_json::from_str(fields[7].as_deref()?).ok()?;
             let declared:BTreeSet<_>=roles.iter().map(String::as_str).collect();let bound:BTreeSet<_>=inputs.iter().map(|i|i.role.as_str()).collect();
             if declared.len()!=roles.len()||declared!=bound{return None;}
-            Some(ProjectTransformLink{id:id.clone(),name,revision,operation_kind:fields[2].clone()?,output_table_id:fields[3].clone()?,inputs:inputs.into_iter().map(|i|ProjectTransformInput{role:i.role,table_id:i.table_document_id}).collect()})
+            Some(ProjectTransformLink{id:id.clone(),folder:summary_folders.get(&id)?.clone(),name,revision,operation_kind:fields[2].clone()?,output_table_id:fields[3].clone()?,inputs:inputs.into_iter().map(|i|ProjectTransformInput{role:i.role,table_id:i.table_document_id}).collect()})
         })();
         if let Some(link)=parsed{links.push(link);}else{diagnostics.push(ProjectTopologyDiagnostic{code:"project_transform_binding_invalid".into(),id});}
     }
-    let mut topology=ProjectTopology::from_parts(epoch,revision,summaries,links,owned);topology.diagnostics.extend(diagnostics);Ok(topology)
+    let mut topology=ProjectTopology::from_parts(epoch,revision,summaries,links,owned);topology.diagnostics.extend(diagnostics);
+    let mut folders=engine.conn().prepare("SELECT CASE WHEN folder='' THEN name ELSE folder||'/'||name END FROM _project_directory WHERE kind='folder' ORDER BY id")?;
+    topology.folders=folders.query_map([],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?;Ok(topology)
 }
 
 #[cfg(test)]
@@ -89,7 +95,7 @@ mod tests {
         ProjectDocumentSummary { id: id.into(), kind: ProjectDocumentKind::Table, name: id.into(), folder: String::new(), revision: 1, dependencies: vec![], analysis_kind: None }
     }
     fn link(id: &str, inputs: &[&str], output: &str) -> ProjectTransformLink {
-        ProjectTransformLink { id: id.into(), revision: 1, name: id.into(), operation_kind: "subset".into(), inputs: inputs.iter().enumerate().map(|(i,id)| ProjectTransformInput { role: format!("input{i}"), table_id: (*id).into() }).collect(), output_table_id: output.into() }
+        ProjectTransformLink { id: id.into(), revision: 1, name: id.into(), folder:String::new(), operation_kind: "subset".into(), inputs: inputs.iter().enumerate().map(|(i,id)| ProjectTransformInput { role: format!("input{i}"), table_id: (*id).into() }).collect(), output_table_id: output.into() }
     }
     fn topology(links: Vec<ProjectTransformLink>) -> ProjectTopology {
         ProjectTopology::from_parts(7, 12, vec![table("A"),table("B"),table("C"),table("D"),table("X")], links, vec![])
@@ -113,7 +119,7 @@ mod tests {
     #[test]
     fn project_linked_groups_topology_preview_owns_documents_without_merging_tables() {
         let mut graph = topology(vec![link("ab",&["A"],"B")]);
-        graph.owned_documents = vec![ProjectOwnedDocument { id:"analysis-b".into(), kind:ProjectDocumentKind::Analysis, table_id:"B".into(), revision:2 }];
+        graph.owned_documents = vec![ProjectOwnedDocument { id:"analysis-b".into(), kind:ProjectDocumentKind::Analysis, table_id:"B".into(), revision:2, name:"Analysis".into(),folder:String::new(),analysis_kind:None }];
         let preview=graph.preview("B",ProjectActionScope::Descendants).unwrap();
         assert_eq!(preview.table_ids,vec!["B"]);
         assert_eq!(preview.transform_ids,vec!["ab"]);

@@ -10,19 +10,19 @@ pub struct ProjectTransformInput { pub role:String, pub table_id:String }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ProjectTransformLink {
-    pub id:String, pub name:String, pub revision:u64, pub operation_kind:String,
+    pub id:String, pub name:String, pub revision:u64, pub operation_kind:String, pub folder:String,
     pub inputs:Vec<ProjectTransformInput>, pub output_table_id:String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ProjectOwnedDocument { pub id:String, pub kind:ProjectDocumentKind, pub table_id:String, pub revision:u64 }
+pub struct ProjectOwnedDocument { pub id:String, pub kind:ProjectDocumentKind, pub table_id:String, pub revision:u64, pub name:String, pub folder:String, pub analysis_kind:Option<String> }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ProjectTopologyDiagnostic { pub code:String, pub id:String }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ProjectTopology {
-    pub epoch:u64, pub committed_revision:u64, pub tables:Vec<ProjectTableNode>,
+    pub epoch:u64, pub committed_revision:u64, pub folders:Vec<String>, pub tables:Vec<ProjectTableNode>,
     pub transforms:Vec<ProjectTransformLink>, pub owned_documents:Vec<ProjectOwnedDocument>,
     pub diagnostics:Vec<ProjectTopologyDiagnostic>,
 }
