@@ -1031,17 +1031,26 @@ pub fn move_project_table_group(app:AppHandle,state:State<'_,AppState>,context:P
 }
 
 #[tauri::command(async)]
-pub fn copy_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupMoveRequest)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
-    let commit=crate::services::project_native_service::NativeProjectService::new(&state).copy_table_group(&context,&request,||false)?;
+pub fn copy_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupMoveRequest,transfer_id:Option<String>)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+    let cancellation=transfer_id.as_deref().map(|id|state.project_group_requests.register(id)).transpose()?;
+    if let Some(id)=&transfer_id{let _=app.emit("project-group-started",serde_json::json!({"transferId":id}));}
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).copy_table_group(&context,&request,||cancellation.as_ref().is_some_and(|c|c.cancelled()))?;
     if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
 }
 
 #[tauri::command(async)]
-pub fn export_project_table_group(state:State<'_,AppState>,epoch:u64,request:crate::models::project_topology::ProjectGroupExportRequest)->Result<crate::models::project_topology::ProjectGroupTransferResult,AppError>{
-    crate::services::project_native_service::NativeProjectService::new(&state).export_table_group(epoch,&request,||false)
+pub fn export_project_table_group(app:AppHandle,state:State<'_,AppState>,epoch:u64,request:crate::models::project_topology::ProjectGroupExportRequest,transfer_id:Option<String>)->Result<crate::models::project_topology::ProjectGroupTransferResult,AppError>{
+    let cancellation=transfer_id.as_deref().map(|id|state.project_group_requests.register(id)).transpose()?;
+    if let Some(id)=&transfer_id{let _=app.emit("project-group-started",serde_json::json!({"transferId":id}));}
+    crate::services::project_native_service::NativeProjectService::new(&state).export_table_group(epoch,&request,||cancellation.as_ref().is_some_and(|c|c.cancelled()))
 }
 #[tauri::command(async)]
-pub fn import_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupImportRequest)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
-    let commit=crate::services::project_native_service::NativeProjectService::new(&state).import_table_group(&context,&request,||false)?;
+pub fn import_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupImportRequest,transfer_id:Option<String>)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+    let cancellation=transfer_id.as_deref().map(|id|state.project_group_requests.register(id)).transpose()?;
+    if let Some(id)=&transfer_id{let _=app.emit("project-group-started",serde_json::json!({"transferId":id}));}
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).import_table_group(&context,&request,||cancellation.as_ref().is_some_and(|c|c.cancelled()))?;
     if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
 }
+
+#[tauri::command]
+pub fn cancel_project_group_operation(state:State<'_,AppState>,transfer_id:String)->Result<bool,AppError>{state.project_group_requests.cancel(&transfer_id)}

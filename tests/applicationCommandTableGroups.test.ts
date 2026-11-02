@@ -1,0 +1,13 @@
+import {mockIPC} from '@tauri-apps/api/mocks';
+(globalThis as any).window=globalThis;mockIPC(()=>1);
+import assert from 'node:assert/strict';
+import {createApplicationRuntime} from '../src/applicationCommands/applicationRuntime';
+import {useProjectStore} from '../src/stores/useProjectStore';
+import {projectService} from '../src/services/projectService';
+const calls:any[]=[];let revision=4;let release!:()=>void;let held=false;
+const owner:any={snapshot:()=>({epoch:8,committedRevision:revision}),captureBarrier:()=>0,flushThrough:async()=>{},submit:async(operation:any)=>{calls.push(operation);if(held)await new Promise<void>(r=>release=r);revision++;return {value:{tableIds:['newA','newB'],idMap:{}},epoch:8,committedRevision:revision};}};
+useProjectStore.setState({persistence:owner,readOnly:false});const original=projectService.previewProjectTableAction;
+projectService.previewProjectTableAction=async()=>({epoch:8,committedRevision:revision,targetTableId:'B',scope:'descendants',tableIds:['B','C'],transformIds:['bc'],ownedDocumentIds:['g'],blockers:[]});
+try{const runtime=createApplicationRuntime();const preview=await runtime.execute({type:'project.previewTableAction',input:{tableId:'B',scope:'descendants'}},{kind:'ui'});assert.deepEqual(preview.data.tableIds,['B','C']);
+held=true;let settled=false;const move=runtime.execute({type:'project.moveTableGroup',input:{targetTableId:'B',destinationFolder:'new',expectedTopologyRevision:4}},{kind:'ui'});void move.then(()=>settled=true);for(let i=0;i<20&&!release;i++)await new Promise(r=>setTimeout(r,0));assert.equal(settled,false);assert.equal(calls[0].command,'move_project_table_group');release();await move;held=false;
+useProjectStore.setState({readOnly:true});await assert.rejects(runtime.execute({type:'project.copyTableGroup',input:{targetTableId:'B',destinationFolder:'',expectedTopologyRevision:revision}},{kind:'ui'}));assert.equal(calls.length,1);useProjectStore.setState({readOnly:false});await runtime.execute({type:'project.copyTableGroup',input:{targetTableId:'B',destinationFolder:'',expectedTopologyRevision:revision}},{kind:'ui'});assert.equal(calls[1].command,'copy_project_table_group');held=true;release=undefined as any;const late=runtime.execute({type:'project.copyTableGroup',input:{targetTableId:'B',destinationFolder:'late',expectedTopologyRevision:revision}},{kind:'ui'});for(let i=0;i<20&&!release;i++)await new Promise(r=>setTimeout(r,0));assert.equal(runtime.cancel(late.requestId),true);release();await late;held=false;console.log('application group commands: native acknowledgement, directed preview, readonly boundary');}finally{projectService.previewProjectTableAction=original;useProjectStore.setState({persistence:null,readOnly:false});}

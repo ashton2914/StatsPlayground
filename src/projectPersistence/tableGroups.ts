@@ -1,3 +1,4 @@
+import {withGroupCancellation} from './groupCancellation';
 import {useProjectStore} from '../stores/useProjectStore';
 import {projectService} from '../services/projectService';
 import type {ProjectActionScope, ProjectTopology} from '../types/projectPersistence';
@@ -30,20 +31,20 @@ export async function moveTableGroup(targetTableId:string,destinationFolder:stri
   assertCurrent(persistence,epoch);
 }
 
-export async function copyTableGroup(targetTableId:string,destinationFolder:string,expectedTopologyRevision:number) {
+export async function copyTableGroup(targetTableId:string,destinationFolder:string,expectedTopologyRevision:number,options?:{signal?:AbortSignal}) {
   const persistence=owner();const epoch=persistence.snapshot().epoch;
-  const commit=await persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'copy_project_table_group',payload:{request:{targetTableId,destinationFolder,expectedTopologyRevision}}});
+  const commit=await withGroupCancellation(options?.signal,transferId=>persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'copy_project_table_group',payload:{request:{targetTableId,destinationFolder,expectedTopologyRevision},...(transferId?{transferId}:{})}}));
   assertCurrent(persistence,epoch);return commit.value;
 }
 
-export async function exportTableGroup(targetTableId:string,filePath:string,expectedTopologyRevision:number) {
+export async function exportTableGroup(targetTableId:string,filePath:string,expectedTopologyRevision:number,options?:{signal?:AbortSignal}) {
   const persistence=owner();const epoch=persistence.snapshot().epoch;
   await persistence.flushThrough(persistence.captureBarrier());assertCurrent(persistence,epoch);
-  const result=await projectService.exportProjectTableGroup(epoch,{targetTableId,filePath,expectedTopologyRevision});
+  const result=await withGroupCancellation(options?.signal,transferId=>projectService.exportProjectTableGroup(epoch,{targetTableId,filePath,expectedTopologyRevision},transferId));
   assertCurrent(persistence,epoch);return result;
 }
-export async function importTableGroup(filePath:string,destinationFolder:string) {
+export async function importTableGroup(filePath:string,destinationFolder:string,options?:{signal?:AbortSignal}) {
   const persistence=owner();const epoch=persistence.snapshot().epoch;
-  const commit=await persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'import_project_table_group',payload:{request:{filePath,destinationFolder}}});
+  const commit=await withGroupCancellation(options?.signal,transferId=>persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'import_project_table_group',payload:{request:{filePath,destinationFolder},...(transferId?{transferId}:{})}}));
   assertCurrent(persistence,epoch);return commit.value;
 }

@@ -516,5 +516,47 @@
     "arguments": {
       "name": "Before analysis revisions"
     }
+  },
+  {
+    "tool": "statsplayground_project_preview_table_action",
+    "arguments": {
+      "tableId": "dataset-1",
+      "scope": "descendants"
+    }
+  },
+  {
+    "tool": "statsplayground_project_move_table_group",
+    "arguments": {
+      "targetTableId": "dataset-1",
+      "destinationFolder": "Experiment",
+      "expectedTopologyRevision": 9
+    }
+  },
+  {
+    "tool": "statsplayground_project_copy_table_group",
+    "arguments": {
+      "targetTableId": "dataset-1",
+      "destinationFolder": "Copies",
+      "expectedTopologyRevision": 9
+    }
+  },
+  {
+    "tool": "statsplayground_project_export_table_group",
+    "arguments": {
+      "targetTableId": "dataset-1",
+      "expectedTopologyRevision": 9
+    }
+  },
+  {
+    "tool": "statsplayground_project_import_table_group",
+    "arguments": {
+      "destinationFolder": "Imported"
+    }
+  },
+  {
+    "tool": "statsplayground_table_delete",
+    "arguments": {
+      "datasetId": "dataset-1"
+    }
   }
 ]

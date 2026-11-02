@@ -1606,9 +1606,11 @@ export function Workspace() {
     if (item) recordAction(t("history.deleteAnalysis", { name: item.name }));
   };
 
-  const handleGroupCopy=async(id:string)=>{try{const topology=await readProjectTopology();const table=topology.tables.find(t=>t.id===id);if(!table)throw new Error('project_table_not_found');await copyTableGroup(id,table.folder,topology.committedRevision);}catch(error){alert(String(error));}};
-  const handleGroupExport=async(id:string)=>{const owner=useProjectStore.getState().persistence;try{const topology=await readProjectTopology();const path=await save({defaultPath:'table-group.spprj',filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await exportTableGroup(id,path,topology.committedRevision);}catch(error){alert(String(error));}};
-  const handleGroupImport=async()=>{const owner=useProjectStore.getState().persistence;try{const path=await open({multiple:false,filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await importTableGroup(path as string,'');}catch(error){alert(String(error));}};
+  const [groupController,setGroupController]=useState<AbortController|null>(null);
+  const runGroupOperation=async(label:string,run:(signal:AbortSignal)=>Promise<unknown>)=>{const controller=new AbortController();setGroupController(controller);setBusyMessage(label);try{await run(controller.signal);}catch(error){if(!controller.signal.aborted)alert(String(error));}finally{setGroupController(null);setBusyMessage(null);}};
+  const handleGroupCopy=async(id:string)=>{try{const topology=await readProjectTopology();const table=topology.tables.find(t=>t.id===id);if(!table)throw new Error('project_table_not_found');await runGroupOperation(t('directory.copyGroup'),signal=>copyTableGroup(id,table.folder,topology.committedRevision,{signal}));}catch(error){alert(String(error));}};
+  const handleGroupExport=async(id:string)=>{const owner=useProjectStore.getState().persistence;try{const topology=await readProjectTopology();const path=await save({defaultPath:'table-group.spprj',filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await runGroupOperation(t('directory.exportGroup'),signal=>exportTableGroup(id,path,topology.committedRevision,{signal}));}catch(error){alert(String(error));}};
+  const handleGroupImport=async()=>{const owner=useProjectStore.getState().persistence;try{const path=await open({multiple:false,filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await runGroupOperation(t('directory.importGroup'),signal=>importTableGroup(path as string,'',{signal}));}catch(error){alert(String(error));}};
   const handleDeleteDataset = async (id: string) => {
     const owner=useProjectStore.getState().persistence;
     if(owner){
@@ -3681,6 +3683,7 @@ export function Workspace() {
                 {busyProgress.rowsDone.toLocaleString()} / {busyProgress.rowsTotal.toLocaleString()} {t("workspace.importProgressRows")}
               </div>
             )}
+            {groupController&&<button className="btn-secondary" style={{marginTop:12}} onClick={()=>groupController.abort()}>{t("common.cancel")}</button>}
             {migrationActive && <button className="btn-secondary" style={{marginTop:12}} disabled={cancellingMigration} onClick={()=>void migrationCancelRef.current?.request()}>
               {cancellingMigration?t("workspace.migrationCancelling"):t("workspace.migrationCancel")}
             </button>}

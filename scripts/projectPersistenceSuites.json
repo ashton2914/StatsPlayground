@@ -85,7 +85,10 @@
     "tests/projectTableGroupTransfer.test.ts",
     "tests/tableDirectoryModel.test.ts",
     "tests/projectGroupFolders.test.ts",
-    "tests/projectLogicalNames.test.ts"
+    "tests/projectLogicalNames.test.ts",
+    "tests/applicationCommandTableGroups.test.ts",
+    "tests/projectGroupCancellation.test.ts",
+    "tests/projectTableGroupsNative.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",
@@ -100,6 +103,7 @@
     "tests/projectRecoveryChoice.spec.tsx",
     "tests/projectViewportBudget.spec.tsx",
     "tests/projectViewportEpoch.spec.tsx",
-    "tests/logicalTableNavigation.spec.tsx"
+    "tests/logicalTableNavigation.spec.tsx",
+    "tests/tableDirectory.spec.tsx"
   ]
 }

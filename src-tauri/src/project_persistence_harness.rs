@@ -20,6 +20,12 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all_fields = "camelCase")]
 enum Mutation {
+    #[serde(rename="move_project_table_group")]
+    MoveTableGroup{request:crate::models::project_topology::ProjectGroupMoveRequest},
+    #[serde(rename="copy_project_table_group")]
+    CopyTableGroup{request:crate::models::project_topology::ProjectGroupMoveRequest,#[serde(default)]cancel_after_checks:Option<usize>},
+    #[serde(rename="import_project_table_group")]
+    ImportTableGroup{request:crate::models::project_topology::ProjectGroupImportRequest,#[serde(default)]cancel_after_checks:Option<usize>},
     #[serde(rename="run_workflow")]
     RunWorkflow {request:crate::services::workflow_executor::WorkflowRunRequest,folder:String},
     #[serde(rename="materialize_tabulate_table")]
@@ -129,6 +135,9 @@ enum Mutation {
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    Topology {epoch:u64},
+    TableActionPreview {epoch:u64,table_id:String,scope:crate::models::project_topology::ProjectActionScope},
+    ExportTableGroup {epoch:u64,request:crate::models::project_topology::ProjectGroupExportRequest,#[serde(default)]cancel_after_checks:Option<usize>},
     Resolve {context:ProjectWriteContext},
     Header,
     Export {epoch:u64,kind:String,request:Value},
@@ -194,6 +203,9 @@ fn dispatch(
     request: Request,
 ) -> Result<Value, AppError> {
     match request {
+        Request::Topology{epoch}=>encode(NativeProjectService::new(state).topology(epoch)?),
+        Request::TableActionPreview{epoch,table_id,scope}=>encode(NativeProjectService::new(state).preview_table_action(epoch,&table_id,scope)?),
+        Request::ExportTableGroup{epoch,request,cancel_after_checks}=>{let checks=std::cell::Cell::new(0);encode(NativeProjectService::new(state).export_table_group(epoch,&request,||{checks.set(checks.get()+1);cancel_after_checks.is_some_and(|n|checks.get()>n)})?)},
         Request::Export{epoch,kind,request}=>{
             let _lease=crate::services::project_export::acquire_export_project(state,Some(epoch))?;
             let path=request.get(if kind=="export_table"{"filePath"}else{"outputPath"}).and_then(Value::as_str).ok_or_else(||AppError::InvalidParam("export path required".into()))?;
@@ -272,6 +284,9 @@ fn dispatch(
         Request::Mutation { context, operation } => {
             let service = NativeProjectService::new(state);
             match operation {
+                Mutation::MoveTableGroup{request}=>encode(service.move_table_group(&context,&request)?),
+                Mutation::CopyTableGroup{request,cancel_after_checks}=>{let checks=std::cell::Cell::new(0);encode(service.copy_table_group(&context,&request,||{checks.set(checks.get()+1);cancel_after_checks.is_some_and(|n|checks.get()>n)})?)},
+                Mutation::ImportTableGroup{request,cancel_after_checks}=>{let checks=std::cell::Cell::new(0);encode(service.import_table_group(&context,&request,||{checks.set(checks.get()+1);cancel_after_checks.is_some_and(|n|checks.get()>n)})?)},
                 Mutation::RunWorkflow{request,folder}=>encode(service.run_workflow(&context,&request,&folder)?),
                 Mutation::MaterializeTabulate{request}=>encode(service.materialize_tabulate(&context,&request)?),
                 Mutation::SaveFitColumns{request}=>encode(service.save_fit_model_columns(&context,&request)?),
