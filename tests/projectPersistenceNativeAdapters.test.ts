@@ -29,7 +29,6 @@ import { useTabulateStore } from "../src/stores/useTabulateStore.ts";
 import { useWorkflowStore } from "../src/stores/useWorkflowStore.ts";
 import { useTableTransformStore } from "../src/stores/useTableTransformStore.ts";
 import { createDefaultGraph2DState, createDefaultGraph3DState, createDefaultMultivariateGraphState } from "../src/components/graphBuilder/graphBuilderMode.ts";
-import type { TableTransformDefinition } from "../src/types/tableTransform.ts";
 import { useFolderStore } from "../src/stores/useFolderStore.ts";
 import { useDatasetFilterStore } from "../src/stores/useDatasetFilterStore.ts";
 import { useReportStore } from "../src/stores/useReportStore.ts";
@@ -44,7 +43,7 @@ const directory = await mkdtemp(join(tmpdir(), "sp-persistence-contract-"));
 const child = spawn(executable, [join(directory, "project.spprj")], { stdio: ["pipe", "pipe", "pipe"] });
 let stderr = "";
 child.stderr.on("data", (data) => { stderr += data; });
-const calls = new Map<number, { resolve(value: unknown): void; reject(reason: Error): void }>();
+const calls = new Map<number, { resolve(value: unknown): void; reject(reason: Error): void; label:string }>();
 let requestId = 0;
 const lines = createInterface({ input: child.stdout });
 lines.on("line", (line) => {
@@ -52,14 +51,14 @@ lines.on("line", (line) => {
   const pending = calls.get(response.id);
   if (!pending) throw new Error("Unexpected native response");
   calls.delete(response.id);
-  if (response.error) pending.reject(new Error(response.error)); else pending.resolve(response.ok);
+  if (response.error) pending.reject(new Error(`${response.error} [${pending.label}]`)); else pending.resolve(response.ok);
 });
 child.on("error", (error) => { for (const pending of calls.values()) pending.reject(error); calls.clear(); });
 child.on("exit", (code) => { for (const pending of calls.values()) pending.reject(new Error(`Native harness exited ${code}: ${stderr}`)); calls.clear(); });
 function request<T>(command: string, args: object = {}): Promise<T> {
   const id = ++requestId;
   return new Promise((resolve, reject) => {
-    calls.set(id, { resolve: (value) => resolve(value as T), reject });
+    calls.set(id, { resolve: (value) => resolve(value as T), reject, label:command+JSON.stringify(Object.fromEntries(Object.entries(args).filter(([key])=>["documentId","revision","key"].includes(key)))) });
     child.stdin.write(JSON.stringify({ id, command, ...args }) + "\n");
   });
 }
@@ -107,9 +106,10 @@ try {
   const adapters = createProjectDocumentAdapters({ coordinator, summaries: [] });
   release = adapters.activate();
   useReportStore.getState().addItem({ id: "report", name: "Report 1", schemaVersion: 1, markdown: "native body", createdAt: "2026-01-01", updatedAt: "2026-01-01" });
-  const analysis = createAnalysisSampleDocument({ datasetId: "source", analysisId: "analysis", analysisName: "Analysis 1", createdAt: "2026-01-01T00:00:00.000Z" });
+  const sourceTable=await dataService.createTableFromRows({name:"Document source",columnNames:["value","group"],columnTypes:["DOUBLE","VARCHAR"],rows:[[1,"A"]]});
+  const analysis = createAnalysisSampleDocument({ datasetId: sourceTable.id, analysisId: "analysis", analysisName: "Analysis 1", createdAt: "2026-01-01T00:00:00.000Z" });
   useAnalysisStore.getState().addAnalysis(analysis);
-  const graphId = useGraphBuilderNewStore.getState().open("source", 0);
+  const graphId = useGraphBuilderNewStore.getState().open(sourceTable.id, 0);
   useGraphBuilderNewStore.getState().setCamera(graphId, { xMin: 0, xMax: 10, yMin: 0, yMax: 20 });
   await coordinator.flushThrough(coordinator.captureBarrier());
   const savedAnalysis = await request<ProjectDocumentBody>("document", { documentId: "analysis", revision: 1 });
@@ -178,10 +178,10 @@ try {
   useDatasetFilterStore.getState().replaceFilters(filterDataset.id, []);
   await coordinator.flushThrough(coordinator.captureBarrier());
   assert.deepEqual((await request<[number, unknown[]]>("setting", { key: `filter:${filterDataset.id}` }))[1], []);
-  useGraphBuilderStore.getState().addItem({ id: "legacy-graph", name: "Legacy graph", sourceDatasetId: "source", mode: "2d", modeStates: {
+  useGraphBuilderStore.getState().addItem({ id: "legacy-graph", name: "Legacy graph", sourceDatasetId: sourceTable.id, mode: "2d", modeStates: {
     twoD: createDefaultGraph2DState(), threeD: createDefaultGraph3DState(), multivariate: createDefaultMultivariateGraphState(),
   }, sampling: { mode: "full" }, createdAt: "2026-01-01" });
-  useTabulateStore.getState().addItem({ id: "tabulate", name: "Tabulate 1", sourceDatasetId: "source", rowFields: ["group"], columnFields: [], statistics: [{ id: "mean", field: "value", kind: "mean" }], includeRowTotals: true, includeColumnTotals: false, createdAt: "2026-01-01" });
+  useTabulateStore.getState().addItem({ id: "tabulate", name: "Tabulate 1", sourceDatasetId: sourceTable.id, rowFields: ["group"], columnFields: [], statistics: [{ id: "mean", field: "value", kind: "mean" }], includeRowTotals: true, includeColumnTotals: false, createdAt: "2026-01-01" });
   const workflow = { id: "workflow", name: "Workflow 1", formatVersion: "1", revision: 1,
     inputSlots: [{ id: "input", name: "Source", outputPort: { id: "input:output", name: "output", payloadKind: "table" as const }, schemaContract: { schemaFingerprint: "cbf29ce484222325", columns: [] } }], operations: [], edges: [], outputDeclarations: [] };
   useWorkflowStore.getState().addWorkflow(workflow);
@@ -198,11 +198,10 @@ try {
   useReportStore.getState().updateMarkdown(reusedReport.id,"following authoritative revision","2026-01-03");await coordinator.flushThrough(coordinator.captureBarrier());
   assert.equal(((await request<ProjectDocumentBody>("document",{documentId:reusedReport.id,revision:3})).body as {markdown:string}).markdown,"following authoritative revision");
   useReportStore.getState().deleteItem(reusedReport.id);await coordinator.flushThrough(coordinator.captureBarrier());
-  const transform: TableTransformDefinition = { id: "transform", name: "Concatenate", formatVersion: "1", revision: 1,
-    operation: { kind: "concatenate", sourceCount: 2 }, inputSlots: ["source-1", "source-2"].map((role) => ({ role, schemaContract: { schemaFingerprint: "cbf29ce484222325", columns: [] } })), output: { tableDocumentId: "output", name: "Output" } };
-  useTableTransformStore.getState().loadFromProject([transform], []);
-  await adapters.persist("transform", "transform", 0);
-  assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: "transform", revision: 1 })).body, transform);
+  const persistedTransform=await useTableTransformStore.getState().createAndRun({name:"Persisted subset",outputName:"Persisted output",operation:{kind:"subset",columns:["value"]},inputBindings:[{role:"source",tableDocumentId:sourceTable.id}]});
+  assert.equal(persistedTransform.status,"succeeded");
+  const transform=useTableTransformStore.getState().definitions.find(item=>item.id===persistedTransform.definitionId)!;
+  assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: transform.id, revision: 1 })).body, transform);
   const managed=await dataService.createManagedTable({name:"Manual",columns:[{name:"value",sqlType:"INTEGER",display:{width:144}}],rows:[[31]]});
   useDataStore.setState(state=>({datasets:[...state.datasets.filter(dataset=>dataset.id!==managed.dataset.id),managed.dataset],activeDatasetId:managed.dataset.id}));
   assert.equal((await dataService.getColumnDisplayProps(managed.dataset.id))[0].width,144);
@@ -345,10 +344,14 @@ try {
   const retainedOutputValue=await request<{rowId:number;value:number}>("firstValue",{datasetId:transformed.output!.id});
   await dataService.deleteDataset(transformed.output!.id);
   const afterDeletedOutput=coordinator.captureBarrier();
-  await assert.rejects(useTableTransformStore.getState().rerun(transformed.definitionId),/unknown dataset/i);
+  await assert.rejects(useTableTransformStore.getState().rerun(transformed.definitionId),/unknown table transform/i);
   assert.equal(coordinator.captureBarrier(),afterDeletedOutput,"deleted-output rerun must not enqueue a storage replacement");
   await useHistoryStore.getState().undo();assert.equal(useHistoryStore.getState().historyError,null);
   assert.deepEqual(await request("firstValue",{datasetId:transformed.output!.id}),retainedOutputValue,"undo must restore retained output rows");
+  const restoredTransformSummary=adapters.directorySummaries().find(item=>item.id===transformed.definitionId)!;
+  hydrateProjectDocument(await request<ProjectDocumentBody>("document",{documentId:transformed.definitionId,revision:restoredTransformSummary.revision}),session.epoch);
+  const restoredTransformBinding=await request<[number,unknown]>("setting",{key:`transformBinding:${transformed.definitionId}`});
+  hydrateProjectSetting(`transformBinding:${transformed.definitionId}`,{key:`transformBinding:${transformed.definitionId}`,revision:restoredTransformBinding[0],value:restoredTransformBinding[1]},session.epoch);
   const restoredRerun=await useTableTransformStore.getState().rerun(transformed.definitionId);
   assert.equal(restoredRerun.status,"succeeded","rerun after deletion undo uses the restored output generation");
   assert.equal(restoredRerun.output?.id,transformed.output!.id);
@@ -440,21 +443,21 @@ try {
   assert.equal(page.items.find(item=>item.id===managed.dataset.id)?.name,"Renamed manual");
   assert.equal((await request<DatasetMeta[]>("datasets")).find(dataset=>dataset.name==="SQLite imported")?.rowCount,4);
   assert.equal((await request<Array<{width:number}>>("display",{datasetId:managed.dataset.id}))[0].width,177);
-  assert.equal(page.items.filter((item) => item.kind !== "folder").length, 20);
+  assert.equal(page.items.filter((item) => item.kind !== "folder").length, 22);
   assert.equal(page.items.find(item=>item.id===filterDataset.id)?.name,"Filter source");
   assert.equal(page.items.find(item=>item.id===standaloneId)?.name,"Standalone source");assert.equal((await request<{value:number}>("firstValue",{datasetId:standaloneId})).value,11);
   assert.ok(page.items.filter((item) => ["report", "analysis", graphId].includes(item.id)).every((item) => item.revision === (item.id==="report"?reportRevision:2)));
   const report = await request<ProjectDocumentBody>("document", { documentId: "report", revision: reportRevision });
   assert.equal((report.body as { markdown: string }).markdown, durableReportMarkdown);
   assert.deepEqual(report.summary.dependencies,["analysis"]);
-  assert.deepEqual((await request<ProjectDocumentBody>("document",{documentId:transformed.definitionId,revision:1})).body,useTableTransformStore.getState().definitions.find(definition=>definition.id===transformed.definitionId));
+  assert.deepEqual((await request<ProjectDocumentBody>("document",{documentId:transformed.definitionId,revision:page.items.find(item=>item.id===transformed.definitionId)!.revision})).body,useTableTransformStore.getState().definitions.find(definition=>definition.id===transformed.definitionId));
   const savedGraph = await request<ProjectDocumentBody>("document", { documentId: graphId, revision: 2 });
   assert.deepEqual((savedGraph.body as { layers: unknown[] }).layers, []);
   assert.deepEqual((savedGraph.body as { camera: unknown }).camera, { xMin: 0, xMax: 10, yMin: 0, yMax: 20 });
   assert.equal((await request<ProjectDocumentBody>("document", { documentId: "legacy-graph", revision: 1 })).summary.kind, "graph");
   assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: "tabulate", revision: 1 })).body, useTabulateStore.getState().items[0]);
   assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: "workflow", revision: 1 })).body, workflow);
-  assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: "transform", revision: 1 })).body, transform);
+  assert.deepEqual((await request<ProjectDocumentBody>("document", { documentId: transform.id, revision: 1 })).body, transform);
   const read = await request<ProjectDocumentBody>("document", { documentId: "analysis", revision: 2 });
   assert.equal((read.body as { configRevision: number }).configRevision, analysis.configRevision, "presentation edit must not advance statistical configuration");
   assert.equal(read.summary.name, "Analysis 2");
@@ -463,7 +466,7 @@ try {
   const secondQueue = createProjectPersistenceCoordinator({ projectId: secondSession.header.projectId, epoch: secondSession.epoch,
     committedRevision: secondSession.header.committedRevision, now: Date.now, newOperationId: () => crypto.randomUUID(),
     setTimer: (run, delay) => setTimeout(run, delay), clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
-    onCommit: applyCommittedProjectEffects, transport: (operation, context) => request("commit", { patch: operation.payload, context }),
+    onCommit: applyCommittedProjectEffects, transport: (operation, context) => operation.command==="commit_project_records"?request("commit",{patch:operation.payload,context}):request("mutation",{operation:{command:operation.command,...operation.payload as object},context}),
   });
   useProjectStore.getState().installPersistence(secondQueue);
   const reopenedLineage=await projectService.getProjectSetting(secondSession.epoch,"lineage");
@@ -513,11 +516,13 @@ try {
   useFolderStore.getState().deleteFolder("Reopened Sub");
   await secondQueue.flushThrough(secondQueue.captureBarrier());
   assert.equal(selectedBodyReads,readsBeforeFolders,"native folder actions must not hydrate unopened report bodies");
-  useTableTransformStore.getState().remove("transform");
+  await dataService.deleteDataset(transform.output.tableDocumentId);
   await secondQueue.flushThrough(secondQueue.captureBarrier());
-  assert.ok(!(await request<CatalogPage>("catalog")).items.some((item) => item.id === "transform"), "transform removal must delete the persisted definition");
+  assert.ok(!(await request<CatalogPage>("catalog")).items.some(item=>item.id===transform.id),"deleting a derived table retires its producing connector");
+  const refreshedLineage=await projectService.getProjectSetting(secondSession.epoch,"lineage");
+  assert.equal(hydrateProjectSetting("lineage",refreshedLineage,secondSession.epoch),true,"selected lineage reloads its invalidated setting after a native cascade");
   assert.deepEqual((await request<[number, unknown]>("setting", { key: "lineage" }))[1], useWorkflowStore.getState().lineageGraph);
-  assert.equal((await request<[number, unknown]>("setting", { key: "transformBinding:transform" }))[1], null);
+  assert.equal((await request<[number, unknown]>("setting", { key: `transformBinding:${transform.id}` }))[1],null);
   await secondQueue.close(); release(); release = undefined;
   useProjectStore.getState().installPersistence(null);
   await request("reopen");

@@ -2888,9 +2888,6 @@ mod tests {
             settings: vec![ProjectSettingWrite {
                 key: "lineage".into(), expected_revision: Some(1),
                 value: serde_json::json!({"id":"project-lineage","extension":{"keep":true}}),
-            }, ProjectSettingWrite {
-                key: "transformBinding:transform".into(), expected_revision: None,
-                value: serde_json::json!({"definitionId":"transform","definitionRevision":1,"outputGeneration":0,"extension":true}),
             }],
             ..Default::default()
         }).unwrap();
@@ -2904,6 +2901,11 @@ mod tests {
         assert_eq!(lineage.value["graphVersion"], 0);
         assert_eq!(lineage.value["graphHash"], "");
         assert_eq!(lineage.value["extension"]["keep"], true);
+        // Simulate an older persisted optional setting, without bypassing the
+        // typed-write requirement through the public application API.
+        service.database(opened.epoch).unwrap().with_engine(|engine|{
+            engine.conn().execute("INSERT INTO _project_settings VALUES ('transformBinding:transform',1,?)",[serde_json::json!({"definitionId":"transform","definitionRevision":1,"outputGeneration":0,"extension":true}).to_string()])?;Ok(())
+        }).unwrap();
         let binding = service
             .get_setting(opened.epoch, "transformBinding:transform")
             .unwrap()

@@ -88,7 +88,8 @@
     "tests/projectLogicalNames.test.ts",
     "tests/applicationCommandTableGroups.test.ts",
     "tests/projectGroupCancellation.test.ts",
-    "tests/projectTableGroupsNative.test.ts"
+    "tests/projectTableGroupsNative.test.ts",
+    "tests/projectDefaultNativeStartup.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

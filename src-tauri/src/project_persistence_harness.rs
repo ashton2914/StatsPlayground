@@ -135,6 +135,8 @@ enum Mutation {
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    Capability,
+    Draft {root_path:String},
     Topology {epoch:u64},
     TableActionPreview {epoch:u64,table_id:String,scope:crate::models::project_topology::ProjectActionScope},
     ExportTableGroup {epoch:u64,request:crate::models::project_topology::ProjectGroupExportRequest,#[serde(default)]cancel_after_checks:Option<usize>},
@@ -203,6 +205,8 @@ fn dispatch(
     request: Request,
 ) -> Result<Value, AppError> {
     match request {
+        Request::Capability=>encode(crate::commands::project_commands::project_v5_enabled()),
+        Request::Draft{root_path}=>{let summary=NativeProjectService::new(state).create_draft(Path::new(&root_path))?;*epoch=summary.epoch;encode(summary)},
         Request::Topology{epoch}=>encode(NativeProjectService::new(state).topology(epoch)?),
         Request::TableActionPreview{epoch,table_id,scope}=>encode(NativeProjectService::new(state).preview_table_action(epoch,&table_id,scope)?),
         Request::ExportTableGroup{epoch,request,cancel_after_checks}=>{let checks=std::cell::Cell::new(0);encode(NativeProjectService::new(state).export_table_group(epoch,&request,||{checks.set(checks.get()+1);cancel_after_checks.is_some_and(|n|checks.get()>n)})?)},

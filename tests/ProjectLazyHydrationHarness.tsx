@@ -60,6 +60,7 @@ export function ProjectLazyHydrationHarness({failFirst=false,withTransform=false
     const transformSummary:ProjectDocumentSummary={id:"transform",kind:"transform",name:"Reusable sort",folder:"",revision:1,dependencies:["table"]};
     if(withTransform) {
       server.set("transform",transformSummary);
+      server.set("output",{id:"output",kind:"table",name:"Sorted output",folder:"",revision:1,dependencies:[]});
       serverBodies.set("transform",{summary:transformSummary,schemaVersion:1,body:{id:"transform",name:"Reusable sort",formatVersion:"1",revision:1,operation:{kind:"sort",sortColumns:[{column:"value",direction:"ascending"}]},inputSlots:[{role:"source",schemaContract:{schemaFingerprint:"schema",columns:[]}}],output:{tableDocumentId:"output",name:"Sorted output"}}});
     }
     if(withWorkflow) {
@@ -69,12 +70,13 @@ export function ProjectLazyHydrationHarness({failFirst=false,withTransform=false
     }
     let holdCommit=false;let finishCommit:(()=>void)|undefined;
     mockIPC(async(command,args:any)=>{
+      if(command==='get_project_topology')return {epoch:7,committedRevision:revision,folders:[...server.values()].filter(s=>s.kind==='folder').map(s=>[s.folder,s.name].filter(Boolean).join('/')),tables:[...server.values()].filter(s=>s.kind==='table'),ownedDocuments:[...server.values()].filter(s=>['graph','graphNew','analysis','tabulate'].includes(s.kind)).map(s=>({...s,tableId:s.dependencies[0]})),transforms:withTransform?[{id:'transform',name:'Reusable sort',folder:'',revision:1,operationKind:'sort',inputs:[{role:'source',tableId:'table'}],outputTableId:'output'}]:[],diagnostics:[]};
       if(command==="plugin:dialog|open")return withMigration?"/virtual/old.spprj":"/virtual/import.spgh";
       if(command==="plugin:dialog|save")return "/virtual/old-v5.spprj";
       if(command==="plugin:dialog|message") {conversion.prompts.push(args.message);return confirmMigration?"Create converted copy":"Cancel";}
       if(command==="preflight_project_migration")return {formatVersion:"4.0.0",destination:args.destinationPath??"/virtual/old-v5.spprj",destinationExists:false,requiredWriter:1};
       if(command==="cancel_project_migration") {conversion.cancelCalls++;rejectMigration?.(new ProjectMigrationError("Cancelled: project conversion"));return true;}
-      if(command==="import_graph")return {id:"graph",name:"Imported graph",sourceDatasetId:"not-present",mode:"2d",modeStates:{twoD:createDefaultGraph2DState(),threeD:createDefaultGraph3DState(),multivariate:createDefaultMultivariateGraphState()},sampling:{mode:"full"},createdAt:"2026-01-01"};
+      if(command==="import_graph")return {id:"graph",name:"Imported graph",sourceDatasetId:"table",mode:"2d",modeStates:{twoD:createDefaultGraph2DState(),threeD:createDefaultGraph3DState(),multivariate:createDefaultMultivariateGraphState()},sampling:{mode:"full"},createdAt:"2026-01-01"};
       if(command==="update_cells") {
         if(args.expectedGeneration!==tableGeneration||args.context.expectedRevision!==revision)throw new Error("project_generation_stale");
         cellMutations.push(structuredClone(args));cellValue=Number(args.updates[0].value);tableGeneration++;

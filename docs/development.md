@@ -357,9 +357,10 @@ The Skills page lists SP MCP Guide and Distribution Analyze under Build-in. Thei
 
 Launch VS Code synchronizes these skill folders into the selected workspace's `.github/skills/` before opening the editor. `.github/skills/.sp-built-in.json` records the hashes of files published by the app. Subsequent launches update unmodified managed files and preserve unrelated skills. If a managed file contains user edits, launching stops with its relative path so the user can back it up or move it. The preview lists the skill files that will be synchronized. Skill files contain no MCP credentials; the generated MCP configuration retains its separate credential protection.
 
-## 大型项目原生持久化（实验性 v5）
+## 大型项目原生持久化（默认 v5）
 
-v5 目前需要显式启用 `project-v5`，默认构建继续使用现有格式。v5 项目
+普通开发、发行和 portable 构建默认启用 `project-v5`。显式兼容构建可用
+`--no-default-features` 关闭 v5；常规构建不应传入此参数。v5 项目
 自动保存增量更改；Ctrl+S 等待已接受的更改完成持久化。状态栏显示等待、
 保存中、已保存或失败；失败时可以重试。只读项目不执行自动写入。旧格式
 通过显式转换生成新文件，原文件保留。Save As 是显式创建项目副本的操作。
@@ -369,7 +370,7 @@ v5 目前需要显式启用 `project-v5`，默认构建继续使用现有格式�
 `node:sqlite` 的 Node.js（当前验证使用 Node.js 24）：
 
 ```sh
-cargo build --manifest-path src-tauri/Cargo.toml --features project-v5,perf-harness --example project_persistence_contract
+cargo build --manifest-path src-tauri/Cargo.toml --features perf-harness --example project_persistence_contract
 STATSPG_PERSISTENCE_HARNESS="$PWD/src-tauri/target/debug/examples/project_persistence_contract" npm run test:project-persistence
 ```
 
@@ -378,3 +379,9 @@ STATSPG_PERSISTENCE_HARNESS="$PWD/src-tauri/target/debug/examples/project_persis
 界面模拟测试替代真实数据库或原生窗口验收。当前原生窗口和缓存校准证据来自
 macOS；尚未据此声明 Windows/Linux 的 v5 发布支持。性能采集方法与限制见
 [性能说明](performance.md)。
+
+### 表中心项目目录
+
+原生目录使用对象的逻辑名称，不添加内部文件扩展名。Graph、Graph Builder-new、Analysis 和 Tabulate 位于所属表下。Transform 的所有输入、输出及派生链用括号呈现为一个关联组；Join 的输入表只显示一次。移动任意成员或表下对象、复制、项目对象导出均覆盖完整关联组。新建文件夹后可立即改名并拖入整组，也可拖回根目录。文件夹删除将内容提升到父目录，保留表与关联。
+
+删除遵循向下依赖：A → B → C 删除 B 会删除 B、C 及其表下内容，保留 A；共享输入 Join 的另一输入不会被反向删除。确认框列出实际删除范围。表下对象可独立删除；Transform 不可单独移除来拆分关联组。关联组复制与原生 `.spprj` 导入创建独立对象及绑定，可以整体撤销。CSV/SQLite 等数据交换导出保留其原有含义，链接组的项目对象转移使用原生组导出。

@@ -10,6 +10,7 @@ name = "stats_playground_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+default = ["project-v5"]
 perf-harness = []
 project-v5 = []
 

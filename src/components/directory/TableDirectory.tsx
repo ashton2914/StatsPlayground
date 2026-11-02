@@ -5,7 +5,7 @@ import type {DirectoryGroup,TableDirectoryModel} from './tableDirectoryModel';
 import {groupDragPayload} from './tableDirectoryModel';
 import './tableDirectory.css';
 export interface TableDirectoryProps {
-  model:TableDirectoryModel;folder:string;selectedIds:(string|null)[];readOnly:boolean;
+  model:TableDirectoryModel;folder:string;tableInfo?:Record<string,string>;selectedIds:(string|null)[];readOnly:boolean;
   labels:{expand:string;collapse:string;more:string;transform:string;normalize:string};
   onActivate:(kind:ProjectDocumentKind,id:string)=>void;
   onContextMenu:(kind:ProjectDocumentKind,id:string,event:MouseEvent)=>void;
@@ -26,6 +26,7 @@ export function TableDirectory(props:TableDirectoryProps){
     {table?<button type="button" className="sp-directory-toggle" disabled={!hasChildren} aria-label={expanded.has(item.id)?labels.collapse:labels.expand} onClick={event=>{event.stopPropagation();setExpanded(current=>{const next=new Set(current);if(next.has(item.id))next.delete(item.id);else next.add(item.id);return next;});}}>{hasChildren?(expanded.has(item.id)?'▾':'▸'):''}</button>:null}
     <i className={`ds-icon fa-solid fa-${icons[item.kind]??'file'}`} aria-hidden="true"/>
     {rename?.id===item.id?<input className="ds-rename-input" autoFocus value={rename.name} disabled={renaming} onClick={e=>e.stopPropagation()} onChange={e=>setRename({...rename,name:e.target.value})} onBlur={()=>void saveName()} onKeyDown={e=>{if(e.key==='Enter')void saveName();if(e.key==='Escape')setRename(null);}}/>:<span className="ds-name">{item.name}</span>}
+    {table&&props.tableInfo?.[item.id]&&<span className="ds-info">{props.tableInfo[item.id]}</span>}
   </div>;
   const renderGroup=(group:DirectoryGroup)=><div key={group.id} className={`sp-table-group ${group.transforms.length?'sp-table-group-linked':''}`} data-testid={`directory-group-${group.id}`}>
     {group.transforms.length>0&&<div className="sp-table-group-controls" draggable={!readOnly&&model.diagnostics.length===0} onDragStart={e=>props.onDragStart(e,groupDragPayload(model,group.tables[0].id)!)}>

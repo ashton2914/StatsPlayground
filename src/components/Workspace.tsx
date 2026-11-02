@@ -385,7 +385,7 @@ export function Workspace() {
   useEffect(()=>{
     if(!persistence){setTableTopology(null);return;}
     let active=true;
-    void readProjectTopology().then(value=>{if(active&&useProjectStore.getState().persistence===persistence){setTableTopology(value);setTopologyError(null);}},error=>{if(active){setTopologyError(String(error));}});
+    void readProjectTopology().then(value=>{if(active&&useProjectStore.getState().persistence===persistence){setTableTopology(value);setTopologyError(null);}},error=>{if(active){console.error("Table directory load failed",error);setTopologyError(String(error));}});
     return ()=>{active=false;};
   },[persistence,topologyRevision,topologyRetry]);
   const tableDirectory=useMemo(()=>tableTopology&&persistence?.snapshot().epoch===tableTopology.epoch?buildTableDirectory(tableTopology,nativeDirectory??[]):null,[tableTopology,persistence,nativeDirectory]);
@@ -2423,7 +2423,7 @@ export function Workspace() {
       id:summary.id,name:summary.name,folder:summary.folder,sourceDatasetId:summary.dependencies[0],datasetId:summary.dependencies[0],
       operationKind:kind==="transform"?tableTransforms.find(item=>item.id===summary.id)?.operation.kind:undefined,
     }));
-    const folderPaths=new Set([...folders,...tableTopology?.folders??[]]);
+    const folderPaths=new Set([...folders,...(tableDirectory?tableTopology?.folders:[])??[]]);
     for(const group of tableDirectory?.groups??[]){let path=group.folder;while(path){folderPaths.add(path);path=folderParent(path)??'';}}
     if(nativeDirectory) for(const item of nativeDirectory) {
       let path=item.kind==="folder"?[item.folder,item.name].filter(Boolean).join("/"):item.folder;
@@ -2533,7 +2533,7 @@ export function Workspace() {
         </div>,
       );
     }
-    if(persistence&&tableDirectory)out.push(<TableDirectory key={`native-groups:${key}`} model={tableDirectory} folder={parent??''}
+    if(persistence&&tableDirectory)out.push(<TableDirectory key={`native-groups:${key}`} model={tableDirectory} folder={parent??''} tableInfo={Object.fromEntries(datasets.map(d=>[d.id,`${d.rowCount}×${d.colCount}`]))}
       selectedIds={[activeDatasetId,activeGraphBuilderId,activeGraphBuilderNewId,activeAnalysisId,activeTabulateId]} readOnly={readOnly||Boolean(topologyError)||Boolean(persistenceSnapshot&&persistenceSnapshot.pendingSequence!==persistenceSnapshot.acknowledgedSequence)}
       labels={{expand:t('directory.expand'),collapse:t('directory.collapse'),more:t('directory.more'),transform:t('directory.transform'),normalize:t('directory.normalize')}}
       onActivate={(kind,id)=>{if(kind==='graphNew')handleOpenGraphBuilderNew(id);else activateWorkspaceDocument(kind==='table'?'dataset':kind==='transform'?'tableTransform':kind as WorkspaceDocumentKind,id);}}

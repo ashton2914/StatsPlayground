@@ -18,8 +18,8 @@ const visible=(row:number,value:number)=>{
   const element=cell(row);const rect=element?.getBoundingClientRect();
   return !!element&&!!rect&&rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=innerHeight&&element.textContent?.trim()===String(value);
 };
-const directory=()=>[...document.querySelectorAll<HTMLElement>('.dataset-item')].find(element=>element.querySelector('.ds-name')?.textContent?.trim()==='Data.sptb');
-const catalogPainted=()=>[...document.querySelectorAll<HTMLElement>('.dataset-item')].some(element=>{
+const directory=()=>[...document.querySelectorAll<HTMLElement>('.dataset-item')].find(element=>element.querySelector('.ds-name')?.textContent?.trim()==='Data');
+const catalogPainted=()=>[...document.querySelectorAll<HTMLElement>('.sp-table-directory .dataset-item')].some(element=>{
   const rect=element.getBoundingClientRect();return rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=innerHeight;
 });
 async function prepareTableDirectory(config:Configuration){
@@ -87,7 +87,7 @@ async function run(config:Configuration,onProgress:(text:string)=>void){
     }
     for(index=0;index<config.samples;index++){
       await measure('catalog',()=>nativeProjectLifecycle.switchProject(config.fixturePath),()=>current(config)&&catalogPainted()&&!document.querySelector('.sp-formula-bar'),null);
-      // Catalog latency ends at first-page paint; locating a later-page table is separate setup.
+      // Catalog latency includes the complete relationship inventory and its first visible table rows.
       await prepareTableDirectory(config);
       const owner=epoch();if(owner===null)throw new Error('Opened fixture has no native owner');
       await measure('window',async()=>{const item=directory();if(!item)throw new Error('Fixture table missing');item.click();},()=>visible(0,0),owner);

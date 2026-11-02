@@ -29,6 +29,7 @@ export function NativeProjectAppHarness({workflowFixture=false,probeFixture=fals
   mockIPC(async(command,args:any)=>{
    calls.push({command,args:structuredClone(args)});
    if(command==="project_v5_enabled") return true;
+   if(command==="get_project_topology")return {epoch:args.epoch,committedRevision:summaries.get(args.epoch)!.header.committedRevision,tables:probeFixture?[{id:'perf-data',name:'Data',folder:'',revision:1}]:[],transforms:[],ownedDocuments:[],diagnostics:[],folders:[]};
    if(command==="project_ui_probe_configuration") {nativeFocused=!probeFocusDelay||++focusChecks>=3;return {fixturePath:"/virtual/probe.spprj",fixtureId:"probe-fixture",datasetId:"perf-data",rows:300000,columns:20,samples:1,cacheMode:"cold",nativeWindowFocused:nativeFocused};}
    if(command==="project_ui_probe_begin") {if(probeAdmissionFailure)throw Error("fixture admission unavailable");if(!nativeFocused)throw Error("native window activation pending");return 1;}
    if(command==="project_ui_probe_finish") return {verification:{passed:true}};

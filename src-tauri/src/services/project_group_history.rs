@@ -141,7 +141,18 @@ pub(crate) fn replay(engine:&DuckDbEngine,context:&ProjectWriteContext,event:&Li
     if activate {
         for member in &events{lifecycle::restore_storage(engine,&member.dataset_id)?;let effects=retirement::restore_metadata(engine,member)?;docs.extend(effects.document_ids);settings.extend(effects.setting_ids);datasets.push(member.dataset_id.clone());}
         let (connectors,binding_settings)=restore_connectors(engine,&event.id)?;docs.extend(connectors);settings.extend(binding_settings);
-        if !super::project_topology::read_topology(engine,context.expected_epoch)?.diagnostics.is_empty(){return Err(invalid("project_cascade_parent_missing"));}
+        let topology=super::project_topology::read_topology(engine,context.expected_epoch)?;
+        if !topology.diagnostics.is_empty(){return Err(invalid("project_cascade_parent_missing"));}
+        let component=topology.preview(&event.dataset_id,ProjectActionScope::Component)?;
+        let restored:BTreeSet<_>=events.iter().map(|e|e.dataset_id.as_str()).chain(docs.iter().map(String::as_str)).collect();
+        let members:Vec<_>=component.table_ids.iter().chain(&component.transform_ids).chain(&component.owned_document_ids).collect();
+        let catalog=ProjectCatalog::new(engine);
+        let survivors=members.iter().filter(|id|!restored.contains(id.as_str())).map(|id|Ok(catalog.summary(id)?.folder)).collect::<Result<BTreeSet<_>,AppError>>()?;
+        if survivors.len()>1{return Err(invalid("project_group_folder_conflict"));}
+        if let Some(folder)=survivors.iter().next(){
+            let moves=members.iter().filter(|id|restored.contains(id.as_str())).map(|id|{let s=catalog.summary(id)?;Ok((s.folder!=*folder).then(||DirectoryMove{id:(*id).clone(),expected_revision:s.revision,folder:folder.clone(),name:None}))}).collect::<Result<Vec<_>,AppError>>()?.into_iter().flatten().collect();
+            catalog.apply_patch(&ProjectRecordPatch{directory_moves:moves,..Default::default()})?;
+        }
     }else{
         let scope=if event.operation=="create_table"&&events.len()>1{ProjectActionScope::Component}else{ProjectActionScope::Descendants};
         let preview=action_preview(engine,context.expected_epoch,&event.dataset_id,scope,true)?;
@@ -159,6 +170,19 @@ mod tests {
     fn generation(db:&ProjectDatabase,id:&str)->u64{db.with_engine(|e|e.get_dataset_generation(id)).unwrap()}
     fn delete(service:&NativeProjectService<'_>,db:&ProjectDatabase,id:&str,operation:&str)->ProjectCommit<()> {
         let mut ctx=context(db,operation);ctx.dataset_generations=vec![DatasetGeneration{id:id.into(),generation:generation(db,id)}];service.delete_dataset(&ctx,id).unwrap()
+    }
+    #[test]
+    fn project_linked_groups_replay_restored_children_follow_surviving_parent_folder(){
+        for shared in [false,true]{
+            let (_dir,db,ids)=fixture();
+            if shared{db.with_engine(|e|{e.conn().execute("DELETE FROM _project_directory WHERE id='ab'",[])?;e.conn().execute("DELETE FROM _project_documents WHERE id='ab'",[])?;e.conn().execute("DELETE FROM _project_settings WHERE key='transformBinding:ab'",[])?;Ok(())}).unwrap();add_link(&db,"ab",&[&ids[0],&ids[2]],&ids[1]);}
+            let path=db.path().to_path_buf();db.shutdown().unwrap();let state=AppState::new().unwrap();let service=NativeProjectService::new(&state);let opened=service.open(&path,false).unwrap();let db=service.database(opened.epoch).unwrap();
+            let deleted=delete(&service,&db,&ids[1],"delete-child");let root=deleted.changed_history_entries[0].id.clone();
+            db.move_table_group(&context(&db,"move-parent"),&crate::models::project_topology::ProjectGroupMoveRequest{target_table_id:ids[0].clone(),destination_folder:"Moved".into(),expected_topology_revision:db.committed_revision().unwrap()}).unwrap();
+            let event=service.table_lifecycle_event(opened.epoch,&root).unwrap();let restored=service.apply_table_lifecycle(&context(&db,"restore-child"),&root,event.revision,true);
+            if shared{assert!(restored.is_err(),"restoring a Join cannot link surviving inputs in different folders");assert!(!service.topology(opened.epoch).unwrap().tables.iter().any(|t|t.id==ids[1]));}
+            else{restored.unwrap();db.with_reader(opened.epoch,|e|{let catalog=crate::services::project_catalog::ProjectCatalog::new(e);for id in [&ids[0],&ids[1],"ab","graph-b","analysis-b","tabulate-b"]{assert_eq!(catalog.summary(id)?.folder,"Moved");}Ok(())}).unwrap();}
+        }
     }
     #[test]
     fn project_linked_groups_delete_descendants_and_owned_documents_only(){
