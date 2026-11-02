@@ -1613,6 +1613,7 @@ export function Workspace() {
   const handleGroupImport=async()=>{const owner=useProjectStore.getState().persistence;try{const path=await open({multiple:false,filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await runGroupOperation(t('directory.importGroup'),signal=>importTableGroup(path as string,'',{signal}));}catch(error){alert(String(error));}};
   const handleDeleteDataset = async (id: string) => {
     const owner=useProjectStore.getState().persistence;
+    let confirmedTopologyRevision:number|undefined;
     if(owner){
       try{
         const preview=await previewTableAction(id,'descendants');
@@ -1622,6 +1623,7 @@ export function Workspace() {
         const names=[...preview.tableIds.map(id=>topology.tables.find(t=>t.id===id)?.name??id),...preview.ownedDocumentIds.map(id=>topology.ownedDocuments.find(d=>d.id===id)?.name??id)];
         if(!await confirm(t('directory.deleteCascade',{items:names.join('\n')}),{title:t('common.delete'),kind:'warning'}))return;
         if(useProjectStore.getState().persistence!==owner||owner.snapshot().committedRevision!==preview.committedRevision)throw new Error('project_topology_session_stale');
+        confirmedTopologyRevision=preview.committedRevision;
       }catch(error){alert(String(error));return;}
     }
     const name = datasets.find((d) => d.id === id)?.name ?? id;
@@ -1639,7 +1641,7 @@ export function Workspace() {
       retainedActiveAnalysisId,
     });
     const nativeDeletion=Boolean(useProjectStore.getState().persistence);
-    await dataService.deleteDataset(id);
+    await dataService.deleteDataset(id,confirmedTopologyRevision);
     if(nativeDeletion) {
       removeDatasetViewport(id);
       if(useGraphBuilderNewStore.getState().items.every(item=>item.id!==activeGraphBuilderNewId)) setActiveGraphBuilderNewId(null);
@@ -2539,6 +2541,7 @@ export function Workspace() {
       onActivate={(kind,id)=>{if(kind==='graphNew')handleOpenGraphBuilderNew(id);else activateWorkspaceDocument(kind==='table'?'dataset':kind==='transform'?'tableTransform':kind as WorkspaceDocumentKind,id);}}
       onContextMenu={(kind,id,event)=>{event.preventDefault();event.stopPropagation();void readNativeProjectDirectory().catch(error=>alert(String(error)));setCtxMenu({kind:kind==='transform'?'tableTransform':kind as 'table',id,x:event.clientX,y:event.clientY});}}
       onRename={async(id,name)=>{const error=validateNativeGraphBasename(name);if(error)throw new Error(invalidProjectNameMessage(error));await readNativeProjectDirectory();await renameProjectDirectoryDocument(id,name,tableDirectory.epoch);}}
+      renameRequest={renamingId?{id:renamingId,name:renameValue}:null} onRenameEnd={()=>setRenamingId(null)}
       onDragStart={handleDragStart}/>);
     if(persistence&&parent===null&&topologyError)out.push(<button key="topology-error" onClick={()=>setTopologyRetry(n=>n+1)}>{t('directory.retry')}</button>);
     if(persistence&&parent===null&&tableDirectory?.diagnostics.length)out.push(<div role="alert" key="topology-invalid">{t('directory.invalid')}</div>);

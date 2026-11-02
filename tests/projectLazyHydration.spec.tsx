@@ -289,3 +289,10 @@ test("native project conversion cancellation retains the current project",async(
  expect(conversion.requests[0]).toMatchObject({source:"/virtual/old.spprj",destination:"/virtual/old-v5.spprj"});
  expect(await page.evaluate(()=>(window as any).__projectLazy.snapshot())).toEqual({reads:0,reports:0,analyses:0,pending:0});expect(alerts).toEqual([]);
 });
+
+for(const [id,name] of [['table','Measurements'],['graph','Overview'],['analysis','Distribution']])test(`native unloaded ${id} context-menu rename opens the real directory input`,async({mount,page})=>{
+ const workspace=await mount(<ProjectLazyHydrationHarness/>);if(id!=='table')await workspace.getByRole('button',{name:'Expand table',exact:true}).first().click();
+ const row=workspace.getByTestId(`directory-document-${id}`);await expect(row).toBeVisible();await row.click({button:'right'});await workspace.getByText('Rename',{exact:true}).click();
+ const input=row.locator('.ds-rename-input');await expect(input).toBeVisible();await input.fill(`${name}.literal`);await input.press('Enter');await expect(row.locator('.ds-name')).toHaveText(`${name}.literal`);
+ expect((await page.evaluate(()=>(window as any).__projectLazy.snapshot())).reads).toBe(0);
+});

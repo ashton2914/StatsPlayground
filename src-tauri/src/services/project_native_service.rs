@@ -435,6 +435,9 @@ impl<'a> NativeProjectService<'a> {
     pub fn copy_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest,cancelled:impl Fn()->bool)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
         self.database(context.expected_epoch)?.copy_table_group(context,request,cancelled)
     }
+    pub fn copy_table_group_guarded<G>(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest,check:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{self.database(context.expected_epoch)?.copy_table_group_guarded(context,request,check,publish)}
+    pub fn import_table_group_guarded<G>(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupImportRequest,check:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{self.database(context.expected_epoch)?.import_table_group_guarded(context,request,check,publish)}
+    pub fn export_table_group_guarded<G>(&self,epoch:u64,request:&crate::models::project_topology::ProjectGroupExportRequest,check:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<crate::models::project_topology::ProjectGroupTransferResult,AppError>{let _lease=super::project_export::acquire_export_project(self.state,Some(epoch))?;self.database(epoch)?.export_table_group_guarded(epoch,request,check,publish)}
     pub fn move_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest)->Result<ProjectCommit<()>,AppError>{
         self.database(context.expected_epoch)?.move_table_group(context,request)
     }
@@ -981,6 +984,14 @@ impl<'a> NativeProjectService<'a> {
     pub fn delete_dataset(&self,context:&ProjectWriteContext,dataset_id:&str)->Result<ProjectCommit<()>,AppError> {
         if !context.dataset_generations.iter().any(|item|item.id==dataset_id) {return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
         self.database(context.expected_epoch)?.commit_with_effects(context,&("delete_dataset",dataset_id),|engine| {
+            super::project_group_history::delete_cascade(engine,context.expected_epoch,dataset_id)
+        })
+    }
+
+    pub fn delete_dataset_at_revision(&self,context:&ProjectWriteContext,dataset_id:&str,confirmed_revision:u64)->Result<ProjectCommit<()>,AppError>{
+        if !context.dataset_generations.iter().any(|item|item.id==dataset_id){return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
+        self.database(context.expected_epoch)?.commit_with_effects(context,&("delete_dataset_confirmed",dataset_id,confirmed_revision),|engine|{
+            if confirmed_revision!=context.expected_revision{return Err(AppError::InvalidParam("project_topology_revision_stale".into()));}
             super::project_group_history::delete_cascade(engine,context.expected_epoch,dataset_id)
         })
     }

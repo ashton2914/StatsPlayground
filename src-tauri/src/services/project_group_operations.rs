@@ -23,8 +23,12 @@ pub(crate) fn validate_record_moves(engine:&crate::engine::duckdb_engine::DuckDb
         }
         if matches!(summary.kind,ProjectDocumentKind::Graph|ProjectDocumentKind::GraphNew|ProjectDocumentKind::Analysis|ProjectDocumentKind::Tabulate) {
             if let Ok(old)=catalog.summary(&summary.id) {if old.dependencies!=summary.dependencies{return Err(AppError::InvalidParam("project_document_reparent_not_allowed".into()));}}
-            if let Some(table)=summary.dependencies.first().filter(|_|summary.dependencies.len()==1) {
+            let table=summary.dependencies.first().filter(|_|summary.dependencies.len()==1).ok_or_else(||AppError::InvalidParam("project_document_owner_invalid".into()))?;
+            let source=match summary.kind{ProjectDocumentKind::GraphNew=>write.document.body.get("datasetId"),ProjectDocumentKind::Analysis=>write.document.body.pointer("/source/datasetId"),_=>write.document.body.get("sourceDatasetId")}.and_then(serde_json::Value::as_str);
+            if source!=Some(table.as_str()){return Err(AppError::InvalidParam("project_document_owner_invalid".into()));}
+            {
                 let owner=catalog.summary(table)?;
+                if owner.kind!=ProjectDocumentKind::Table{return Err(AppError::InvalidParam("project_document_owner_invalid".into()));}
                 let folder=patch.directory_moves.iter().find(|m|m.id==*table).map(|m|m.folder.as_str()).unwrap_or(&owner.folder);
                 if summary.folder!=folder{return Err(AppError::InvalidParam("project_document_inherits_table_folder".into()));}
             }
@@ -53,6 +57,15 @@ pub(crate) fn validate_record_moves(engine:&crate::engine::duckdb_engine::DuckDb
         }
     }
     Ok(())
+}
+
+/// Relationship writes must leave a consistent binding/definition pair in the
+/// same transaction; diagnostics from unrelated pre-existing records stay lazy.
+pub(crate) fn validate_written_topology(engine:&crate::engine::duckdb_engine::DuckDbEngine,patch:&ProjectRecordPatch)->Result<(),AppError>{
+    let ids:BTreeSet<_>=patch.documents.iter().filter(|w|w.document.summary.kind==ProjectDocumentKind::Transform).map(|w|w.document.summary.id.as_str()).chain(patch.settings.iter().filter_map(|w|w.key.strip_prefix("transformBinding:"))).collect();
+    if ids.is_empty(){return Ok(());}
+    let topology=super::project_topology::read_topology(engine,0)?;
+    if topology.diagnostics.iter().any(|d|d.id=="project"||ids.contains(d.id.as_str())){return Err(AppError::InvalidParam("project_transform_relationship_invalid".into()));}Ok(())
 }
 
 impl ProjectDatabase {
@@ -97,6 +110,34 @@ pub(crate) mod tests {
         }).unwrap();
     }
     fn folder(db:&ProjectDatabase,id:&str)->String{db.with_reader(db.epoch(),|e|Ok(ProjectCatalog::new(e).summary(id)?.folder)).unwrap()}
+    #[test]
+    fn project_linked_groups_review_generic_transform_writes_cannot_corrupt_binding(){
+        let (_dir,db,ids)=crate::services::project_group_copy::tests::fixture();
+        let link=db.with_reader(db.epoch(),|e|Ok(super::super::project_topology::read_topology(e,db.epoch())?.transforms.into_iter().find(|t|t.output_table_id==ids[3]).unwrap())).unwrap();
+        for field in ["definitionId","definitionRevision"]{
+            let key=format!("transformBinding:{}",link.id);let (revision,mut value)=db.with_reader(db.epoch(),|e|Ok(ProjectCatalog::new(e).get_setting(&key)?.unwrap())).unwrap();
+            value[field]=if field=="definitionId"{serde_json::json!("wrong")}else{serde_json::json!(999)};
+            assert!(db.commit_records(&context(&db,field),&ProjectRecordPatch{settings:vec![ProjectSettingWrite{key,expected_revision:Some(revision),value}],..Default::default()}).is_err());
+        }
+        for change in ["revision","roles"]{
+            let mut document=db.with_reader(db.epoch(),|e|ProjectCatalog::new(e).get_document(&link.id,link.revision)).unwrap();document.summary.revision+=1;
+            if change=="revision"{document.body["revision"]=serde_json::json!(2);}else{document.body["operation"]=serde_json::json!({"kind":"concatenate","sourceCount":2});document.body["inputSlots"][0]["role"]=serde_json::json!("source-1");document.body["inputSlots"][1]["role"]=serde_json::json!("source-2");}
+            assert!(db.commit_records(&context(&db,change),&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:Some(link.revision),document}],..Default::default()}).is_err());
+        }
+        assert!(db.with_reader(db.epoch(),|e|super::super::project_topology::read_topology(e,db.epoch())).unwrap().diagnostics.is_empty());
+    }
+    #[test]
+    fn project_linked_groups_review_owned_body_and_summary_must_have_same_unique_table(){
+        let (_dir,db,ids)=crate::services::project_group_copy::tests::fixture();
+        for id in ["graph-new","distribution","fit-y","fit-model","hypothesis","tabulate"]{
+            let original=db.with_reader(db.epoch(),|e|ProjectCatalog::new(e).get_document(id,1)).unwrap();let mut document=original.clone();document.summary.revision=2;
+            if document.summary.kind==ProjectDocumentKind::GraphNew{document.body["datasetId"]=serde_json::json!(ids[0]);}else if document.summary.kind==ProjectDocumentKind::Analysis{document.body["source"]["datasetId"]=serde_json::json!(ids[0]);}else{document.body["sourceDatasetId"]=serde_json::json!(ids[0]);}
+            assert!(db.commit_records(&context(&db,&format!("body-{id}")),&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:Some(1),document}],..Default::default()}).is_err());
+            for dependencies in [vec![],vec![ids[0].clone(),ids[3].clone()]]{let mut document=original.clone();document.summary.id=format!("new-{id}");document.body["id"]=serde_json::json!(document.summary.id);document.summary.dependencies=dependencies;assert!(db.commit_records(&context(&db,&uuid::Uuid::new_v4().to_string()),&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:None,document}],..Default::default()}).is_err());}
+        }
+        let document=ProjectDocumentBody{summary:ProjectDocumentSummary{id:"old-graph".into(),name:"Old graph".into(),kind:ProjectDocumentKind::Graph,folder:String::new(),revision:1,dependencies:vec![ids[0].clone()],analysis_kind:None},schema_version:1,body:serde_json::json!({"id":"old-graph","name":"Old graph","sourceDatasetId":ids[3]})};
+        assert!(db.commit_records(&context(&db,"legacy-body"),&ProjectRecordPatch{documents:vec![DocumentWrite{expected_revision:None,document}],..Default::default()}).is_err());
+    }
     #[test]
     fn project_linked_groups_move_owned_document_cannot_change_parent_or_delete_broken_connector(){
         let (_dir,db,ids)=fixture();

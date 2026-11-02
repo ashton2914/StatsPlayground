@@ -233,6 +233,9 @@ impl ProjectDatabase {
         request: &P,
         apply: impl FnOnce(&DuckDbEngine) -> Result<CommitEffects<T>, AppError>,
     ) -> Result<ProjectCommit<T>, AppError> {
+        self.commit_with_effects_guarded(context,request,apply,||Ok(()))
+    }
+    pub(crate) fn commit_with_effects_guarded<T:Serialize+DeserializeOwned,P:Serialize,G>(&self,context:&ProjectWriteContext,request:&P,apply:impl FnOnce(&DuckDbEngine)->Result<CommitEffects<T>,AppError>,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectCommit<T>,AppError>{
         let digest=self.operation_digest(context,request)?;
         self.with_engine(|engine| {
             let conn = engine.conn();
@@ -376,6 +379,7 @@ impl ProjectDatabase {
             }
             #[cfg(all(feature="project-v5",feature="perf-harness"))]
             crate::perf_project_v5::crash_point("before-commit",&context.operation_id)?;
+            let _publication=publish()?;
             conn.execute_batch("COMMIT")?;
             transaction.active = false;
             #[cfg(all(feature="project-v5",feature="perf-harness"))]

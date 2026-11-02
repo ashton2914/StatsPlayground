@@ -20,9 +20,9 @@ Deletion undo restores children under the surviving parent's current folder. If 
 
 - Default-feature harness builds with `--features perf-harness` only. Resolved root features: `default,project-v5`.
 - Real native capability → draft → automatic durable edit → reopen passed. Explicit no-default-feature library check passed.
-- Native project regressions: **328 passed, 1 ignored**. Linked-group cases include metadata-only discovery, multi-input chains, folder integrity, rollback, directed deletion/replay, moved-parent restoration, independent copied formulas/Transform reruns, exact typed export/import, invalid/future/dangling sources, cancellation and lost receipts.
+- Native project regressions: **333 passed, 1 ignored**. Linked-group cases include metadata-only discovery, multi-input chains, folder integrity, rollback, directed deletion/replay, moved-parent restoration, independent copied formulas/Transform reruns, exact typed export/import, invalid/future/dangling sources, cancellation and lost receipts.
 - MCP tests: **21 passed**, including 28-tool typed catalog and all shipped guide examples. External group transfer tools use application file pickers; arbitrary paths are excluded from MCP schemas.
-- `npm run test:project-persistence`: **90 contract scripts and 146 UI tests passed**. Separate directory/Graph-new/Distribution UI run: **25 passed**. Broader native-app/lazy-hydration UI run: **33 passed**.
+- `npm run test:project-persistence`: **91 contract scripts and 149 UI tests passed**. Separate directory/Graph-new/Distribution UI run: **25 passed**. Broader native-app/lazy-hydration UI run: **33 passed**.
 - Frontend production build and TypeScript check passed. Budget framework tests: **29 passed**. App-version/portable/release-workflow tests: **27 passed**. Dependency lock files unchanged.
 - Native macOS acceptance app has a separate identifier (`com.statsplayground.issue285.acceptance`). The normal running application and user projects were preserved.
 
@@ -30,7 +30,7 @@ Old regression fixtures were corrected to use actual owned source tables and typ
 
 ## Native desktop observations
 
-The actual default-feature desktop window showed the bracket, extensionless logical names, five real owned documents under B, and prompt-less new-folder creation followed by immediate rename. The B-deletion confirmation listed B, C and owned children, excluding A, X and Join. Deletion removed the selected graph editor; undo restored the chain. Five-table group copy changed the project count from 6 to 11, and one undo returned it to 6. Native group export and import produced a second independent five-table group. An individual analysis was deleted while all 11 tables remained; after application restart the original analysis stayed deleted while the imported group's copy survived. File save durability barrier completed.
+The final corrected default-feature desktop app rebuilt successfully. Its native context-menu rename displayed the input, saved `Unrelated Table.literal`, preserved the suffix and completed the durability barrier. The actual default-feature desktop window showed the bracket, extensionless logical names, five real owned documents under B, and prompt-less new-folder creation followed by immediate rename. The B-deletion confirmation listed B, C and owned children, excluding A, X and Join. Deletion removed the selected graph editor; undo restored the chain. Five-table group copy changed the project count from 6 to 11, and one undo returned it to 6. Native group export and import produced a second independent five-table group. An individual analysis was deleted while all 11 tables remained; after application restart the original analysis stayed deleted while the imported group's copy survived. File save durability barrier completed.
 
 Native drag attempts through CUA did not yield a verifiable move, including a splitter calibration attempt. Chromium component drag/drop tests pass and native group/folder transactions pass, but macOS drag gesture acceptance remains a manual check. A separate Playwright WebKit attempt could not launch because that browser runtime is not installed; no browser installation was performed.
 
@@ -45,7 +45,7 @@ Native screenshots and self-owned project/export fixtures are retained in the lo
 3. Projected authoritative metadata instead of a second topology index: no duplicate durable truth or document hydration; relationship reads scale with metadata size.
 4. Existing Transform inputs cannot be replaced; unchanged-input reruns remain supported. Cross-folder inputs must first be organized together. This costs an extra organization/new-Transform action when changing parents.
 5. Creation undo with live descendants rejects dependency order; scoped callers must undo descendants first.
-6. Native uncommitted SQL tables stage copies; cancellation can wait for a long SQL statement to return, while publication still checks cancellation.
+6. Native uncommitted SQL tables stage copies; cancellation can wait for a long SQL statement to return. A synchronized publication guard covers the actual COMMIT/file-link boundary.
 7. Copy/import are a single component creation undo root; undo scope is intentionally the entire user action.
 8. Typed transfer staging rejects unsupported lossless conversions; unusual engine types may fail export rather than change their values.
 9. Explicit folder actions load a complete metadata inventory and submit one guarded patch; no parallel folder transaction API was introduced.
@@ -67,4 +67,16 @@ Source-frozen debug smoke collected **31 logically verified native UI samples**:
 
 The smoke is **not qualified**: debug provenance, insufficient warm/cold sample counts, and observed timing misses. Many-document catalog open exceeded its 500 ms target. Scroll UI P95 was 125/133 ms versus 100 ms, and edit UI P95 was 226/322 ms versus 200 ms for regular/many fixtures. No before/after timing regression claim is made without a matching baseline. Raw reports and the failed qualification assessment are retained with the acceptance evidence. A full release performance qualification remains outstanding.
 
-Independent review results are appended before delivery. This record is not a release or merge authorization.
+The independent whole-branch review identified five important findings. The consolidated fix pass covers each with a failing regression reproduced before implementation:
+
+1. Cascade confirmation now carries its immutable topology revision across asynchronous generation lookup to the native transaction. Changed scope rejects deletion; lost acknowledgements still replay the original receipt.
+2. Cancellation and publication share a mutex held over the actual database COMMIT or no-clobber file link. Cancellation accepted before that boundary rolls back; publication already holding the boundary wins late cancellation.
+3. Generic Transform definition/binding writes validate the resulting relationship inside their transaction and roll back inconsistent revisions, identities or roles.
+4. Owned Graph, Graph-new, Analysis and Tabulate bodies must agree with their single real table dependency.
+5. Context-menu rename requests now reach the native directory input, including unloaded tables, Graph-new and analyses without body hydration.
+
+Deferred minor: topology diagnostic/blocker notices do not yet expose the affected object identities. Invalid operations remain blocked, but diagnosis requires further inspection.
+
+Review scope rulings: the seeded chart renderer error remains unattributed and unaccepted visually; native drag, other native platforms and release performance remain unverified; inspected semantic hashes/provenance did not establish a remapping defect; existing explicit group moves provide normalization without a separate normalization button. These retain the limitations above rather than imply broader acceptance. The debug smoke fingerprint above belongs to the pre-review snapshot, not the final corrected tree.
+
+This record is not a release or merge authorization.

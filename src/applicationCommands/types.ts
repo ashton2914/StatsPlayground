@@ -487,7 +487,7 @@ export type ApplicationCommandRegistry = {
   "project.copyTableGroup":{input:import('../types/projectPersistence').ProjectGroupCopyRequest;data:import('../types/projectPersistence').ProjectGroupCopyResult};
   "project.exportTableGroup":{input:{targetTableId:string;expectedTopologyRevision:number;filePath?:string};data:{tableCount:number;sourceRevision:number}};
   "project.importTableGroup":{input:{destinationFolder:string;filePath?:string};data:import('../types/projectPersistence').ProjectGroupCopyResult};
-  "table.delete":{input:{datasetId:string};data:null};
+  "table.delete":{input:{datasetId:string;expectedTopologyRevision?:number};data:null};
   "table.create": { input: TableCreateInput; data: TableCreateResult };
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };

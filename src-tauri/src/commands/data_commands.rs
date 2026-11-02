@@ -175,9 +175,10 @@ pub fn list_datasets(state: State<'_, AppState>) -> Result<Vec<DatasetMeta>, App
 }
 
 #[tauri::command(async)]
-pub fn delete_dataset(app:tauri::AppHandle,state: State<'_, AppState>, dataset_id: String,context:Option<ProjectWriteContext>) -> Result<ProjectMutationResult<()>, AppError> {
+pub fn delete_dataset(app:tauri::AppHandle,state: State<'_, AppState>, dataset_id: String,context:Option<ProjectWriteContext>,expected_topology_revision:Option<u64>) -> Result<ProjectMutationResult<()>, AppError> {
     if let Some(context) = context {
-        let commit=crate::services::project_native_service::NativeProjectService::new(&state).delete_dataset(&context,&dataset_id)?;
+        let service=crate::services::project_native_service::NativeProjectService::new(&state);
+        let commit=match expected_topology_revision{Some(revision)=>service.delete_dataset_at_revision(&context,&dataset_id,revision)?,None=>service.delete_dataset(&context,&dataset_id)?};
         if app.emit("project-committed",&commit).is_err() {eprintln!("project_commit_event_delivery_failed");}
         return Ok(ProjectMutationResult::Committed(commit));
     }

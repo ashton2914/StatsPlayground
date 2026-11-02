@@ -89,7 +89,8 @@
     "tests/applicationCommandTableGroups.test.ts",
     "tests/projectGroupCancellation.test.ts",
     "tests/projectTableGroupsNative.test.ts",
-    "tests/projectDefaultNativeStartup.test.ts"
+    "tests/projectDefaultNativeStartup.test.ts",
+    "tests/projectDeletionPreviewFence.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",

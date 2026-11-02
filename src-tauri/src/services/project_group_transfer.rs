@@ -31,6 +31,9 @@ fn internal_context(database:&ProjectDatabase)->Result<ProjectWriteContext,AppEr
 }
 impl ProjectDatabase {
     pub fn export_table_group(&self,epoch:u64,request:&ProjectGroupExportRequest,check:impl Fn()->bool)->Result<ProjectGroupTransferResult,AppError>{
+        self.export_table_group_guarded(epoch,request,&check,||cancelled(&check))
+    }
+    pub fn export_table_group_guarded<G>(&self,epoch:u64,request:&ProjectGroupExportRequest,check:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectGroupTransferResult,AppError>{
         cancelled(&check)?;let destination=Path::new(&request.file_path);if destination.exists(){return Err(invalid("project_destination_exists"));}
         let parent=destination.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or(Path::new("."));let workspace=tempfile::Builder::new().prefix(".sp-group-").tempdir_in(parent)?;
         let (records,rows)=self.with_reader(epoch,|engine|{
@@ -44,11 +47,15 @@ impl ProjectDatabase {
         cancelled(&check)?;std::fs::File::open(&staged)?.sync_all()?;
         // Same-parent staging permits atomic no-clobber publication; no source
         // project copy or overwrite is ever used as an export shortcut.
+        let _publication=publish()?;
         std::fs::hard_link(&staged,destination)?;
         #[cfg(unix)] std::fs::File::open(parent)?.sync_all()?;
         Ok(ProjectGroupTransferResult{file_path:request.file_path.clone(),table_count:records.tables.len(),source_revision:records.revision})
     }
     pub fn import_table_group(&self,context:&ProjectWriteContext,request:&ProjectGroupImportRequest,check:impl Fn()->bool)->Result<ProjectCommit<ProjectGroupCopyResult>,AppError>{
+        self.import_table_group_guarded(context,request,&check,||cancelled(&check))
+    }
+    pub fn import_table_group_guarded<G>(&self,context:&ProjectWriteContext,request:&ProjectGroupImportRequest,check:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectCommit<ProjectGroupCopyResult>,AppError>{
         let operation=("import_project_table_group",request);
         if let Some(receipt)=self.preflight_commit::<ProjectGroupCopyResult,_>(context,&operation)?{return Ok(receipt);}
         cancelled(&check)?;let path=Path::new(&request.file_path);
@@ -61,7 +68,7 @@ impl ProjectDatabase {
             if unsupported!=0{return Err(invalid("project_group_contains_project_records"));}
             let records=project_group_copy::capture_group(engine,source.epoch(),&first.id)?;let rows=stage_rows(engine,&records,workspace.path(),&check)?;Ok((records,rows))
         });source.shutdown()?;let (records,rows)=staged?;cancelled(&check)?;
-        self.commit_with_effects(context,&operation,|engine|project_group_copy::copy_records(engine,context.expected_epoch,&records,&rows,&request.destination_folder,&check))
+        self.commit_with_effects_guarded(context,&operation,|engine|project_group_copy::copy_records(engine,context.expected_epoch,&records,&rows,&request.destination_folder,&check),publish)
     }
 }
 

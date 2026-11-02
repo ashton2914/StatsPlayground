@@ -35,7 +35,7 @@ pub struct GroupImportToolInput {pub destination_folder:String}
 pub struct GroupTransferToolResult {pub table_count:usize,pub source_revision:u64}
 #[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-pub struct TableDeleteToolInput {pub dataset_id:String}
+pub struct TableDeleteToolInput {pub dataset_id:String,#[serde(default,skip_serializing_if="Option::is_none")]pub expected_topology_revision:Option<u64>}
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 

@@ -45,7 +45,7 @@ enum Mutation {
     #[serde(rename="apply_project_table_lifecycle")]
     ReplayLifecycle {event_id:String,event_revision:u64,undo:bool},
     #[serde(rename="delete_dataset")]
-    DeleteDataset {dataset_id:String},
+    DeleteDataset {dataset_id:String,#[serde(default)]expected_topology_revision:Option<u64>},
     #[serde(rename="alter_column_with_change_set")]
     AlterColumn {dataset_id:String,old_name:String,new_name:String,new_type:String,expected_generation:u64},
     #[serde(rename="alter_columns_type_with_change_set")]
@@ -301,7 +301,7 @@ fn dispatch(
                 Mutation::Paste{dataset_id,start_row,start_col,rows,header_names,col_types,expected_generation,row_ids,column_ids}=>encode(service.paste(&context,&crate::models::project_persistence::ProjectPasteRequest{dataset_id,start_row,start_col,rows,header_names,col_types,expected_generation,row_ids,column_ids})?),
                 Mutation::ReplayLifecycle {event_id,event_revision,undo}=>encode(service.apply_table_lifecycle(&context,&event_id,event_revision,undo)?),
                 Mutation::ImportTable {file_path}=>encode(service.import_sptb(&context,&file_path,||false)?),
-                Mutation::DeleteDataset {dataset_id}=>encode(service.delete_dataset(&context,&dataset_id)?),
+                Mutation::DeleteDataset {dataset_id,expected_topology_revision}=>encode(match expected_topology_revision{Some(revision)=>service.delete_dataset_at_revision(&context,&dataset_id,revision)?,None=>service.delete_dataset(&context,&dataset_id)?}),
                 Mutation::AlterColumn {dataset_id,old_name,new_name,new_type,expected_generation}=>encode(service.alter_column(&context,&dataset_id,&old_name,&new_name,&new_type,expected_generation)?),
                 Mutation::AlterTypes {dataset_id,column_names,new_type,expected_generation}=>encode(service.alter_column_types(&context,&dataset_id,&column_names,&new_type,expected_generation)?),
                 Mutation::UpsertCalculated {request}=>encode(service.upsert_calculated_column(&context,&crate::services::calculated_column_service::UpsertCalculatedColumnInput {dataset_id:request.dataset_id,output_name:request.output_name,formula_text:request.formula_text,at_index:request.at_index,output_column_id:request.output_column_id,formula_id:request.formula_id,expected_generation:request.expected_generation})?),

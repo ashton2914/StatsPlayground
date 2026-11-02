@@ -128,10 +128,13 @@ pub(crate) fn copy_records(engine:&DuckDbEngine,epoch:u64,records:&GroupRecords,
 }
 impl ProjectDatabase {
     pub fn copy_table_group(&self,context:&ProjectWriteContext,request:&ProjectGroupMoveRequest,cancelled:impl Fn()->bool)->Result<ProjectCommit<ProjectGroupCopyResult>,AppError>{
-        self.commit_with_effects(context,&("copy_project_table_group",request),|engine|{
+        self.copy_table_group_guarded(context,request,&cancelled,||if cancelled(){Err(AppError::Cancelled("project_group_copy_cancelled".into()))}else{Ok(())})
+    }
+    pub fn copy_table_group_guarded<G>(&self,context:&ProjectWriteContext,request:&ProjectGroupMoveRequest,cancelled:impl Fn()->bool,publish:impl FnOnce()->Result<G,AppError>)->Result<ProjectCommit<ProjectGroupCopyResult>,AppError>{
+        self.commit_with_effects_guarded(context,&("copy_project_table_group",request),|engine|{
             if request.expected_topology_revision!=context.expected_revision{return Err(invalid("project_topology_revision_stale"));}
             let records=capture_group(engine,context.expected_epoch,&request.target_table_id)?;copy_records(engine,context.expected_epoch,&records,&GroupRows::Native,&request.destination_folder,&cancelled)
-        })
+        },publish)
     }
 }
 

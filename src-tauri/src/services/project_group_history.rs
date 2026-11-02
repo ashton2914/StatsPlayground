@@ -172,6 +172,15 @@ mod tests {
         let mut ctx=context(db,operation);ctx.dataset_generations=vec![DatasetGeneration{id:id.into(),generation:generation(db,id)}];service.delete_dataset(&ctx,id).unwrap()
     }
     #[test]
+    fn project_linked_groups_review_delete_confirmation_fences_scope_and_replays_receipt(){
+        let (_dir,db,ids)=fixture();let path=db.path().to_path_buf();db.shutdown().unwrap();let state=AppState::new().unwrap();let service=NativeProjectService::new(&state);let opened=service.open(&path,false).unwrap();let db=service.database(opened.epoch).unwrap();
+        let confirmed=db.committed_revision().unwrap();let child=db.materialize_project_sql(&context(&db,"late-child"),&ProjectSqlOutput{name:"Late child".into(),sql:"SELECT 9 AS value".into(),folder:String::new()}).unwrap().value.id;add_link(&db,"late-link",&[&ids[1]],&child);
+        let mut ctx=context(&db,"delete-after-scope-change");ctx.dataset_generations=vec![DatasetGeneration{id:ids[1].clone(),generation:generation(&db,&ids[1])}];
+        assert!(service.delete_dataset_at_revision(&ctx,&ids[1],confirmed).is_err());assert_eq!(db.with_engine(|e|e.list_datasets()).unwrap().len(),4);
+        let current=db.committed_revision().unwrap();ctx.operation_id="confirmed-current".into();let commit=service.delete_dataset_at_revision(&ctx,&ids[1],current).unwrap();assert!(commit.deleted_directory_ids.contains(&child));
+        assert_eq!(service.delete_dataset_at_revision(&ctx,&ids[1],current).unwrap().committed_revision,commit.committed_revision,"lost reply must return the same receipt even though the preview revision is now old");
+    }
+    #[test]
     fn project_linked_groups_replay_restored_children_follow_surviving_parent_folder(){
         for shared in [false,true]{
             let (_dir,db,ids)=fixture();
