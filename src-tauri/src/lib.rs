@@ -195,6 +195,8 @@ pub fn run() {
             commands::project_commands::get_project_topology,
             commands::project_commands::move_project_table_group,
             commands::project_commands::copy_project_table_group,
+            commands::project_commands::export_project_table_group,
+            commands::project_commands::import_project_table_group,
             commands::project_commands::preview_project_table_action,
             commands::project_commands::get_project_document,
             commands::project_commands::get_project_setting,

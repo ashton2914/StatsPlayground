@@ -1035,3 +1035,13 @@ pub fn copy_project_table_group(app:AppHandle,state:State<'_,AppState>,context:P
     let commit=crate::services::project_native_service::NativeProjectService::new(&state).copy_table_group(&context,&request,||false)?;
     if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
 }
+
+#[tauri::command(async)]
+pub fn export_project_table_group(state:State<'_,AppState>,epoch:u64,request:crate::models::project_topology::ProjectGroupExportRequest)->Result<crate::models::project_topology::ProjectGroupTransferResult,AppError>{
+    crate::services::project_native_service::NativeProjectService::new(&state).export_table_group(epoch,&request,||false)
+}
+#[tauri::command(async)]
+pub fn import_project_table_group(app:AppHandle,state:State<'_,AppState>,context:ProjectWriteContext,request:crate::models::project_topology::ProjectGroupImportRequest)->Result<crate::models::project_persistence::ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+    let commit=crate::services::project_native_service::NativeProjectService::new(&state).import_table_group(&context,&request,||false)?;
+    if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}Ok(commit)
+}

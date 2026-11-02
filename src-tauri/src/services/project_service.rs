@@ -1303,8 +1303,22 @@ impl<'a> ProjectService<'a> {
     // "import a .sptb into the current project", etc.
     // ------------------------------------------------------------------
 
-    /// Export a single dataset to a standalone `.sptb` file on disk.
+    fn require_standalone_table_export(&self,dataset_ids:&[String])->Result<(),AppError>{
+        let active=self.state.project_database.read().map_err(|e|AppError::Database(e.to_string()))?.clone();
+        if let Some(database)=active {
+            database.with_reader(database.epoch(),|engine|{
+                let topology=super::project_topology::read_topology(engine,database.epoch())?;
+                for id in dataset_ids {
+                    let scope=topology.preview(id,crate::models::project_topology::ProjectActionScope::Component)?;
+                    if scope.table_ids.len()!=1||!scope.transform_ids.is_empty()||!scope.owned_document_ids.is_empty(){return Err(AppError::InvalidParam("project_table_export_requires_group".into()));}
+                }Ok(())
+            })?;
+        }Ok(())
+    }
+
+    /// Export a standalone table; linked native objects use a complete group file.
     pub fn export_table(&self, dataset_id: &str, file_path: &str) -> Result<(), AppError> {
+        self.require_standalone_table_export(&[dataset_id.to_string()])?;
         let doc = self.compose_table_doc(dataset_id)?;
         spprj_archive::write_table_file(&doc, file_path)
     }
@@ -1327,6 +1341,7 @@ impl<'a> ProjectService<'a> {
         if dataset_ids.is_empty() {
             return Err(AppError::InvalidParam("没有可导出的数据表".to_string()));
         }
+        self.require_standalone_table_export(dataset_ids)?;
         let file = std::fs::File::create(output_path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()

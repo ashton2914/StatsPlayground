@@ -127,10 +127,10 @@ export interface ProjectWorkflowRunState {
 export interface ProjectTableNode { id:string; name:string; folder:string; revision:number }
 export interface ProjectTransformInput { role:string; tableId:string }
 export interface ProjectTransformLink {
-  id:string; name:string; revision:number; operationKind:string;
+  id:string; name:string; revision:number; operationKind:string; folder?:string;
   inputs:ProjectTransformInput[]; outputTableId:string;
 }
-export interface ProjectOwnedDocument { id:string; kind:ProjectDocumentKind; tableId:string; revision:number }
+export interface ProjectOwnedDocument { id:string; kind:ProjectDocumentKind; tableId:string; revision:number; name?:string; folder?:string; analysisKind?:string | null }
 export interface ProjectTopologyDiagnostic { code:string; id:string }
 export interface ProjectTopology {
   epoch:number; committedRevision:number; tables:ProjectTableNode[];
@@ -148,3 +148,5 @@ export interface ProjectGroupCopyRequest extends ProjectGroupMoveRequest {}
 export interface ProjectGroupCopyResult { tableIds:string[]; idMap:Record<string,string> }
 export interface ProjectGroupExportRequest { targetTableId:string; filePath:string; expectedTopologyRevision:number }
 export interface ProjectGroupImportRequest { filePath:string; destinationFolder:string }
+
+export interface ProjectGroupTransferResult {filePath:string;tableCount:number;sourceRevision:number}

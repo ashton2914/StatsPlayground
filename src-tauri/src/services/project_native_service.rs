@@ -425,6 +425,13 @@ impl<'a> NativeProjectService<'a> {
         })
     }
 
+    pub fn export_table_group(&self,epoch:u64,request:&crate::models::project_topology::ProjectGroupExportRequest,cancelled:impl Fn()->bool)->Result<crate::models::project_topology::ProjectGroupTransferResult,AppError>{
+        let _lease=super::project_export::acquire_export_project(self.state,Some(epoch))?;
+        self.database(epoch)?.export_table_group(epoch,request,cancelled)
+    }
+    pub fn import_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupImportRequest,cancelled:impl Fn()->bool)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
+        self.database(context.expected_epoch)?.import_table_group(context,request,cancelled)
+    }
     pub fn copy_table_group(&self,context:&ProjectWriteContext,request:&crate::models::project_topology::ProjectGroupMoveRequest,cancelled:impl Fn()->bool)->Result<ProjectCommit<crate::models::project_topology::ProjectGroupCopyResult>,AppError>{
         self.database(context.expected_epoch)?.copy_table_group(context,request,cancelled)
     }

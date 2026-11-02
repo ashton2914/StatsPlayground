@@ -95,6 +95,7 @@ export interface SaveProgress {
 }
 
 export const projectService = {
+  exportProjectTableGroup: (epoch:number,request:import('@/types/projectPersistence').ProjectGroupExportRequest) => invoke<import('@/types/projectPersistence').ProjectGroupTransferResult>('export_project_table_group',{epoch,request}),
   getProjectTopology: (epoch:number) => invoke<import('@/types/projectPersistence').ProjectTopology>('get_project_topology',{epoch}),
   previewProjectTableAction: (epoch:number,tableId:string,scope:import('@/types/projectPersistence').ProjectActionScope) => invoke<import('@/types/projectPersistence').ProjectActionPreview>('preview_project_table_action',{epoch,tableId,scope}),
   preflightProjectMigration: (sourcePath:string,destinationPath?:string)=>invoke<import("@/projectPersistence/openWithMigration").ProjectMigrationPreflight>("preflight_project_migration",{sourcePath,destinationPath:destinationPath??null}),

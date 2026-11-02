@@ -8,7 +8,7 @@ use crate::{engine::duckdb_engine::DuckDbEngine,error::AppError,models::{project
 use super::{project_database::ProjectDatabase,project_catalog::ProjectCatalog,project_transaction::CommitEffects,spprj_archive::{self,TableDoc},project_service};
 fn invalid(code:&str)->AppError{AppError::InvalidParam(code.into())}
 #[derive(Clone,Serialize,Deserialize)]
-pub(crate) struct GroupTableSnapshot {pub doc:TableDoc,pub row_count:i64,pub next_row_id:Option<i64>,pub source_path:Option<String>}
+pub(crate) struct GroupTableSnapshot {pub doc:TableDoc,pub row_count:i64,pub next_row_id:Option<i64>,pub source_path:Option<String>,pub column_properties:Vec<(String,i64)>}
 #[derive(Clone,Serialize,Deserialize)]
 pub(crate) struct GroupRecords {pub revision:u64,pub tables:Vec<GroupTableSnapshot>,pub documents:Vec<ProjectDocumentBody>,pub settings:BTreeMap<String,Value>}
 pub(crate) enum GroupRows {Native,Parquet(BTreeMap<String,PathBuf>)}
@@ -19,7 +19,8 @@ pub(crate) fn capture_group(engine:&DuckDbEngine,epoch:u64,target:&str)->Result<
         let meta=engine.get_dataset_meta(id)?;let plans=engine.get_archive_column_plans(id)?;let display=super::project_column_settings::read(engine,id)?;
         let doc=TableDoc{id:id.clone(),name:meta.name,source_type:meta.source_type,version:"3".into(),columns:spprj_archive::project_archive_table_columns(&plans,Some(&display)),rows:vec![]};
         let next_row_id=engine.conn().query_row("SELECT next_row_id FROM _meta_datasets WHERE id=?",[id],|r|r.get(0))?;
-        tables.push(GroupTableSnapshot{doc,row_count:meta.row_count,next_row_id,source_path:meta.source_path});
+        let column_properties=engine.conn().prepare("SELECT role,missing_count FROM _meta_columns WHERE dataset_id=? ORDER BY col_index")?.query_map([id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        tables.push(GroupTableSnapshot{doc,row_count:meta.row_count,next_row_id,source_path:meta.source_path,column_properties});
         for key in [format!("filter:{id}"),format!("display:{id}")]{if let Some((_,value))=catalog.get_setting(&key)?{settings.insert(key,value);}}
     }
     for id in preview.transform_ids.iter().chain(&preview.owned_document_ids){let summary=catalog.summary(id)?;documents.push(catalog.get_document(id,summary.revision)?);}
@@ -42,6 +43,17 @@ pub(crate) fn remap_group_records(value:&mut Value,map:&BTreeMap<String,String>)
         },
         Value::Array(items)=>for item in items{remap_group_records(item,map);},_=>{}
     }
+}
+/// Parquet carries the existing archive cell representation for non-scalar
+/// types. Explicit casts avoid decimal/HUGEINT/interval precision loss; BLOB
+/// uses hex, never a text-to-blob cast.
+pub(crate) fn restore_projection(engine:&DuckDbEngine,doc:&TableDoc)->Result<String,AppError>{
+    let mut fields=vec!["CAST(\"_row_id\" AS BIGINT) AS \"_row_id\"".to_string()];
+    for column in &doc.columns {
+        let name=DuckDbEngine::quote_identifier(&column.name);let sql_type=engine.canonicalize_column_type_for_create(&column.col_type)?;
+        fields.push(if sql_type.eq_ignore_ascii_case("BLOB"){format!("from_hex({name}) AS {name}")}else{format!("CAST({name} AS {sql_type}) AS {name}")});
+    }
+    fields.push("CAST(\"_row_order\" AS HUGEINT) AS \"_row_order\"".to_string());Ok(fields.join(","))
 }
 fn allocate_name(base:&str,used:&mut BTreeSet<String>)->String{
     let mut name=base.to_string();let mut n=2;while !used.insert(name.to_lowercase()){name=format!("{base}-{n}");n+=1;}name
@@ -69,13 +81,14 @@ pub(crate) fn copy_records(engine:&DuckDbEngine,epoch:u64,records:&GroupRecords,
         let columns=std::iter::once("_row_id").chain(doc.columns.iter().map(|c|c.name.as_str())).chain(std::iter::once("_row_order")).map(DuckDbEngine::quote_identifier).collect::<Vec<_>>().join(",");
         match rows {
             GroupRows::Native=>{let source_table=DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&source.doc.id));engine.conn().execute_batch(&format!("INSERT INTO {destination} ({columns}) SELECT {columns} FROM {source_table}"))?;},
-            GroupRows::Parquet(paths)=>{let file=paths.get(&source.doc.id).and_then(|p|p.to_str()).ok_or_else(||invalid("project_group_staging_missing"))?;engine.conn().execute(&format!("INSERT INTO {destination} ({columns}) SELECT {columns} FROM read_parquet(?)"),[file])?;}
+            GroupRows::Parquet(paths)=>{let file=paths.get(&source.doc.id).and_then(|p|p.to_str()).ok_or_else(||invalid("project_group_staging_missing"))?;let restored=restore_projection(engine,doc)?;engine.conn().execute(&format!("INSERT INTO {destination} ({columns}) SELECT {restored} FROM read_parquet(?)"),[file])?;}
         }
         if cancelled(){return Err(AppError::Cancelled("project_group_copy_cancelled".into()));}
         engine.conn().execute("UPDATE _meta_datasets SET row_count=?,next_row_id=?,source_type=?,source_path=? WHERE id=?",params![source.row_count,source.next_row_id,&source.doc.source_type,&source.source_path,&doc.id])?;
         let plans=project_service::table_doc_to_archive_column_plans(doc,None)?;engine.replace_archive_column_ids(&doc.id,&plans)?;engine.replace_archived_calculated_columns(&doc.id,&plans)?;
         // Roles and missing-value metadata are non-identity column properties.
-        if matches!(rows,GroupRows::Native){engine.conn().execute("UPDATE _meta_columns AS target SET role=source.role,missing_count=source.missing_count FROM _meta_columns AS source WHERE source.dataset_id=? AND target.dataset_id=? AND target.col_index=source.col_index",params![&source.doc.id,&doc.id])?;}
+        if source.column_properties.len()!=doc.columns.len(){return Err(invalid("project_group_column_metadata_invalid"));}
+        for (index,(role,missing)) in source.column_properties.iter().enumerate(){engine.conn().execute("UPDATE _meta_columns SET role=?,missing_count=? WHERE dataset_id=? AND col_index=?",params![role,missing,&doc.id,index as i32])?;}
         engine.rebuild_natural_anchors(&doc.id,0)?;events.push(catalog.publish_new_table(&engine.get_dataset_meta(&doc.id)?,folder)?);document_ids.push(doc.id.clone());
     }
     let table_names:BTreeMap<_,_>=destinations.iter().map(|d|(d.id.clone(),d.name.clone())).collect();let mut patch=ProjectRecordPatch::default();let mut transforms=vec![];

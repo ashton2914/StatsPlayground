@@ -42,3 +42,13 @@ pub struct ProjectGroupMoveRequest { pub target_table_id:String, pub destination
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ProjectGroupCopyResult { pub table_ids:Vec<String>, pub id_map:std::collections::BTreeMap<String,String> }
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ProjectGroupExportRequest {pub target_table_id:String,pub file_path:String,pub expected_topology_revision:u64}
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ProjectGroupImportRequest {pub file_path:String,pub destination_folder:String}
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ProjectGroupTransferResult {pub file_path:String,pub table_count:usize,pub source_revision:u64}

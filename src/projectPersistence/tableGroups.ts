@@ -35,3 +35,15 @@ export async function copyTableGroup(targetTableId:string,destinationFolder:stri
   const commit=await persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'copy_project_table_group',payload:{request:{targetTableId,destinationFolder,expectedTopologyRevision}}});
   assertCurrent(persistence,epoch);return commit.value;
 }
+
+export async function exportTableGroup(targetTableId:string,filePath:string,expectedTopologyRevision:number) {
+  const persistence=owner();const epoch=persistence.snapshot().epoch;
+  await persistence.flushThrough(persistence.captureBarrier());assertCurrent(persistence,epoch);
+  const result=await projectService.exportProjectTableGroup(epoch,{targetTableId,filePath,expectedTopologyRevision});
+  assertCurrent(persistence,epoch);return result;
+}
+export async function importTableGroup(filePath:string,destinationFolder:string) {
+  const persistence=owner();const epoch=persistence.snapshot().epoch;
+  const commit=await persistence.submit<import('../types/projectPersistence').ProjectGroupCopyResult>({command:'import_project_table_group',payload:{request:{filePath,destinationFolder}}});
+  assertCurrent(persistence,epoch);return commit.value;
+}
