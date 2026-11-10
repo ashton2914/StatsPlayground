@@ -1380,6 +1380,7 @@
   "dataTable": {
     "pasteResultUnavailable": "The paste result could not be confirmed. Retry saving to recover it.",
     "pasteTargetChanged": "The table view changed while preparing the paste. Try again.",
+    "retryLoad": "Retry",
     "loading": "Loading...",
     "type": {
       "VARCHAR": "Text",

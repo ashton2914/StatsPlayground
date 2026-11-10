@@ -1175,6 +1175,7 @@
   "dataTable": {
     "pasteResultUnavailable": "無法確認貼上結果。請重試儲存以恢復狀態。",
     "pasteTargetChanged": "準備貼上時表格檢視發生了變化，請重試。",
+    "retryLoad": "重試",
     "loading": "載入中...",
     "type": {
       "VARCHAR": "文字",
