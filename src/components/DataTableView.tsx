@@ -957,6 +957,7 @@ export function DataTableView({
   colExtrasRef.current = colExtras;
   const [selection, setSelection] = useState<CellRange | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [columnDescriptors, setColumnDescriptors] = useState<ColumnDescriptor[]>([]);
   const [mutationRefreshCompletionRevision, setMutationRefreshCompletionRevision] = useState(0);
   const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
@@ -1146,6 +1147,7 @@ export function DataTableView({
   const pendingWindowsRef = useRef<Set<string>>(new Set());
   const pendingPrefetchRequestsRef = useRef<ScheduledTableNavigationRequest[]>([]);
   const columnDescriptorsRef = useRef<ColumnDescriptor[]>([]);
+  const sortIdentityRef = useRef<{ datasetId: string; columns: ColumnDescriptor[] }>({ datasetId, columns: [] });
   const tableQuerySessionRef = useRef<TableQuerySessionViewState>(IDLE_TABLE_QUERY_SESSION_STATE);
   const tableCacheDiagnosticsRef = useRef<TableCacheStatusDiagnostics>(EMPTY_TABLE_CACHE_DIAGNOSTICS);
   const tableQuerySessionPollSeqRef = useRef(0);
@@ -1520,7 +1522,7 @@ export function DataTableView({
   }, [recordHistory, captureState]);
 
   const load = useCallback(async (
-    filters = tableFiltersRef.current,
+    filters = useDatasetFilterStore.getState().byDataset[datasetId] ?? EMPTY_FILTERS,
     start = windowStartRef.current,
     generation?: number,
     surfaceObsoleteError = false,
@@ -1533,7 +1535,7 @@ export function DataTableView({
       currentDatasetId: currentDatasetIdRef.current,
     });
     if (!isCurrentDatasetLoad()) return;
-    const requestedGeneration = generation ?? (
+    let requestedGeneration = generation ?? (
       generationDatasetIdRef.current === requestedDatasetId
         ? Math.max(datasetGeneration, generationRef.current)
         : datasetGeneration
@@ -1541,8 +1543,8 @@ export function DataTableView({
     generationDatasetIdRef.current = requestedDatasetId;
     generationRef.current = requestedGeneration;
     const serializedFilters = serializeTableWindowFilters(filters);
-    const currentSort = tableSortRef.current;
-    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
+    let currentSort = tableSortRef.current;
+    let nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
     const inFlightLoadKey = JSON.stringify([
       requestedDatasetId,
       requestedGeneration,
@@ -1556,6 +1558,7 @@ export function DataTableView({
       && requestEpochRef.current!.isCurrent(existingClaim)
     ) return;
     const epoch = requestEpochRef.current!.advance();
+    setLoadError(null);
     inFlightLoadClaimsRef.current.set(inFlightLoadKey, epoch);
     setLoadedDataLoadToken(null);
     setLoadedDisplayPropsLoadToken(null);
@@ -1564,7 +1567,7 @@ export function DataTableView({
     updateTableCacheDiagnostics({ cacheHit: null, ...EMPTY_TABLE_TRANSPORT_METRICS });
     pendingWindowsRef.current.clear();
     clearPendingPrefetches();
-    const requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
+    let requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
     const previousQueryKey = loadedFilterKeyRef.current;
     const provisionalTotalRows = nextQueryKey === previousQueryKey && requiresPreparedSession
       ? (tableQuerySessionRef.current.totalRows ?? datasetRowCount)
@@ -1584,6 +1587,26 @@ export function DataTableView({
       return nextData;
     });
     try {
+      if (currentSort) {
+        const [descriptors, currentGeneration] = await Promise.all([
+          dataService.getColumnDescriptors(requestedDatasetId),
+          dataService.getDatasetGeneration(requestedDatasetId),
+        ]);
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        currentSort = useTableNavigationSortStore.getState().reconcileColumns(
+          requestedDatasetId,
+          sortIdentityRef.current.datasetId === requestedDatasetId ? sortIdentityRef.current.columns : [],
+          descriptors,
+        );
+        tableSortRef.current = currentSort;
+        sortIdentityRef.current = { datasetId: requestedDatasetId, columns: descriptors };
+        columnDescriptorsRef.current = descriptors;
+        setColumnDescriptors(descriptors);
+        requestedGeneration = currentGeneration;
+        generationRef.current = currentGeneration;
+        nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
+        requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
+      }
       let sessionStatus: TableQuerySessionStatus | null = null;
       let sessionSignature: string | null = null;
       const hydrateReadySessionWindow = async (readyStatus: TableQuerySessionStatus) => {
@@ -1664,8 +1687,7 @@ export function DataTableView({
           }
         }
         const descriptorByName = new Map(columnDescriptorsRef.current.map((descriptor) => [descriptor.name, descriptor]));
-        const visibleColumns = dataRef.current?.columns?.filter((column) => column !== "_row_id")
-          ?? columnDescriptorsRef.current.map((descriptor) => descriptor.name);
+        const visibleColumns = columnDescriptorsRef.current.map((descriptor) => descriptor.name);
         const columnIds = visibleColumns
           .map((name) => descriptorByName.get(name)?.columnId ?? null)
           .filter((columnId): columnId is string => columnId != null);
@@ -1695,7 +1717,7 @@ export function DataTableView({
             const currentSession = tableQuerySessionRef.current;
             if (
               currentSession.signature !== sessionSignature
-              || currentSession.sessionId !== sessionStatus.sessionId
+              && currentSession.sessionId !== sessionStatus.sessionId
             ) {
               void releaseTableQuerySession(sessionStatus.sessionId);
             }
@@ -1781,6 +1803,7 @@ export function DataTableView({
       try {
         const descriptors = await dataService.getColumnDescriptors(requestedDatasetId);
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        sortIdentityRef.current = { datasetId: requestedDatasetId, columns: descriptors };
         setColumnDescriptors(descriptors);
         setCalculatedDialog((current) => {
           if (!current?.outputColumnId) return current;
@@ -1857,13 +1880,13 @@ export function DataTableView({
       }
       console.error("Failed to load table:", e);
       setErrorMsg(String(e));
+      setLoadError(String(e));
       setLoadedDataLoadToken(null);
       setLoadedDisplayPropsLoadToken(null);
       if (!surfaceObsoleteError) {
         setWindowStart(0);
         windowStartRef.current = 0;
         setColumnDescriptors([]);
-        columnDescriptorsRef.current = [];
         setData(null);
         dataRef.current = null;
       }
@@ -2376,7 +2399,7 @@ export function DataTableView({
       !disposed
       && queryRefreshEffectEpochRef.current === effectEpoch
       && currentDatasetIdRef.current === datasetId
-      && generationRef.current === datasetGeneration
+      && datasetRevisionRef.current?.generation === datasetGeneration
     );
     void (async () => {
       try {
@@ -3320,7 +3343,12 @@ export function DataTableView({
     containerRef.current?.focus();
   }, []);
 
-  if (!data) return <div className="sp-loading">{errorMsg ?? t("dataTable.loading")}</div>;
+  if (!data) return <div className="sp-loading" role={loadError ? "alert" : undefined}>
+    {loadError ?? t("dataTable.loading")}
+    {loadError && <button className="sp-dialog-btn" onClick={() => void load()}>
+      {t("dataTable.retryLoad", { defaultValue: "Retry" })}
+    </button>}
+  </div>;
 
   const getRowId = (row: unknown[]): number =>
     rowIdIdx >= 0 ? (row[rowIdIdx] as number) : 0;
