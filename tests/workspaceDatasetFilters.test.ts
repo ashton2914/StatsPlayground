@@ -15,7 +15,7 @@ assert.match(projectCommands, /useDatasetFilterStore\.getState\(\)\.toProjectPay
 assert.match(projectCommands, /datasetFilters:\s*useDatasetFilterStore\.getState\(\)\.toProjectPayload\(\)/);
 assert.match(workspace, /resetDatasetFilters\(\)/);
 assert.match(workspace, /loadDatasetFiltersFromProject\(result\.datasetFilters\)/);
-assert.match(workspace, /await dataService\.deleteDataset\(id\);[\s\S]*?removeDatasetFilters\(id\)/);
+assert.match(workspace, /await dataService\.deleteDataset\(id,confirmedTopologyRevision\);[\s\S]*?removeDatasetFilters\(id\)/);
 assert.match(
   workspace,
   /onColumnRenamed=\{\(oldName, newName, sqlType\) => \{[\s\S]*?renameDatasetFilterColumn\(activeDatasetId, oldName, newName\)/,

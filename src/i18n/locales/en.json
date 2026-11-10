@@ -2247,5 +2247,19 @@
         }
       }
     }
+  },
+  "directory": {
+    "expand": "Expand table",
+    "collapse": "Collapse table",
+    "more": "Show more",
+    "transform": "Transform",
+    "normalize": "Move this group to align its folders",
+    "deleteBlocked": "This table is used by a report or workflow. Remove those references first.",
+    "deleteCascade": "Delete these tables and their contents?\n\n{{items}}",
+    "retry": "Retry directory",
+    "invalid": "Some table links are invalid. Group operations are unavailable.",
+    "copyGroup": "Copy linked group",
+    "exportGroup": "Export linked group…",
+    "importGroup": "Import linked group…"
   }
 }

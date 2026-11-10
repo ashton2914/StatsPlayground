@@ -281,6 +281,9 @@ impl ProjectDatabase {
                 ));
             }
             let catalog = ProjectCatalog::new(engine);
+            let input_folders=request.inputs.iter().map(|input|catalog.summary(&input.table_document_id).map(|s|s.folder)).collect::<Result<std::collections::BTreeSet<_>,AppError>>()?;
+            if input_folders.len()!=1{return Err(AppError::InvalidParam("project_group_folder_normalization_required".into()));}
+            let output_folder=input_folders.first().cloned().ok_or_else(||AppError::InvalidParam("project_transform_inputs_missing".into()))?;
             let setting = catalog.get_setting("lineage")?;
             let mut lineage = match &setting {
                 Some((_, json)) => serde_json::from_value(json.clone())
@@ -313,7 +316,7 @@ impl ProjectDatabase {
                 .output
                 .as_ref()
                 .ok_or_else(|| AppError::Database("project_transform_output_missing".into()))?;
-            let event=catalog.publish_new_table(output, &request.folder)?;
+            let event=catalog.publish_new_table(output, &output_folder)?;
             catalog.apply_patch(&ProjectRecordPatch {
                 documents: vec![DocumentWrite {
                     expected_revision: None,
@@ -323,7 +326,7 @@ impl ProjectDatabase {
                             kind: ProjectDocumentKind::Transform,
                             analysis_kind: None,
                             name: definition.name.clone(),
-                            folder: request.folder.clone(),
+                            folder: output_folder.clone(),
                             revision: 1,
                             dependencies: request
                                 .inputs
@@ -399,7 +402,11 @@ impl ProjectDatabase {
             let persisted:PersistedTableTransformBinding=serde_json::from_value(saved.1).map_err(|_|AppError::InvalidParam("project_transform_binding_invalid".into()))?;
             if persisted.binding!=request.binding {return Err(AppError::InvalidParam("project_transform_binding_stale".into()));}
             let mut binding=persisted.binding;
-            if let Some(inputs)=&request.input_bindings {binding.inputs=inputs.clone();}
+            if let Some(inputs)=&request.input_bindings {
+                let keys=|items:&[crate::services::table_transform_service::TableTransformInputBinding]|items.iter().map(|i|(i.role.clone(),i.table_document_id.clone())).collect::<std::collections::BTreeSet<_>>();
+                if keys(inputs)!=keys(&binding.inputs){return Err(AppError::InvalidParam("project_transform_detach_not_allowed".into()));}
+                binding.inputs=inputs.clone();
+            }
             for id in binding.inputs.iter().map(|input|input.table_document_id.as_str()).chain(std::iter::once(request.definition.output.table_document_id.as_str())) {
                 if !context.dataset_generations.iter().any(|item|item.id==id) {return Err(AppError::InvalidParam("project_dataset_precondition_required".into()));}
             }
@@ -804,24 +811,24 @@ mod tests {
         assert_eq!(serde_json::to_value(db.run_project_transform(&run,&request).unwrap()).unwrap(),serde_json::to_value(&refreshed).unwrap());
         let rebound_request=ProjectTransformRun{definition:request.definition.clone(),binding:refreshed.value.execution.binding.clone(),input_bindings:Some(vec![TableTransformInputBinding{role:"source".into(),table_document_id:other.value.id.clone()}])};
         let mut rebind=context(&db,"rebind");rebind.dataset_generations=other.changed_dataset_generations.clone();rebind.dataset_generations.extend(refreshed.changed_dataset_generations.clone());rebind.document_revisions=run.document_revisions.clone();
+        let mut detach=rebind.clone();detach.operation_id="detach".into();
+        let before_detach=db.committed_revision().unwrap();assert!(db.run_project_transform(&detach,&rebound_request).unwrap_err().to_string().contains("detach_not_allowed"));assert_eq!(db.committed_revision().unwrap(),before_detach);
+        let rebound_request=ProjectTransformRun{input_bindings:Some(vec![TableTransformInputBinding{role:"source".into(),table_document_id:source.value.id.clone()}]),..rebound_request};
         let rebound=db.run_project_transform(&rebind,&rebound_request).unwrap();
-        assert_eq!(rebound.changed_directory_entries.iter().find(|item|item.id==request.definition.id).unwrap().dependencies,vec![other.value.id.clone()]);
+        assert_eq!(db.with_reader(db.epoch(),|e|Ok(ProjectCatalog::new(e).summary(&request.definition.id)?.dependencies)).unwrap(),vec![source.value.id.clone()]);
         let mut stale=context(&db,"stale-binding");stale.dataset_generations=source.changed_dataset_generations.clone();stale.dataset_generations.extend(rebound.changed_dataset_generations.clone());stale.document_revisions=vec![DocumentRevision{id:request.definition.id.clone(),revision:2}];
         let revision=db.header().unwrap().committed_revision;
         assert!(db.run_project_transform(&stale,&request).is_err());assert_eq!(db.header().unwrap().committed_revision,revision);
         let incompatible=db.materialize_project_sql(&context(&db,"incompatible"),&ProjectSqlOutput{name:"Missing value".into(),sql:"SELECT 1 AS other".into(),folder:String::new()}).unwrap();
         let blocked_request=ProjectTransformRun{definition:request.definition.clone(),binding:rebound.value.execution.binding.clone(),input_bindings:Some(vec![TableTransformInputBinding{role:"source".into(),table_document_id:incompatible.value.id.clone()}])};
         let mut blocked_context=context(&db,"blocked");blocked_context.dataset_generations=incompatible.changed_dataset_generations.clone();blocked_context.dataset_generations.extend(rebound.changed_dataset_generations.clone());blocked_context.document_revisions=stale.document_revisions.clone();
-        let blocked=db.run_project_transform(&blocked_context,&blocked_request).unwrap();
-        assert_eq!(blocked.value.execution.status,crate::services::table_transform_service::TableTransformRunStatus::Blocked);
-        assert_eq!(blocked.value.execution.binding.output_generation,rebound.value.execution.binding.output_generation);
-        assert!(blocked.value.execution.output.is_none());
+        assert!(db.run_project_transform(&blocked_context,&blocked_request).is_err(),"incompatible rebind must not detach the original source");
         db.shutdown().unwrap();let db=ProjectDatabase::open(&path,false).unwrap();
         db.with_reader(db.epoch(),|engine|{
             let catalog=ProjectCatalog::new(engine);let saved=catalog.get_setting(&format!("transformBinding:{}",request.definition.id))?.unwrap();
-            assert_eq!(saved.1["lastRun"]["status"],"blocked");assert_eq!(saved.1["inputs"][0]["tableDocumentId"],incompatible.value.id);
+            assert_eq!(saved.1["lastRun"]["status"],"succeeded");assert_eq!(saved.1["inputs"][0]["tableDocumentId"],source.value.id);
             let table=crate::engine::duckdb_engine::DuckDbEngine::quote_identifier(&crate::engine::duckdb_engine::DuckDbEngine::internal_table_name(&request.definition.output.table_document_id));
-            let value:i64=engine.conn().query_row(&format!("SELECT value FROM {table} ORDER BY _row_id LIMIT 1"),[],|row|row.get(0))?;assert_eq!(value,7);Ok(())
+            let value:i64=engine.conn().query_row(&format!("SELECT value FROM {table} ORDER BY _row_id LIMIT 1"),[],|row|row.get(0))?;assert_eq!(value,1);Ok(())
         }).unwrap();
         rebind.expected_epoch=db.epoch();
         let replay=db.run_project_transform(&rebind,&rebound_request).unwrap();assert_eq!(replay.committed_revision,rebound.committed_revision);

@@ -2058,5 +2058,19 @@
         }
       }
     }
+  },
+  "directory": {
+    "expand": "展开表",
+    "collapse": "折叠表",
+    "more": "显示更多",
+    "transform": "变换",
+    "normalize": "移动整组以统一目录位置",
+    "deleteBlocked": "报表或工作流仍引用此表，请先移除引用。",
+    "deleteCascade": "删除以下表及其内容？\n\n{{items}}",
+    "retry": "重新加载目录",
+    "invalid": "部分表关联无效，暂时无法进行整组操作。",
+    "copyGroup": "复制关联组",
+    "exportGroup": "导出关联组…",
+    "importGroup": "导入关联组…"
   }
 }

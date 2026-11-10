@@ -1,3 +1,4 @@
+import {registerTableGroupCommands} from "./tableGroupCommands";
 import {prepareNativeDocumentAccess} from "@/projectPersistence/catalogAccess";
 import {extractReportDependencies} from "@/utils/reportParser";
 import {
@@ -108,6 +109,7 @@ export function createApplicationRuntime(
     revision: dependencies.revision,
   });
 
+  registerTableGroupCommands(runtime);
   const projectHandlers = createProjectCommandHandlers({
     flushPendingHistory: drainPendingEffects,
     ...dependencies.project,

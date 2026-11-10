@@ -1,6 +1,6 @@
 # Complete sp-mcp tool reference
 
-All 22 advertised tools are listed here. Actual compatibility identifiers remain `statsplayground_*`. Arguments below are schema examples with illustrative IDs and data: replace them with observed IDs and user data. They are not preconditions satisfied by the examples. The server tools/list schema is authoritative when versions differ.
+All 28 advertised tools are listed here. Actual compatibility identifiers remain `statsplayground_*`. Arguments below are schema examples with illustrative IDs and data: replace them with observed IDs and user data. They are not preconditions satisfied by the examples. The server tools/list schema is authoritative when versions differ.
 
 ## Shared contracts
 
@@ -2441,3 +2441,13 @@ Transform operation is tagged kind: sort (sortColumns), subset (columns, optiona
 Tabulate kinds: count, missingCount, uniqueCount, sum, mean, standardDeviation, variance, minimum, maximum, median, range, quantile, rowPercentage, columnPercentage, totalPercentage. Each statistic needs id, field, kind; quantile uses a probability in quantile. Requests are complete, not patches. A ready session is metadata; exportTable then table.describe provides accessible result rows.
 
 Confidence levels/probabilities need valid ranges, SQL column types must be supported, and finite numeric values must be valid JSON. Verify runtime/domain validation and reason codes; permissive numeric schemas do not guarantee applicability. Table exports need a configured root and can require UI confirmation for overwrites; this catalog rejects all trusted-confirmation flags in tool arguments.
+
+## Linked table groups
+
+`statsplayground_project_preview_table_action` accepts `tableId` and `scope` (`component` for organizing/copying/exporting or `descendants` for deletion). The result lists exact table, Transform and owned-document IDs plus blockers at `committedRevision`. Graphs, analyses and tabulations belong to their source table; shared reports and workflows remain project objects.
+
+`statsplayground_project_move_table_group` and `statsplayground_project_copy_table_group` accept `targetTableId`, `destinationFolder` (empty string for root), and `expectedTopologyRevision` from a fresh preview. Both operate on every Transform-connected table and all owned documents, including unloaded metadata. Copy creates independent IDs and bindings; it is one undo action. A stale preview rejects the operation.
+
+`statsplayground_project_export_table_group` accepts `targetTableId` and `expectedTopologyRevision`. It opens the app's save dialog and writes a self-contained native `.spprj` containing only the selected component. `statsplayground_project_import_table_group` accepts `destinationFolder` and opens the app's file picker. MCP arguments do not accept filesystem paths. The user chooses each file; cancelling the dialog creates nothing. Existing files are never overwritten by group export. Staged copy/import/export can be cancelled before publication.
+
+`statsplayground_table_delete` accepts `datasetId`. Preview with `scope: "descendants"` first and inspect blockers. For A → B → C, deleting B deletes B and C and their graphs/analyses/tabulations while preserving A. For A + X → B, deleting A removes B but preserves X. A report or workflow referencing a removed object blocks deletion. An individual owned document can be deleted in the app without removing its table. Transform connectors cannot be detached independently.

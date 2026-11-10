@@ -473,6 +473,8 @@ export interface CommandExecutionContext {
   signal: AbortSignal;
   reportProgress(progress: CommandProgress): void;
   beginCommit(): void;
+  /** Native acknowledgement wins a cancellation racing after atomic publication. */
+  acknowledgeCommit?():void;
   assertCurrent?(): void;
   trusted: TrustedCommandExecutionContext;
 }
@@ -480,6 +482,12 @@ export interface CommandExecutionContext {
 export type ApplicationCommandRegistry = {
   "project.inspect": { input: ProjectInspectInput; data: ProjectInspectResult };
   "project.save": { input: ProjectSaveInput; data: ProjectSaveResult };
+  "project.previewTableAction":{input:{tableId:string;scope:import('../types/projectPersistence').ProjectActionScope};data:import('../types/projectPersistence').ProjectActionPreview};
+  "project.moveTableGroup":{input:import('../types/projectPersistence').ProjectGroupMoveRequest;data:null};
+  "project.copyTableGroup":{input:import('../types/projectPersistence').ProjectGroupCopyRequest;data:import('../types/projectPersistence').ProjectGroupCopyResult};
+  "project.exportTableGroup":{input:{targetTableId:string;expectedTopologyRevision:number;filePath?:string};data:{tableCount:number;sourceRevision:number}};
+  "project.importTableGroup":{input:{destinationFolder:string;filePath?:string};data:import('../types/projectPersistence').ProjectGroupCopyResult};
+  "table.delete":{input:{datasetId:string;expectedTopologyRevision?:number};data:null};
   "table.create": { input: TableCreateInput; data: TableCreateResult };
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };

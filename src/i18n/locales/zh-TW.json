@@ -1976,5 +1976,19 @@
         }
       }
     }
+  },
+  "directory": {
+    "expand": "展開表",
+    "collapse": "摺疊表",
+    "more": "顯示更多",
+    "transform": "轉換",
+    "normalize": "移動整組以統一目錄位置",
+    "deleteBlocked": "報表或工作流程仍引用此表，請先移除引用。",
+    "deleteCascade": "刪除以下表及其內容？\n\n{{items}}",
+    "retry": "重新載入目錄",
+    "invalid": "部分表關聯無效，暫時無法進行整組操作。",
+    "copyGroup": "複製關聯組",
+    "exportGroup": "匯出關聯組…",
+    "importGroup": "匯入關聯組…"
   }
 }

@@ -20,6 +20,23 @@ use crate::error::AppError;
 use crate::mcp::broker::{ApplicationCommandEventEmitter, McpCancellationToken, McpCommandBroker};
 use crate::models::mcp::{ApplicationCommandEnvelope, McpAuditEntry, McpCommandError};
 
+use crate::models::project_topology::{ProjectActionPreview,ProjectActionScope,ProjectGroupMoveRequest,ProjectGroupCopyResult};
+#[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct TableActionToolInput {pub table_id:String,pub scope:ProjectActionScope}
+#[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct GroupExportToolInput {pub target_table_id:String,pub expected_topology_revision:u64}
+#[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct GroupImportToolInput {pub destination_folder:String}
+#[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct GroupTransferToolResult {pub table_count:usize,pub source_revision:u64}
+#[derive(Clone,Debug,Serialize,Deserialize,JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct TableDeleteToolInput {pub dataset_id:String,#[serde(default,skip_serializing_if="Option::is_none")]pub expected_topology_revision:Option<u64>}
+
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
@@ -2153,6 +2170,12 @@ pub fn tool_catalog() -> Vec<McpToolCatalogEntry> {
             "Update a Report document",
             false,
         ),
+        entry::<TableActionToolInput,ToolCommandResult<ProjectActionPreview>>("statsplayground_project_preview_table_action","project.previewTableAction","Preview linked component or directed descendant deletion",true),
+        entry::<ProjectGroupMoveRequest,ToolCommandResult<()>>("statsplayground_project_move_table_group","project.moveTableGroup","Move a complete linked table group",false),
+        entry::<ProjectGroupMoveRequest,ToolCommandResult<ProjectGroupCopyResult>>("statsplayground_project_copy_table_group","project.copyTableGroup","Copy a complete linked table group",false),
+        entry::<GroupExportToolInput,ToolCommandResult<GroupTransferToolResult>>("statsplayground_project_export_table_group","project.exportTableGroup","Export a linked group to a file selected in the app",false),
+        entry::<GroupImportToolInput,ToolCommandResult<ProjectGroupCopyResult>>("statsplayground_project_import_table_group","project.importTableGroup","Import a linked group from a file selected in the app",false),
+        entry::<TableDeleteToolInput,ToolCommandResult<()>>("statsplayground_table_delete","table.delete","Delete a table, its derived descendants and owned documents",false),
         entry::<ProjectSaveToolInput, ProjectSaveToolOutput>(
             "statsplayground_project_save",
             "project.save",
@@ -2200,6 +2223,11 @@ where
 
 fn validate_tool_input(command: &str, value: Value) -> Result<Value, McpError> {
     match command {
+        "project.previewTableAction"=>normalize_json::<TableActionToolInput>(value),
+        "project.moveTableGroup"|"project.copyTableGroup"=>normalize_json::<ProjectGroupMoveRequest>(value),
+        "project.exportTableGroup"=>normalize_json::<GroupExportToolInput>(value),
+        "project.importTableGroup"=>normalize_json::<GroupImportToolInput>(value),
+        "table.delete"=>normalize_json::<TableDeleteToolInput>(value),
         "project.inspect" => normalize_json::<ProjectInspectToolInput>(value),
         "project.save" => normalize_json::<ProjectSaveToolInput>(value),
         "table.list" => normalize_json::<TableListToolInput>(value),
@@ -2264,6 +2292,10 @@ fn serialize_tool_output(
     response: crate::models::mcp::McpCommandResponse,
 ) -> Result<Value, AppError> {
     match command {
+        "project.previewTableAction"=>serialize_output::<ProjectActionPreview>(command,response),
+        "project.moveTableGroup"|"table.delete"=>serialize_output::<()>(command,response),
+        "project.copyTableGroup"|"project.importTableGroup"=>serialize_output::<ProjectGroupCopyResult>(command,response),
+        "project.exportTableGroup"=>serialize_output::<GroupTransferToolResult>(command,response),
         "project.inspect" => serialize_output::<ProjectInspectResultData>(command, response),
         "project.save" => serialize_output::<ProjectSummary>(command, response),
         "table.list" => serialize_output::<TableListResultData>(command, response),
@@ -2760,11 +2792,20 @@ mod tests {
     }
 
     #[test]
-    fn catalog_contains_exactly_twenty_two_unique_statsplayground_tools() {
+    fn project_linked_groups_mcp_schemas_and_path_selection_are_scoped(){
+        let catalog=tool_catalog();
+        for command in ["project.previewTableAction","project.moveTableGroup","project.copyTableGroup","project.exportTableGroup","project.importTableGroup","table.delete"]{assert!(catalog.iter().any(|e|e.command==command),"missing {command}");}
+        assert!(validate_tool_input("project.moveTableGroup",json!({"targetTableId":"B","destinationFolder":"New","expectedTopologyRevision":9})).is_ok());
+        assert!(validate_tool_input("project.moveTableGroup",json!({"targetTableId":"B","destinationFolder":"New","expectedTopologyRevision":9,"partial":true})).is_err());
+        assert!(validate_tool_input("project.exportTableGroup",json!({"targetTableId":"B","expectedTopologyRevision":9,"filePath":"/untrusted/path"})).is_err());
+        assert!(validate_tool_input("project.importTableGroup",json!({"destinationFolder":"New","filePath":"/untrusted/path"})).is_err());
+    }
+    #[test]
+    fn catalog_contains_exactly_twenty_eight_unique_statsplayground_tools() {
         let catalog = tool_catalog();
         let names: BTreeSet<_> = catalog.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(catalog.len(), 22);
-        assert_eq!(names.len(), 22);
+        assert_eq!(catalog.len(), 28);
+        assert_eq!(names.len(), 28);
         assert!(names
             .iter()
             .all(|name| name.starts_with("statsplayground_")));

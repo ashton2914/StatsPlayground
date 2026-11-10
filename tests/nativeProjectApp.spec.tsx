@@ -3,15 +3,15 @@ import {NativeProjectAppHarness} from "./NativeProjectAppHarness";
 test.beforeEach(async({page})=>{await page.evaluate(()=>{(window as any).__APP_VERSION__="0.0.0-test";});});
 test("native app startup and project switch use metadata summaries and clear the previous editor",async({mount,page})=>{
  const app=await mount(<NativeProjectAppHarness/>);
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  expect((await page.evaluate(()=>(window as any).__nativeApp.calls())).filter((call:any)=>call.command==="get_project_document")).toHaveLength(0);
- await app.getByText("Draft report.sprp",{exact:true}).click();
+ await app.getByText("Draft report",{exact:true}).click();
  await expect(app.getByRole("heading",{name:"Draft body"})).toBeVisible();
  await app.getByText("File",{exact:true}).click();
  await app.locator(".menu-item").filter({hasText:"Open Project"}).click();
- await expect(app.getByText("Second report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Second report",{exact:true})).toBeVisible();
  await expect(app.getByRole("heading",{name:"Draft body"})).toHaveCount(0);
- await app.getByText("Second report.sprp",{exact:true}).click();
+ await app.getByText("Second report",{exact:true}).click();
  await expect(app.getByRole("heading",{name:"Second body"})).toBeVisible();
  const calls=await page.evaluate(()=>(window as any).__nativeApp.calls());
  expect(calls.filter((call:any)=>["init_project","open_project","save_project"].includes(call.command))).toEqual([]);
@@ -19,10 +19,10 @@ test("native app startup and project switch use metadata summaries and clear the
 });
 test("first save names the draft once and ordinary save only drains the queue",async({mount,page})=>{
  const app=await mount(<NativeProjectAppHarness/>);
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  await app.getByText("File",{exact:true}).click();
  await app.locator(".menu-item").filter({hasText:/^Save(?:⌘|Ctrl)/}).first().click();
- await expect(app.getByText("Named report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Named report",{exact:true})).toBeVisible();
  await expect(app.locator(".save-toast")).toHaveCount(0);
  await page.keyboard.press("Control+s");
  await expect(app.locator(".save-toast")).toContainText("Saved");
@@ -34,7 +34,7 @@ test("first save names the draft once and ordinary save only drains the queue",a
 
 test("window close prevents duplicate destruction and waits for the accepted document commit",async({mount,page})=>{
  const app=await mount(<NativeProjectAppHarness/>);
- await app.getByText("Draft report.sprp",{exact:true}).click();
+ await app.getByText("Draft report",{exact:true}).click();
  await expect(app.getByRole("heading",{name:"Draft body"})).toBeVisible();
  await page.evaluate(()=>{const harness=(window as any).__nativeApp;harness.holdCommit();harness.editReport();harness.requestClose();harness.requestClose();});
  await expect.poll(()=>page.evaluate(()=>(window as any).__nativeApp.calls().filter((call:any)=>call.command==="commit_project_records").length)).toBe(1);
@@ -50,19 +50,19 @@ test("window close prevents duplicate destruction and waits for the accepted doc
 test("a published snapshot with no recoverable active session exposes an error and working startup retry",async({mount,page})=>{
  page.on("dialog",dialog=>void dialog.dismiss());
  const app=await mount(<NativeProjectAppHarness/>);
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  await page.evaluate(()=>(window as any).__nativeApp.failSnapshot());
  await app.getByText("File",{exact:true}).click();
  await app.locator(".menu-item").filter({hasText:/^Save(?:⌘|Ctrl)/}).first().click();
  await expect(app.getByRole("alert")).toContainText("published copy unavailable");
  await expect(app.getByRole("alert")).toContainText("The copy was written to the destination.");
  await app.getByRole("button",{name:"Retry",exact:true}).click();
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  expect((await page.evaluate(()=>(window as any).__nativeApp.calls())).filter((call:any)=>call.command==="create_project_draft_v5")).toHaveLength(2);
 });
 
 test("failed native mutation can resolve safely and continue saving queued changes",async({mount,page})=>{
- const app=await mount(<NativeProjectAppHarness/>);await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ const app=await mount(<NativeProjectAppHarness/>);await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  await page.evaluate(()=>(window as any).__nativeApp.failMutation());
  const recover=app.getByRole("button",{name:"Continue saving other changes"});await expect(recover).toBeVisible();
  expect(await page.evaluate(()=>(window as any).__nativeApp.calls().filter((call:any)=>call.command==="add_rows").length)).toBe(0);
@@ -73,8 +73,8 @@ test("failed native mutation can resolve safely and continue saving queued chang
 
 test('failed close keeps the project open and retries the same document before destruction',async({mount,page})=>{
  const dialogs:string[]=[];page.on('dialog',dialog=>{dialogs.push(dialog.message());void dialog.dismiss();});const app=await mount(<NativeProjectAppHarness/>);
- await expect(app.getByText('Draft report.sprp',{exact:true})).toBeVisible();
- await app.getByText('Draft report.sprp',{exact:true}).click();await expect(app.getByRole('heading',{name:'Draft body'})).toBeVisible();
+ await expect(app.getByText('Draft report',{exact:true})).toBeVisible();
+ await app.getByText('Draft report',{exact:true}).click();await expect(app.getByRole('heading',{name:'Draft body'})).toBeVisible();
  await page.evaluate(()=>{const harness=(window as any).__nativeApp;harness.failNextCommit("disk full /Users/private/project.spprj");harness.editReport();harness.requestClose();});
  await expect(app.getByRole('alert')).toContainText('Changes could not be saved.');
  await expect.poll(()=>dialogs.length).toBe(1);expect(dialogs[0]).not.toContain('/Users/');expect(dialogs[0]).toContain('project is still open');
@@ -91,7 +91,7 @@ test('failed close keeps the project open and retries the same document before d
 
 test("workflow extraction from the previous project cannot publish into its same-ID successor",async({mount,page})=>{
  const app=await mount(<NativeProjectAppHarness workflowFixture/>);
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  await app.getByRole("button",{name:"Workflow",exact:true}).click();
  await app.locator(".workflow-node-operation").click();
  await app.getByRole("button",{name:"Save as workflow",exact:true}).click();
@@ -125,11 +125,11 @@ test("native UI probe samples a painted first catalog page without requiring a t
 
 
 test("a saving phase with unchanged sequences does not rebuild directory entries",async({mount,page})=>{
- const app=await mount(<NativeProjectAppHarness/>);await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ const app=await mount(<NativeProjectAppHarness/>);await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
  await page.evaluate(()=>{const h=(window as any).__nativeApp;h.observeDirectoryReads();h.pulseSaving();});
  await expect(app.locator(".project-persistence-status")).toContainText("Saving");
  expect(await page.evaluate(()=>(window as any).__nativeApp.directoryNameReads())).toBe(0);
- await expect(app.getByText("Draft report.sprp",{exact:true})).toBeVisible();
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
 });
 
 

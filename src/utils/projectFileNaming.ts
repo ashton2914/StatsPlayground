@@ -194,3 +194,11 @@ export function resolveProjectBasenameForKind(
     actualExtension: null,
   };
 }
+
+/** Native project objects have literal logical names, independent of interchange file types. */
+export function allocateProjectLogicalName(requested:string,existing:readonly string[],current?:string):string {
+  const name=requested.trim();const error=validateNativeGraphBasename(name);if(error)throw new ProjectNameValidationError(error);
+  const names=new Set(existing.filter(value=>value!==current).map(value=>value.toLocaleLowerCase()));
+  let candidate=name;let index=2;while(names.has(candidate.toLocaleLowerCase()))candidate=`${name}-${index++}`;
+  const allocatedError=validateNativeGraphBasename(candidate);if(allocatedError)throw new ProjectNameValidationError(allocatedError);return candidate;
+}

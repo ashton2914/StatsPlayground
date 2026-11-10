@@ -162,8 +162,8 @@ export const dataService = {
   listDatasets: () => invoke<DatasetMeta[]>("list_datasets"),
 
   /** 删除数据集 */
-  deleteDataset: (datasetId: string) =>
-    invokeProjectTableMutation<void>("delete_dataset", { datasetId },datasetId),
+  deleteDataset: (datasetId: string, expectedTopologyRevision?:number) =>
+    invokeProjectTableMutation<void>("delete_dataset", { datasetId,...(expectedTopologyRevision===undefined?{}:{expectedTopologyRevision}) },datasetId),
 
   /** 创建空数据表 */
   createTable: (name: string, columnNames: string[], columnTypes: string[]) => {

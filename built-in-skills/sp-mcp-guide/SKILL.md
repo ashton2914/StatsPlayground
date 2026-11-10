@@ -7,7 +7,7 @@ description: Use when operating the sp-mcp server for project inspection, tables
 
 Use the connected `sp-mcp` server and its advertised tools. The `statsplayground_*` identifiers are compatibility API names, not product branding. Do not guess abbreviated tools such as `sp_distribution`.
 
-Read [the complete tool reference](references/tools.md) before constructing unfamiliar arguments. It covers all 22 tools, nested contracts, examples, output paths, prerequisites and errors. [Machine-readable examples](references/examples.json) are contract fixtures, not instructions to generate user data or execute all mutations.
+Read [the complete tool reference](references/tools.md) before constructing unfamiliar arguments. It covers all 28 tools, nested contracts, examples, output paths, prerequisites and errors. [Machine-readable examples](references/examples.json) are contract fixtures, not instructions to generate user data or execute all mutations.
 
 ## Safe command sequence
 

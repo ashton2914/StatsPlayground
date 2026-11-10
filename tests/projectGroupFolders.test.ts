@@ -1,0 +1,6 @@
+import assert from 'node:assert/strict';
+import {groupFolderPatch} from '../src/projectPersistence/groupFolders';
+import type {ProjectDocumentSummary} from '../src/types/projectPersistence';
+const items:ProjectDocumentSummary[]=[{id:'folder:F',kind:'folder',name:'F',folder:'',revision:1,dependencies:[]},{id:'folder:F/N',kind:'folder',name:'N',folder:'F',revision:1,dependencies:[]},...['table','table','transform','graph','analysis','tabulate'].map((kind,i)=>({id:String(i),kind:kind as 'table',name:String(i),folder:'F/N',revision:1,dependencies:[]})),{id:'unrelated',kind:'table',name:'X',folder:'',revision:1,dependencies:[]}];
+const rename=groupFolderPatch(items,'F','G');assert.equal(rename.directoryMoves?.length,6);assert.ok(rename.directoryMoves?.every(m=>m.folder==='G/N'));assert.deepEqual(rename.deletedFolders,['F/N','F']);assert.deepEqual(rename.createdFolders,['G','G/N']);
+const promote=groupFolderPatch(items,'F',null);assert.ok(promote.directoryMoves?.every(m=>m.folder==='N'));assert.deepEqual(promote.createdFolders,['N']);assert.throws(()=>groupFolderPatch(items,'F','F/N'));assert.throws(()=>groupFolderPatch(items,'F/N','F'));console.log('complete folder rename/move/promotion patches include connectors and children');

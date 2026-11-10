@@ -76,7 +76,21 @@
     "tests/tableViewport.test.ts",
     "tests/tableWindowCache.test.ts",
     "tests/tableNavigationScheduler.test.ts",
-    "tests/tableViewportStore.test.ts"
+    "tests/tableViewportStore.test.ts",
+    "tests/projectTableTopology.test.ts",
+    "tests/projectTableGroupMoves.test.ts",
+    "tests/projectOwnedDocumentFolders.test.ts",
+    "tests/projectTableCascadeDeletion.test.ts",
+    "tests/projectTableGroupCopy.test.ts",
+    "tests/projectTableGroupTransfer.test.ts",
+    "tests/tableDirectoryModel.test.ts",
+    "tests/projectGroupFolders.test.ts",
+    "tests/projectLogicalNames.test.ts",
+    "tests/applicationCommandTableGroups.test.ts",
+    "tests/projectGroupCancellation.test.ts",
+    "tests/projectTableGroupsNative.test.ts",
+    "tests/projectDefaultNativeStartup.test.ts",
+    "tests/projectDeletionPreviewFence.test.ts"
   ],
   "ui": [
     "tests/calculatedColumn.spec.tsx",
@@ -91,6 +105,7 @@
     "tests/projectRecoveryChoice.spec.tsx",
     "tests/projectViewportBudget.spec.tsx",
     "tests/projectViewportEpoch.spec.tsx",
-    "tests/logicalTableNavigation.spec.tsx"
+    "tests/logicalTableNavigation.spec.tsx",
+    "tests/tableDirectory.spec.tsx"
   ]
 }

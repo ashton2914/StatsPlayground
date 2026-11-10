@@ -104,7 +104,7 @@ pub(crate) fn retire_metadata(
     }
     create_storage(engine)?;
     clear_metadata(engine, &event.id)?;
-    engine.conn().execute("INSERT INTO _project_retired_directory SELECT ?,d.* FROM _project_directory d WHERE (d.id=? AND d.kind='table') OR (d.kind IN ('graph','graphNew') AND json_contains(d.dependencies_json,to_json(CAST(? AS VARCHAR))))",params![&event.id,&event.dataset_id,&event.dataset_id])?;
+    engine.conn().execute("INSERT INTO _project_retired_directory SELECT ?,d.* FROM _project_directory d WHERE (d.id=? AND d.kind='table') OR (d.kind IN ('graph','graphNew','analysis','tabulate') AND json_contains(d.dependencies_json,to_json(CAST(? AS VARCHAR))))",params![&event.id,&event.dataset_id,&event.dataset_id])?;
     engine.conn().execute("INSERT INTO _project_retired_documents SELECT ?,b.* FROM _project_documents b JOIN _project_retired_directory d ON d.id=b.id AND d.event_id=?",params![&event.id,&event.id])?;
     engine.conn().execute("INSERT INTO _project_document_revision_watermarks SELECT id,revision FROM _project_retired_directory WHERE event_id=? ON CONFLICT(id) DO UPDATE SET revision=GREATEST(_project_document_revision_watermarks.revision,excluded.revision)",[&event.id])?;
     let mut setting_ids = Vec::new();

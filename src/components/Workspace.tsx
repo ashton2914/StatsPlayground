@@ -1,3 +1,9 @@
+import {TableDirectory} from "./directory/TableDirectory";
+import {buildTableDirectory,groupDragPayload} from "./directory/tableDirectoryModel";
+import {readProjectTopology,moveTableGroup,copyTableGroup,exportTableGroup,importTableGroup,previewTableAction} from "@/projectPersistence/tableGroups";
+import {mutateGroupFolder} from "@/projectPersistence/groupFolders";
+import type {ProjectTopology} from "@/types/projectPersistence";
+import {allocateProjectLogicalName,validateNativeGraphBasename} from "@/utils/projectFileNaming";
 import {ProjectPersistenceStatus} from "./ProjectPersistenceStatus";
 import {readNativeWorkflowRunState,resolveWorkflowOutputBindings} from "@/projectPersistence/workflowRunState";
 import {prepareNativeDocumentAccess,readNativeProjectDirectory} from "@/projectPersistence/catalogAccess";
@@ -372,6 +378,17 @@ export function Workspace() {
   const nativeDirectory=useMemo(()=>persistence&&catalogEpoch===persistence.snapshot().epoch
     ?getProjectDirectorySummaries(catalogEpoch)??Object.values(catalogSummaries):null,
     [persistence,persistenceSnapshot?.epoch,persistenceSnapshot?.pendingSequence,persistenceSnapshot?.acknowledgedSequence,catalogEpoch,catalogSummaries]);
+  const topologyRevision=useProjectCatalogStore(state=>state.committedRevision);
+  const [tableTopology,setTableTopology]=useState<ProjectTopology|null>(null);
+  const [topologyError,setTopologyError]=useState<string|null>(null);
+  const [topologyRetry,setTopologyRetry]=useState(0);
+  useEffect(()=>{
+    if(!persistence){setTableTopology(null);return;}
+    let active=true;
+    void readProjectTopology().then(value=>{if(active&&useProjectStore.getState().persistence===persistence){setTableTopology(value);setTopologyError(null);}},error=>{if(active){console.error("Table directory load failed",error);setTopologyError(String(error));}});
+    return ()=>{active=false;};
+  },[persistence,topologyRevision,topologyRetry]);
+  const tableDirectory=useMemo(()=>tableTopology&&persistence?.snapshot().epoch===tableTopology.epoch?buildTableDirectory(tableTopology,nativeDirectory??[]):null,[tableTopology,persistence,nativeDirectory]);
   const projectLineageGraph = useMemo(() => nativeDirectory!==null?persistedLineage:buildProjectDependencyGraph({
     datasets,
     tableTransforms,
@@ -656,8 +673,8 @@ export function Workspace() {
   );
 
   const withProjectExtension = useCallback((basename: string, kind: ProjectDocumentKind): string => {
-    return `${basename}${projectFileExtension(kind)}`;
-  }, []);
+    return persistence?basename:`${basename}${projectFileExtension(kind)}`;
+  }, [persistence]);
 
   const invalidProjectNameMessage = useCallback((code: ProjectBasenameValidationError): string => {
     if (code === "controlChars") {
@@ -698,6 +715,7 @@ export function Workspace() {
     } else {
       existingNames = [];
     }
+    if(nativeDirectory!==null){try{return {basename:allocateProjectLogicalName(requestedName,existingNames,currentName),error:null};}catch(error){return {basename:null,error:error instanceof ProjectNameValidationError?invalidProjectNameMessage(error.code):String(error)};}}
     const resolved = resolveProjectBasenameForKind(requestedName, kind, existingNames, currentName);
     if (resolved.error === "wrongExtension") {
       return {
@@ -1388,7 +1406,7 @@ export function Workspace() {
       catch(error) {alert(String(error));return;}
       if(useProjectStore.getState().persistence!==owner) return;
       const kind=summary.kind==="transform"?"tableTransform":summary.kind;
-      const resolved=resolveProjectBasename(trimmed,kind,summary.name);
+      const resolved={basename:trimmed,error:validateNativeGraphBasename(trimmed)};
       if(resolved.error!==null) {alert(resolved.error);return;}
       if(resolved.basename!==summary.name) {
         try {
@@ -1588,7 +1606,26 @@ export function Workspace() {
     if (item) recordAction(t("history.deleteAnalysis", { name: item.name }));
   };
 
+  const [groupController,setGroupController]=useState<AbortController|null>(null);
+  const runGroupOperation=async(label:string,run:(signal:AbortSignal)=>Promise<unknown>)=>{const controller=new AbortController();setGroupController(controller);setBusyMessage(label);try{await run(controller.signal);}catch(error){if(!controller.signal.aborted)alert(String(error));}finally{setGroupController(null);setBusyMessage(null);}};
+  const handleGroupCopy=async(id:string)=>{try{const topology=await readProjectTopology();const table=topology.tables.find(t=>t.id===id);if(!table)throw new Error('project_table_not_found');await runGroupOperation(t('directory.copyGroup'),signal=>copyTableGroup(id,table.folder,topology.committedRevision,{signal}));}catch(error){alert(String(error));}};
+  const handleGroupExport=async(id:string)=>{const owner=useProjectStore.getState().persistence;try{const topology=await readProjectTopology();const path=await save({defaultPath:'table-group.spprj',filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await runGroupOperation(t('directory.exportGroup'),signal=>exportTableGroup(id,path,topology.committedRevision,{signal}));}catch(error){alert(String(error));}};
+  const handleGroupImport=async()=>{const owner=useProjectStore.getState().persistence;try{const path=await open({multiple:false,filters:[{name:'Project',extensions:['spprj']}]});if(!path)return;if(useProjectStore.getState().persistence!==owner)throw new Error('project_topology_session_stale');await runGroupOperation(t('directory.importGroup'),signal=>importTableGroup(path as string,'',{signal}));}catch(error){alert(String(error));}};
   const handleDeleteDataset = async (id: string) => {
+    const owner=useProjectStore.getState().persistence;
+    let confirmedTopologyRevision:number|undefined;
+    if(owner){
+      try{
+        const preview=await previewTableAction(id,'descendants');
+        const topology=await readProjectTopology();
+        if(topology.committedRevision!==preview.committedRevision)throw new Error('project_topology_revision_stale');
+        if(preview.blockers.length){alert(t('directory.deleteBlocked'));return;}
+        const names=[...preview.tableIds.map(id=>topology.tables.find(t=>t.id===id)?.name??id),...preview.ownedDocumentIds.map(id=>topology.ownedDocuments.find(d=>d.id===id)?.name??id)];
+        if(!await confirm(t('directory.deleteCascade',{items:names.join('\n')}),{title:t('common.delete'),kind:'warning'}))return;
+        if(useProjectStore.getState().persistence!==owner||owner.snapshot().committedRevision!==preview.committedRevision)throw new Error('project_topology_session_stale');
+        confirmedTopologyRevision=preview.committedRevision;
+      }catch(error){alert(String(error));return;}
+    }
     const name = datasets.find((d) => d.id === id)?.name ?? id;
     const activeAnalysis = activeAnalysisId
       ? useAnalysisStore.getState().items.find((item) => item.id === activeAnalysisId)
@@ -1604,11 +1641,10 @@ export function Workspace() {
       retainedActiveAnalysisId,
     });
     const nativeDeletion=Boolean(useProjectStore.getState().persistence);
-    await dataService.deleteDataset(id);
+    await dataService.deleteDataset(id,confirmedTopologyRevision);
     if(nativeDeletion) {
       removeDatasetViewport(id);
       if(useGraphBuilderNewStore.getState().items.every(item=>item.id!==activeGraphBuilderNewId)) setActiveGraphBuilderNewId(null);
-      await applyWorkspaceDocumentSelection(selectionAfterDelete);
       return;
     }
     removeDatasetFilters(id);
@@ -2243,8 +2279,7 @@ export function Workspace() {
     try {
       newPath = fsCreateFolder(parent, baseName);
     } catch (error) {
-      if (!(error instanceof ProjectNameValidationError)) throw error;
-      alert(invalidProjectNameMessage(error.code));
+      alert(error instanceof ProjectNameValidationError?invalidProjectNameMessage(error.code):String(error));
       return;
     }
     // Make sure the parent folder is expanded so the new child is visible.
@@ -2274,10 +2309,10 @@ export function Workspace() {
     let newPath: string | null;
     try {
       if(!await prepareFolderMutation()) return;
-      newPath = fsRenameFolder(oldPath, newBase);
+      if(persistence){newPath=[folderParent(oldPath),newBase].filter(Boolean).join('/');await mutateGroupFolder(oldPath,newPath);}
+      else newPath = fsRenameFolder(oldPath, newBase);
     } catch (error) {
-      if (!(error instanceof ProjectNameValidationError)) throw error;
-      alert(invalidProjectNameMessage(error.code));
+      alert(error instanceof ProjectNameValidationError?invalidProjectNameMessage(error.code):String(error));
       return;
     }
     if (newPath) markDirty();
@@ -2290,7 +2325,7 @@ export function Workspace() {
     // they get promoted to the parent folder. No confirmation prompt is needed
     // because nothing is actually destroyed.
     if(!await prepareFolderMutation()) return;
-    fsDeleteFolder(folderPath);
+    try{if(persistence)await mutateGroupFolder(folderPath,null);else fsDeleteFolder(folderPath);}catch(error){alert(String(error));return;}
     markDirty();
   };
 
@@ -2305,9 +2340,14 @@ export function Workspace() {
     | { kind: "report"; id: string }
     | { kind: "analysis"; id: string }
     | { kind: "tabulate"; id: string }
-    | { kind: "folder"; path: string };
+    | { kind: "folder"; path: string }
+    | { kind:"tableGroup";tableId:string;epoch:number;revision:number };
 
   const handleDragStart = (e: React.DragEvent, payload: DragPayload) => {
+    if(readOnly){e.preventDefault();return;}
+    if(persistence&&payload.kind!=="folder"&&payload.kind!=="report"&&payload.kind!=="tableGroup"){
+      const group=tableDirectory&&groupDragPayload(tableDirectory,payload.id);if(!group){e.preventDefault();return;}payload=group;
+    }
     e.dataTransfer.setData("application/x-sp-item", JSON.stringify(payload));
     e.dataTransfer.effectAllowed = "move";
   };
@@ -2338,16 +2378,24 @@ export function Workspace() {
     if (!canDropOn(payload, target)) return;
     try {
       if(!await prepareFolderMutation()) return;
-      if (payload.kind === "table") fsSetTableFolder(payload.id, target);
+      if(payload.kind==='tableGroup'){
+        if(!persistence||payload.epoch!==persistence.snapshot().epoch)throw new Error('project_topology_session_stale');
+        const group=tableDirectory?.groups.find(g=>g.tables.some(t=>t.id===payload.tableId));
+        if(group?.folder===(target??'')&&!group.needsNormalization)return;
+        await moveTableGroup(payload.tableId,target??'',payload.revision);
+      }
+      else if (payload.kind === "table") fsSetTableFolder(payload.id, target);
       else if (payload.kind === "graph") fsSetGraphFolder(payload.id, target);
       else if (payload.kind === "graphNew") fsSetGraphNewFolder(payload.id, target);
       else if (payload.kind === "report") fsSetReportFolder(payload.id, target);
       else if (payload.kind === "analysis") fsSetAnalysisFolder(payload.id, target);
       else if (payload.kind === "tabulate") fsSetTabulateFolder(payload.id, target);
-      else if (payload.kind === "folder") fsMoveFolder(payload.path, target);
+      else if (payload.kind === "folder") {
+        if(persistence)await mutateGroupFolder(payload.path,[target,folderBaseName(payload.path)].filter(Boolean).join('/'));
+        else fsMoveFolder(payload.path, target);
+      }
     } catch (error) {
-      if (!(error instanceof ProjectNameValidationError)) throw error;
-      alert(invalidProjectNameMessage(error.code));
+      alert(error instanceof ProjectNameValidationError?invalidProjectNameMessage(error.code):String(error));
       return;
     }
     markDirty();
@@ -2377,7 +2425,8 @@ export function Workspace() {
       id:summary.id,name:summary.name,folder:summary.folder,sourceDatasetId:summary.dependencies[0],datasetId:summary.dependencies[0],
       operationKind:kind==="transform"?tableTransforms.find(item=>item.id===summary.id)?.operation.kind:undefined,
     }));
-    const folderPaths=new Set(folders);
+    const folderPaths=new Set([...folders,...(tableDirectory?tableTopology?.folders:[])??[]]);
+    for(const group of tableDirectory?.groups??[]){let path=group.folder;while(path){folderPaths.add(path);path=folderParent(path)??'';}}
     if(nativeDirectory) for(const item of nativeDirectory) {
       let path=item.kind==="folder"?[item.folder,item.name].filter(Boolean).join("/"):item.folder;
       while(path) {folderPaths.add(path);path=folderParent(path)??"";}
@@ -2409,7 +2458,7 @@ export function Workspace() {
       analysesByParent:group(nativeDirectory!==null?nativeItems("analysis"):analysisItems.map(item=>({id:item.id,name:item.name,sourceDatasetId:item.source.datasetId})),analysisFolders),
       tabulatesByParent:group(nativeDirectory!==null?nativeItems("tabulate"):tabulates,tabulateFolders),
     };
-  }, [nativeDirectory,folders,tableFolders,graphFolders,graphNewFolders,reportFolders,analysisFolders,tabulateFolders,datasets,tableTransforms,graphBuilders,graphBuildersNew,reportItems,analysisItems,tabulates]);
+  }, [tableTopology,tableDirectory,nativeDirectory,folders,tableFolders,graphFolders,graphNewFolders,reportFolders,analysisFolders,tabulateFolders,datasets,tableTransforms,graphBuilders,graphBuildersNew,reportItems,analysisItems,tabulates]);
 
   /** Recursively render one folder level. */
   const renderFolderLevel = (parent: string | null, depth: number): React.ReactNode[] => {
@@ -2417,13 +2466,13 @@ export function Workspace() {
     const key = parent ?? ROOT;
     const out: React.ReactNode[] = [];
     const folderChildren = tree.childFolders.get(key) ?? [];
-    const tableChildren = tree.tablesByParent.get(key) ?? [];
-    const transformChildren = tree.tableTransformsByParent.get(key) ?? [];
-    const graphChildren = tree.graphsByParent.get(key) ?? [];
-    const graphNewChildren = tree.graphsNewByParent.get(key) ?? [];
+    const tableChildren = persistence?[]:tree.tablesByParent.get(key) ?? [];
+    const transformChildren = persistence?[]:tree.tableTransformsByParent.get(key) ?? [];
+    const graphChildren = persistence?[]:tree.graphsByParent.get(key) ?? [];
+    const graphNewChildren = persistence?[]:tree.graphsNewByParent.get(key) ?? [];
     const reportChildren = tree.reportsByParent.get(key) ?? [];
-    const analysisChildren = tree.analysesByParent.get(key) ?? [];
-    const tabulateChildren = tree.tabulatesByParent.get(key) ?? [];
+    const analysisChildren = persistence?[]:tree.analysesByParent.get(key) ?? [];
+    const tabulateChildren = persistence?[]:tree.tabulatesByParent.get(key) ?? [];
     // Folders first, then tables, then graphs, matching the prior visual order
     // (tables-then-graphs at the root level).
     for (const fp of folderChildren) {
@@ -2486,6 +2535,16 @@ export function Workspace() {
         </div>,
       );
     }
+    if(persistence&&tableDirectory)out.push(<TableDirectory key={`native-groups:${key}`} model={tableDirectory} folder={parent??''} tableInfo={Object.fromEntries(datasets.map(d=>[d.id,`${d.rowCount}×${d.colCount}`]))}
+      selectedIds={[activeDatasetId,activeGraphBuilderId,activeGraphBuilderNewId,activeAnalysisId,activeTabulateId]} readOnly={readOnly||Boolean(topologyError)||Boolean(persistenceSnapshot&&persistenceSnapshot.pendingSequence!==persistenceSnapshot.acknowledgedSequence)}
+      labels={{expand:t('directory.expand'),collapse:t('directory.collapse'),more:t('directory.more'),transform:t('directory.transform'),normalize:t('directory.normalize')}}
+      onActivate={(kind,id)=>{if(kind==='graphNew')handleOpenGraphBuilderNew(id);else activateWorkspaceDocument(kind==='table'?'dataset':kind==='transform'?'tableTransform':kind as WorkspaceDocumentKind,id);}}
+      onContextMenu={(kind,id,event)=>{event.preventDefault();event.stopPropagation();void readNativeProjectDirectory().catch(error=>alert(String(error)));setCtxMenu({kind:kind==='transform'?'tableTransform':kind as 'table',id,x:event.clientX,y:event.clientY});}}
+      onRename={async(id,name)=>{const error=validateNativeGraphBasename(name);if(error)throw new Error(invalidProjectNameMessage(error));await readNativeProjectDirectory();await renameProjectDirectoryDocument(id,name,tableDirectory.epoch);}}
+      renameRequest={renamingId?{id:renamingId,name:renameValue}:null} onRenameEnd={()=>setRenamingId(null)}
+      onDragStart={handleDragStart}/>);
+    if(persistence&&parent===null&&topologyError)out.push(<button key="topology-error" onClick={()=>setTopologyRetry(n=>n+1)}>{t('directory.retry')}</button>);
+    if(persistence&&parent===null&&tableDirectory?.diagnostics.length)out.push(<div role="alert" key="topology-invalid">{t('directory.invalid')}</div>);
     for (const ds of tableChildren) {
       out.push(
         <div
@@ -2524,7 +2583,7 @@ export function Workspace() {
                 onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("table")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("table")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(ds.name, "table")}</span>
@@ -2593,7 +2652,7 @@ export function Workspace() {
                 onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("graph")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("graph")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(gb.name, "graph")}</span>
@@ -2643,7 +2702,7 @@ export function Workspace() {
                 onClick={(event) => event.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("graphNew")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("graphNew")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(item.name, "graphNew")}</span>
@@ -2690,7 +2749,7 @@ export function Workspace() {
                 onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("report")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("report")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(item.name, "report")}</span>
@@ -2738,7 +2797,7 @@ export function Workspace() {
                 onClick={(event) => event.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("analysis")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("analysis")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(item.name, "analysis")}</span>
@@ -2789,7 +2848,7 @@ export function Workspace() {
                 onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
-              <span className="ds-fixed-ext">{projectFileExtension("tabulate")}</span>
+              {!persistence&&<span className="ds-fixed-ext">{projectFileExtension("tabulate")}</span>}
             </span>
           ) : (
             <span className="ds-name">{withProjectExtension(item.name, "tabulate")}</span>
@@ -2846,6 +2905,7 @@ export function Workspace() {
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
               <div className="menu-sep" />
+              {persistence&&<div className={`menu-item${readOnly?" menu-item-disabled":""}`} onClick={readOnly?undefined:()=>void handleGroupImport()}>{t("directory.importGroup")}</div>}
               <div className={`menu-item${datasets.length === 0 ? " menu-item-disabled" : ""}`} onClick={datasets.length === 0 ? undefined : (() => setShowTableExport(true))}>{t("menu.exportTables", { defaultValue: "Export Tables..." })}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.graph")}>
@@ -3626,6 +3686,7 @@ export function Workspace() {
                 {busyProgress.rowsDone.toLocaleString()} / {busyProgress.rowsTotal.toLocaleString()} {t("workspace.importProgressRows")}
               </div>
             )}
+            {groupController&&<button className="btn-secondary" style={{marginTop:12}} onClick={()=>groupController.abort()}>{t("common.cancel")}</button>}
             {migrationActive && <button className="btn-secondary" style={{marginTop:12}} disabled={cancellingMigration} onClick={()=>void migrationCancelRef.current?.request()}>
               {cancellingMigration?t("workspace.migrationCancelling"):t("workspace.migrationCancel")}
             </button>}
@@ -3642,7 +3703,7 @@ export function Workspace() {
         >
           {ctxMenu.kind === "table" && (() => {
             const id = ctxMenu.id;
-            const ds = datasets.find((d) => d.id === id);
+            const ds = datasets.find((d) => d.id === id)??tableTopology?.tables.find(t=>t.id===id);
             if (!ds) return null;
             return (
               <>
@@ -3652,6 +3713,7 @@ export function Workspace() {
                   if(nativeDirectory===null) activateWorkspaceDocument("dataset", id);
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
+                {persistence&&<><div className={`sp-ctx-item${readOnly?" sp-ctx-item-disabled":""}`} onClick={readOnly?undefined:()=>{setCtxMenu(null);void handleGroupCopy(id);}}>{t('directory.copyGroup')}</div><div className="sp-ctx-item" onClick={()=>{setCtxMenu(null);void handleGroupExport(id);}}>{t('directory.exportGroup')}</div></>}
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteDataset(id); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>

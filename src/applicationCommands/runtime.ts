@@ -529,6 +529,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
           observer?.onProgress?.(progress);
         },
         assertCurrent: () => request.assertOwner?.(),
+        acknowledgeCommit: () => {request.committed=true;},
         beginCommit: () => {
           request.assertOwner?.();
           if (request.controller.signal.aborted && !request.committed) {
