@@ -1246,6 +1246,7 @@
   "dataTable": {
     "pasteResultUnavailable": "无法确认粘贴结果。请重试保存以恢复状态。",
     "pasteTargetChanged": "准备粘贴时表格视图发生了变化，请重试。",
+    "retryLoad": "重试",
     "loading": "加载中...",
     "type": {
       "VARCHAR": "文本",

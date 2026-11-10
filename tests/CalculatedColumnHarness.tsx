@@ -7,6 +7,7 @@ import { dataService } from "../src/services/dataService";
 import { useDataStore } from "../src/stores/useDataStore";
 import { useHistoryStore } from "../src/stores/useHistoryStore";
 import { useProjectStore } from "../src/stores/useProjectStore";
+import { useTableNavigationSortStore } from "../src/stores/useTableNavigationSortStore";
 import type {
   CellPosition,
   CalculatedColumnMutationResult,
@@ -17,9 +18,10 @@ import type {
   TableWindowResult,
   UpsertCalculatedColumnRequest,
   ValidateCalculatedColumnRequest,
+  TableWindowSort,
 } from "../src/types/data";
 
-type CalculatedColumnHarnessScenario = "matrix" | "stale";
+type CalculatedColumnHarnessScenario = "matrix" | "stale" | "sort";
 
 type HarnessSnapshot = {
   validateRequests: ValidateCalculatedColumnRequest[];
@@ -43,6 +45,7 @@ type HarnessSnapshot = {
   }>;
   confirmMessages: string[];
   clipboardWrites: string[];
+  rejectedSortNames: string[];
 };
 
 type HarnessController = {
@@ -58,6 +61,11 @@ type HarnessController = {
   stageHistoryRefresh: (mode: "undo" | "redo") => void;
   failHistoryReplay: () => Promise<void>;
   setTableVisible: (visible: boolean) => void;
+  setSort: (sort: TableWindowSort | null) => void;
+  getSort: () => TableWindowSort | null;
+  setReadFailure: (value: boolean) => void;
+  failNextRename: () => void;
+  lagDatasetMetadata: () => void;
 };
 
 declare global {
@@ -302,23 +310,30 @@ export function CalculatedColumnHarness({
   nativePersistence=false,
   reverseRows=false,
   unloadedTail=false,
+  receiptBeforeRenameReturn=false,
 }: {
   scenario: CalculatedColumnHarnessScenario;
   width?: number;
   nativePersistence?:boolean;
   reverseRows?:boolean;
   unloadedTail?:boolean;
+  receiptBeforeRenameReturn?:boolean;
 }) {
   const [ready, setReady] = useState(false);
   const [tableVisible, setTableVisible] = useState(true);
 
   useEffect(() => {
     const previousDataState = useDataStore.getState();
+    const previousSortState = useTableNavigationSortStore.getState();
     const previousProjectState = useProjectStore.getState();
     const previousHistoryState = useHistoryStore.getState();
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
     const previousQueryTableWindow = dataService.queryTableWindow;
+    const previousPrepareSession = dataService.prepareTableQuerySession;
+    const previousNavigationWindow = dataService.queryTableNavigationWindow;
+    const previousReleaseSession = dataService.releaseTableQuerySession;
+    const previousAlterColumn = dataService.alterColumnWithChangeSet;
     const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
     const previousSetColumnDisplayProps = dataService.setColumnDisplayProps;
     const previousGetColumnDescriptors = dataService.getColumnDescriptors;
@@ -345,12 +360,27 @@ export function CalculatedColumnHarness({
     };
     const nativeOwner=nativePersistence?createProjectPersistenceCoordinator({projectId:"native-paste",epoch:7,committedRevision:0,now:Date.now,newOperationId:()=>crypto.randomUUID(),setTimer:(run,delay)=>setTimeout(run,delay),clearTimer:timer=>clearTimeout(timer as ReturnType<typeof setTimeout>),transport:async()=>{throw new Error("unexpected native harness operation");}}):null;
     let currentDescriptors: ColumnDescriptor[] = cloneDescriptors(BASE_DESCRIPTORS);
+    if (scenario === "sort") {
+      currentDescriptors = [
+        { columnId: "build-id", name: "Build", sqlType: "VARCHAR" },
+        { columnId: "length-id", name: "Length", sqlType: "DOUBLE" },
+        { columnId: "width-id", name: "Width", sqlType: "DOUBLE" },
+      ];
+      currentWindow = {
+        columns: ["_row_id", "Build", "Length", "Width"],
+        columnTypes: ["BIGINT", "VARCHAR", "DOUBLE", "DOUBLE"],
+        rows: [[1, "B3", 13, 3], [2, "B1", 11, 1], [3, "B2", 12, 2]],
+        totalRows: 3, start: 0, generation: currentGeneration,
+      };
+    }
     let confirmResult = true;
     let clipboardText = "";
     let nextValidationFailure: unknown | null = null;
     let holdNextValidation = false;
     let resolveHeldValidation: (() => void) | null = null;
     let stagedHistoryRefresh: "undo" | "redo" | null = null;
+    let readFailure = false;
+    let failRename = false;
     const snapshot: HarnessSnapshot = {
       validateRequests: [],
       upsertRequests: [],
@@ -363,6 +393,7 @@ export function CalculatedColumnHarness({
       pasteCalls: [],
       confirmMessages: [],
       clipboardWrites: [],
+      rejectedSortNames: [],
     };
 
     const updateDescriptors = (nextDescriptors: ColumnDescriptor[]) => {
@@ -370,14 +401,19 @@ export function CalculatedColumnHarness({
     };
 
     const updateWindowColumns = (nextDescriptors: ColumnDescriptor[]) => {
+      if (scenario === "sort") {
+        currentWindow = { ...currentWindow, generation: currentGeneration, columns: ["_row_id", ...nextDescriptors.map(column => column.name)] };
+        return;
+      }
       currentWindow = buildWindow(nextDescriptors.map((descriptor) => descriptor.name) as typeof BASE_VISIBLE_COLUMNS, currentGeneration);
     };
 
     useDataStore.setState({
       ...previousDataState,
       activeDatasetId: DATASET.id,
-      datasets: [DATASET],
+      datasets: [{ ...DATASET, ...(scenario === "sort" ? { rowCount: 3, colCount: 3 } : {}) }],
       statusInfo: null,
+      refreshDatasets: async () => { setDatasetGeneration(currentGeneration); },
     });
     useProjectStore.setState({
       ...previousProjectState,
@@ -387,6 +423,7 @@ export function CalculatedColumnHarness({
       saveError: null,
     });
     if(nativeOwner) useProjectStore.getState().installPersistence(nativeOwner);
+    useTableNavigationSortStore.setState({ byDataset: {} });
     useHistoryStore.setState({
       ...previousHistoryState,
       historyRevision: 0,
@@ -462,7 +499,57 @@ export function CalculatedColumnHarness({
     });
 
     dataService.getDatasetGeneration = async () => currentGeneration;
-    dataService.queryTableWindow = async () => currentWindow;
+    const checkRequest = (sort: TableWindowSort | null | undefined) => {
+      if (readFailure) throw new Error("table read failed");
+      if (sort && !currentDescriptors.some((column) => column.name === sort.column)) {
+        snapshot.rejectedSortNames.push(sort.column);
+        throw new Error(`unknown sort column: ${sort.column}`);
+      }
+    };
+    const sortedWindow = (sort: TableWindowSort | null | undefined) => {
+      checkRequest(sort);
+      const index = sort ? currentWindow.columns.indexOf(sort.column) : -1;
+      const rows = [...currentWindow.rows];
+      if (sort && index >= 0) rows.sort((a, b) => {
+        const comparison = typeof a[index] === "number" && typeof b[index] === "number"
+          ? Number(a[index]) - Number(b[index])
+          : String(a[index]).localeCompare(String(b[index]));
+        return sort.descending ? -comparison : comparison;
+      });
+      return { ...currentWindow, rows };
+    };
+    dataService.queryTableWindow = async (request) => sortedWindow(request.sort);
+    const releasedSessions = new Set<string>();
+    dataService.prepareTableQuerySession = async (request) => {
+      checkRequest(request.sort);
+      const sessionId = `session-${currentGeneration}`;
+      releasedSessions.delete(sessionId);
+      if (receiptBeforeRenameReturn) await new Promise(resolve => setTimeout(resolve, 40));
+      return { sessionId, state: "ready", totalRows: currentWindow.totalRows, progress: 1 };
+    };
+    dataService.releaseTableQuerySession = async (id) => { releasedSessions.add(id); };
+    dataService.queryTableNavigationWindow = async (request) => {
+      if (receiptBeforeRenameReturn && request.sessionId && releasedSessions.has(request.sessionId)) throw new Error(`unknown table query session: ${request.sessionId}`);
+      checkRequest(request.sort);
+      return {
+        version: 1, requestId: request.requestId, datasetId: request.datasetId,
+        generation: currentGeneration, start: 0, totalRows: currentWindow.totalRows, totalRowsExact: true,
+        sessionId: request.sessionId, columns: currentWindow.columns, columnTypes: currentWindow.columnTypes,
+        rows: sortedWindow(request.sort).rows, timings: { totalMs: 0 },
+      };
+    };
+    dataService.alterColumnWithChangeSet = async (_datasetId, oldName, newName, sqlType) => {
+      if (failRename) { failRename = false; throw new Error("rename failed"); }
+      currentGeneration += 1;
+      currentDescriptors = currentDescriptors.map(column => column.name === oldName ? { ...column, name: newName, sqlType } : column);
+      updateWindowColumns(currentDescriptors);
+      if (receiptBeforeRenameReturn) {
+        setDatasetGeneration(currentGeneration);
+        useHistoryStore.getState().invalidateData();
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      return `rename-${currentGeneration}`;
+    };
     dataService.getColumnDisplayProps = async () => DISPLAY_PROPS;
     dataService.setColumnDisplayProps = async (datasetId, props) => {
       snapshot.displayPropsWrites.push({ datasetId, props });
@@ -619,6 +706,7 @@ export function CalculatedColumnHarness({
         pasteCalls: [...snapshot.pasteCalls],
         confirmMessages: [...snapshot.confirmMessages],
         clipboardWrites: [...snapshot.clipboardWrites],
+        rejectedSortNames: [...snapshot.rejectedSortNames],
       }),
       setConfirmResult: (value: boolean) => {
         confirmResult = value;
@@ -673,6 +761,11 @@ export function CalculatedColumnHarness({
         stagedHistoryRefresh = mode;
       },
       setTableVisible,
+      setSort: (sort) => { useTableNavigationSortStore.getState().replaceSort(DATASET.id, sort); },
+      getSort: () => useTableNavigationSortStore.getState().byDataset[DATASET.id] ?? null,
+      setReadFailure: (value) => { readFailure = value; },
+      failNextRename: () => { failRename = true; },
+      lagDatasetMetadata: () => { setDatasetGeneration(currentGeneration - 1); },
       failHistoryReplay: async () => {
         const previousApply = dataService.applyTableChangeSet;
         dataService.applyTableChangeSet = async () => {
@@ -709,6 +802,10 @@ export function CalculatedColumnHarness({
       if(nativeOwner) void nativeOwner.close();
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
       dataService.queryTableWindow = previousQueryTableWindow;
+      dataService.prepareTableQuerySession = previousPrepareSession;
+      dataService.queryTableNavigationWindow = previousNavigationWindow;
+      dataService.releaseTableQuerySession = previousReleaseSession;
+      dataService.alterColumnWithChangeSet = previousAlterColumn;
       dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
       dataService.setColumnDisplayProps = previousSetColumnDisplayProps;
       dataService.getColumnDescriptors = previousGetColumnDescriptors;
@@ -727,11 +824,12 @@ export function CalculatedColumnHarness({
       }
       delete window.__calculatedColumnHarness;
       useDataStore.setState(previousDataState, true);
+      useTableNavigationSortStore.setState(previousSortState, true);
       useProjectStore.setState(previousProjectState, true);
       useHistoryStore.setState(previousHistoryState, true);
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [scenario,nativePersistence,reverseRows,unloadedTail]);
+  }, [scenario,nativePersistence,reverseRows,unloadedTail,receiptBeforeRenameReturn]);
 
   if (!ready) return null;
 

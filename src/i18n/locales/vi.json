@@ -1119,6 +1119,7 @@
   "dataTable": {
     "pasteResultUnavailable": "Không thể xác nhận kết quả dán. Hãy thử lưu lại để khôi phục trạng thái.",
     "pasteTargetChanged": "Chế độ xem bảng đã thay đổi khi chuẩn bị dán. Vui lòng thử lại.",
+    "retryLoad": "Thử lại",
     "loading": "Đang tải...",
     "type": {
       "VARCHAR": "Văn bản",
