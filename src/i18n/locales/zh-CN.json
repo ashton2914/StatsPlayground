@@ -1447,6 +1447,7 @@
     "dimensions": "{{rows}} 行 × {{cols}} 列"
   },
   "graph": {
+    "errors": {"numericColumnRequired": "此图表要求“{{column}}”列为数值类型。请先清理货币符号、千位分隔符或其他文本，再在“列属性”中将列类型改为数值。", "queryFailed": "无法加载图表。请检查所选列和筛选条件，然后重试。"},
     "type": {
       "points": "散点",
       "line": "折线",

@@ -3632,6 +3632,30 @@ impl DuckDbEngine {
             validate_column(column)?;
         }
 
+        let validate_numeric = |column: &str, role: &str| -> Result<(), AppError> {
+            if !is_numeric_type(allowed_columns[column]) {
+                return Err(AppError::graph_numeric_column(column, role));
+            }
+            Ok(())
+        };
+        if !multi_x_columns.is_empty() {
+            for column in &multi_x_columns {
+                validate_numeric(column, "x")?;
+            }
+            if let Some(column) = &y_column {
+                validate_numeric(column, "y")?;
+            }
+        } else if !multi_y_columns.is_empty() {
+            for column in &multi_y_columns {
+                validate_numeric(column, "y")?;
+            }
+        } else if let Some(column) = &y_column {
+            validate_numeric(column, "y")?;
+        }
+        if let Some(column) = &z_column {
+            validate_numeric(column, "z")?;
+        }
+
         let mut sampling_strata_columns: Vec<String> = Vec::new();
         for field in &request.fields {
             let role = field.role.to_ascii_lowercase();
@@ -18591,6 +18615,80 @@ mod tests {
                     .contains("COALESCE(CAST(__sp_strata_2 AS VARCHAR), '')"),
             "sample partition key must include all active categorical role aliases"
         );
+    }
+
+    #[test]
+    fn graph_numeric_roles_reject_text_before_streaming() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "numeric-roles",
+            "Numeric roles",
+            &["Month".into(), "Net_Sales".into(), "Amount".into()],
+            &["VARCHAR".into(), "VARCHAR".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+        db.conn().execute("INSERT INTO dataset_numeric_roles (_row_id, Month, Net_Sales, Amount) VALUES (1,'Jan','₹84,158.68',1),(2,'Feb','123.45',2),(3,'Mar','bad',3)", []).unwrap();
+        for role in ["y", "multiY0", "multiX0", "z"] {
+            let mut fields = vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "Month".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "Amount".into(),
+                },
+            ];
+            if role == "y" {
+                fields.pop();
+            }
+            if role == "multiX0" {
+                fields.remove(0);
+            }
+            fields.push(GraphFieldBinding {
+                role: role.into(),
+                column: "Net_Sales".into(),
+            });
+            let request = GraphDataRequest {
+                request_id: format!("numeric-{role}"),
+                dataset_id: "numeric-roles".into(),
+                generation: 0,
+                fields,
+                filters: vec![],
+                elements: vec![GraphElementRequest {
+                    kind: "points".into(),
+                    summary_stat: "none".into(),
+                    correlation_method: None,
+                    time_series: None,
+                }],
+                sampling: GraphSampling::Full,
+                raw_point_budget: 100,
+                viewport: GraphViewport {
+                    width: 800,
+                    height: 600,
+                },
+            };
+            let mut callbacks = 0;
+            let error = db
+                .stream_graph_projection_rows(
+                    &request,
+                    true,
+                    |_| {
+                        callbacks += 1;
+                        Ok(())
+                    },
+                    |_, _, _| Ok(true),
+                )
+                .err()
+                .expect("text roles must be rejected");
+            let serialized = serde_json::to_value(&error).unwrap();
+            assert_eq!(
+                serialized["code"], "graphNumericColumnRequired",
+                "role {role}: {serialized}"
+            );
+            assert_eq!(serialized["column"], "Net_Sales");
+            assert_eq!(callbacks, 0, "validation must precede metadata/rows");
+        }
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { createGraphStreamTransport } from "../src/services/graphDataTransport";
+import i18n from "../src/i18n";
 import { useCallback, useEffect, useState } from "react";
 
 import { normalizeGraphBuilderItem } from "../src/components/graphBuilder/graphBuilderMode";
@@ -64,11 +66,13 @@ function makeItem(): GraphBuilderItem {
   });
 }
 
-export function GraphStreamStabilityHarness() {
+export function GraphStreamStabilityHarness({ failure, language = "en" }: { failure?: unknown; language?: string }) {
   const [ready, setReady] = useState(false);
   const [requests, setRequests] = useState<GraphDataRequest[]>([]);
 
   useEffect(() => {
+    const previousLanguage = i18n.language;
+    void i18n.changeLanguage(language);
     const previousGetDescriptors = dataService.getColumnDescriptors;
     const previousGetDisplayProps = dataService.getColumnDisplayProps;
     const previousGetGeneration = dataService.getDatasetGeneration;
@@ -80,6 +84,10 @@ export function GraphStreamStabilityHarness() {
     graphDataService.stream = (request, handlers) => {
       setRequests((previous) => [...previous, request]);
       queueMicrotask(() => {
+        if (failure !== undefined) {
+          createGraphStreamTransport(request, handlers).onInvokeRejected(failure);
+          return;
+        }
         handlers.onComplete({
           requestId: request.requestId,
           datasetId: request.datasetId,
@@ -97,12 +105,13 @@ export function GraphStreamStabilityHarness() {
     setReady(true);
 
     return () => {
+      void i18n.changeLanguage(previousLanguage);
       dataService.getColumnDescriptors = previousGetDescriptors;
       dataService.getColumnDisplayProps = previousGetDisplayProps;
       dataService.getDatasetGeneration = previousGetGeneration;
       graphDataService.stream = previousStream;
     };
-  }, []);
+  }, [failure, language]);
 
   if (!ready) return null;
 
@@ -114,7 +123,7 @@ function PipelineHarness({ requests }: { requests: GraphDataRequest[] }) {
   const resolveLatestItem = useCallback(() => item, [item]);
   const requestIdentity = deriveGraphRequestIdentity(item, descriptors);
 
-  useGraphDataPipeline(
+  const pipeline = useGraphDataPipeline(
     item,
     DATASET,
     { width: 1280, height: 720 },
@@ -158,6 +167,7 @@ function PipelineHarness({ requests }: { requests: GraphDataRequest[] }) {
         <button type="button" onClick={hideStationA}>Hide Station A</button>
         <button type="button" onClick={colorStationA}>Color Station A</button>
       </div>
+      {pipeline.error && <div role="alert">{pipeline.error}</div>}
       <output data-testid="generic-stream-request-count">{requests.length}</output>
       <output data-testid="generic-stream-request-identity">{requestIdentity}</output>
       <output data-testid="generic-stream-last-request-json">{JSON.stringify(requests.at(-1) ?? null)}</output>

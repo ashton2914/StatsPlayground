@@ -1,3 +1,4 @@
+import { formatGraphDataError } from "./graphDataErrors";
 import type {
   GraphAggregatePacket,
   GraphChunkHeader,
@@ -350,7 +351,7 @@ export function createGraphStreamTransport(
     },
 
     onInvokeRejected: (error: unknown): void => {
-      fail(describeError(error));
+      fail(formatGraphDataError(error));
     },
   };
 }

@@ -1,3 +1,4 @@
+import { formatGraphDataError } from "../../services/graphDataErrors";
 import { SCATTER_RENDER_BUDGET } from "../../graphCore/scatterBudget.ts";
 import { DEFAULT_TIME_SERIES_OPTIONS } from "../../graphCore/types.ts";
 import type { GraphColumnDescriptor } from "./graphColumnIdentity.ts";
@@ -1142,7 +1143,7 @@ export function useGraphDataPipeline(
         if (disposed) {
           return;
         }
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatGraphDataError(error);
         setState((previous) => ({
           ...previous,
           pending: null,
