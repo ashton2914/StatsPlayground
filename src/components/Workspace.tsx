@@ -389,6 +389,7 @@ export function Workspace() {
     return ()=>{active=false;};
   },[persistence,topologyRevision,topologyRetry]);
   const tableDirectory=useMemo(()=>tableTopology&&persistence?.snapshot().epoch===tableTopology.epoch?buildTableDirectory(tableTopology,nativeDirectory??[]):null,[tableTopology,persistence,nativeDirectory]);
+  const [lineageRefresh, setLineageRefresh] = useState(0);
   const projectLineageGraph = useMemo(() => nativeDirectory!==null?persistedLineage:buildProjectDependencyGraph({
     datasets,
     tableTransforms,
@@ -397,7 +398,7 @@ export function Workspace() {
     analyses: analysisItems,
     tabulates,
     reports: reportItems,
-  }), [nativeDirectory,persistedLineage,analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
+  }), [nativeDirectory,persistedLineage,lineageRefresh,analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow" | "ai">("files");
   const [activeAiSubview, setActiveAiSubview] = useState<"server" | "skills">("server");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
@@ -411,7 +412,10 @@ export function Workspace() {
   useEffect(()=>{
     if(activeTab!=="workflow"||!persistence||catalogEpoch!==persistence.snapshot().epoch) return;
     const request=++workflowRequestRef.current;const epoch=persistence.snapshot().epoch;const id=activeWorkflowViewId;
-    setWorkflowLoad({epoch,id,status:"loading"});
+    setWorkflowLoad(current => id === "lineage" && current?.epoch === epoch
+      && current.id === id && current.status === "ready"
+      ? current
+      : {epoch,id,status:"loading"});
     setSelectedWorkflowRunCount(null);
     const catalog=useProjectCatalogStore.getState();
     const pending=(async()=>{
@@ -3142,7 +3146,7 @@ export function Workspace() {
           </div>
         )}
       >
-        <div className="main-area">
+        <div className="main-area" onContextMenu={activeTab === "workflow" ? event => event.preventDefault() : undefined}>
           {activeTab === "ai" ? (
             <AiActivityView
               subview={activeAiSubview}
@@ -3156,6 +3160,13 @@ export function Workspace() {
               </div>:
             <WorkflowView
               lineageGraph={projectLineageGraph}
+              onRefreshLineage={activeWorkflowViewId === "lineage" ? async () => {
+                if (persistence) {
+                  await useProjectCatalogStore.getState().ensureSetting("lineage", true);
+                } else {
+                  setLineageRefresh(value => value + 1);
+                }
+              } : undefined}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
               datasets={datasets}
               suggestedWorkflowName={nativeDirectory?allocateProjectBasename("Workflow 1",".json",nativeDirectory.filter(item=>item.kind==="workflow").map(item=>item.name)):`Workflow ${workflows.length + 1}`}

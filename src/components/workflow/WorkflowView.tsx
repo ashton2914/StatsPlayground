@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { dataService } from "@/services/dataService";
 import type { DatasetMeta } from "@/types/data";
@@ -32,6 +32,7 @@ interface WorkflowViewProps {
   workflow?: WorkflowDefinition;
   datasets: DatasetMeta[];
   suggestedWorkflowName?: string;
+  onRefreshLineage?: () => void | Promise<void>;
   onSaveSelection?: (name: string, nodeIds: string[]) => void | Promise<void>;
   onRun?: (bindings: Record<string, string>) => Promise<void>;
 }
@@ -100,6 +101,7 @@ export function WorkflowView({
   workflow,
   datasets,
   suggestedWorkflowName = "Workflow 1",
+  onRefreshLineage,
   onSaveSelection,
   onRun,
 }: WorkflowViewProps) {
@@ -113,6 +115,54 @@ export function WorkflowView({
   const [selectionName, setSelectionName] = useState<string | null>(null);
   const [inspectedSlotId, setInspectedSlotId] = useState<string | null>(null);
   const [savingSelection, setSavingSelection] = useState(false);
+  const [refreshMenu, setRefreshMenu] = useState<{ x: number; y: number } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const refreshButton = useRef<HTMLButtonElement>(null);
+  const refreshHeaderButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!refreshMenu) return;
+    refreshButton.current?.focus({ preventScroll: true });
+    const dismissOutside = (event: PointerEvent) => {
+      if (!refreshButton.current?.contains(event.target as Node)) setRefreshMenu(null);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Tab") setRefreshMenu(null);
+    };
+    const dismissOnBlur = () => setRefreshMenu(null);
+    window.addEventListener("pointerdown", dismissOutside);
+    window.addEventListener("keydown", dismissOnEscape);
+    window.addEventListener("blur", dismissOnBlur);
+    return () => {
+      window.removeEventListener("pointerdown", dismissOutside);
+      window.removeEventListener("keydown", dismissOnEscape);
+      window.removeEventListener("blur", dismissOnBlur);
+    };
+  }, [refreshMenu]);
+
+  const openRefreshMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (workflow || !onRefreshLineage || refreshing) return;
+    setRefreshMenu({
+      x: Math.max(0, Math.min(event.clientX, window.innerWidth - 200)),
+      y: Math.max(0, Math.min(event.clientY, window.innerHeight - 44)),
+    });
+  };
+
+  const refreshLineage = async () => {
+    setRefreshMenu(null);
+    setRefreshFailed(false);
+    setRefreshing(true);
+    try {
+      await onRefreshLineage?.();
+    } catch {
+      setRefreshFailed(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "succeeded" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
   const schemaRequestIds = useRef<Record<string, number>>({});
@@ -342,7 +392,20 @@ export function WorkflowView({
   };
 
   return (
-    <div className="workflow-view">
+    <div className="workflow-view" onContextMenu={openRefreshMenu}>
+      {!workflow && refreshMenu && (
+        <div className="sp-ctx-menu" style={{ left: refreshMenu.x, top: refreshMenu.y, minWidth: 200 }}>
+          <button ref={refreshButton} type="button" className="sp-ctx-item workflow-refresh-item" onClick={() => void refreshLineage()}
+            onKeyDown={event => {
+              if (event.key !== "Escape") return;
+              event.stopPropagation();
+              setRefreshMenu(null);
+              refreshHeaderButton.current?.focus();
+            }}>
+            {t("workflow.refreshLineage")}
+          </button>
+        </div>
+      )}
       <header className="workflow-view-header">
         <div>
           <span>{workflow ? t("workflow.definition", { defaultValue: "Workflow definition" }) : t("workflow.lineage", { defaultValue: "Lineage" })}</span>
@@ -356,6 +419,12 @@ export function WorkflowView({
               edges: visuals.edges.length,
             })}
           </div>
+          {!workflow && onRefreshLineage && (
+            <button ref={refreshHeaderButton} type="button" className="workflow-save-selection"
+              disabled={refreshing} onClick={() => void refreshLineage()}>
+              {t("workflow.refreshLineage")}
+            </button>
+          )}
           {!workflow && onSaveSelection && (
             <button
               type="button"
@@ -442,6 +511,8 @@ export function WorkflowView({
         </section>
       )}
 
+      {!workflow && refreshing && <div role="status">{t("common.loading")}</div>}
+      {!workflow && refreshFailed && <div role="alert">{t("workflow.refreshLineageFailed")}</div>}
       {visuals.nodes.length === 0 ? (
         <div className="workspace-empty">
           <i className="fa-solid fa-diagram-project" aria-hidden="true" />

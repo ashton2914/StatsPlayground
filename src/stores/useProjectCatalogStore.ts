@@ -38,7 +38,7 @@ export interface ProjectCatalogState {
   installOpenSummary(summary:ProjectOpenSummary):void;
   loadNextPage():Promise<void>;
   ensureDocument(id:string):Promise<ProjectDocumentBody>;
-  ensureSetting(key:string):Promise<ProjectSettingRecord|null>;
+  ensureSetting(key:string, refresh?:boolean):Promise<ProjectSettingRecord|null>;
   invalidateDocument(id:string,revision:number):void;
   applyCommit(commit:ProjectCommit<unknown>):void;
   reset(epoch:number):void;
@@ -113,18 +113,18 @@ export function createProjectCatalogStore(deps:CatalogDependencies={service:proj
       })().then(result.resolve,result.reject);
       return promise;
     },
-    ensureSetting(key) {
+    ensureSetting(key, refresh = false) {
       const state=get();
       if(!state.projectId||state.epoch===null) return Promise.reject(new Error("project_session_required"));
       if(!deps.service.getProjectSetting) return Promise.reject(new Error("project_setting_reader_unavailable"));
       const cached=state.settings[key];
-      if(cached?.status==="ready") return Promise.resolve(cached.record??null);
+      if(!refresh && cached?.status==="ready") return Promise.resolve(cached.record??null);
       const existing=settingRequests.get(key);if(existing) return existing;
       const owner=session;const epoch=state.epoch;const version=settingVersions.get(key)??0;
       const current=()=>owner===session&&version===(settingVersions.get(key)??0);
       const result=completion<ProjectSettingRecord|null>();const promise=result.promise;
       settingRequests.set(key,promise);
-      set(state=>({settings:{...state.settings,[key]:{status:"loading",revision:knownSettings.get(key)??null}}}));
+      if(cached?.status!=="ready") set(state=>({settings:{...state.settings,[key]:{status:"loading",revision:knownSettings.get(key)??null}}}));
       void(async()=>{
         try {
           const record=await deps.service.getProjectSetting!(epoch,key);
@@ -138,7 +138,7 @@ export function createProjectCatalogStore(deps:CatalogDependencies={service:proj
           set(state=>({settings:{...state.settings,[key]:{status:"ready",revision:record?.revision??null,record:value}}}));
           return value;
         } catch(error) {
-          if(current()) set(state=>({settings:{...state.settings,[key]:{status:"error",revision:knownSettings.get(key)??null,error:message(error)}}}));
+          if(current() && cached?.status!=="ready") set(state=>({settings:{...state.settings,[key]:{status:"error",revision:knownSettings.get(key)??null,error:message(error)}}}));
           throw error;
         } finally {if(settingRequests.get(key)===promise) settingRequests.delete(key);}
       })().then(result.resolve,result.reject);

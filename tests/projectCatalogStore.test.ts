@@ -104,4 +104,40 @@ for(const change of ["delete","switch"] as const) {
   store.getState().reset(8);waiting[2].resolve({key:"filter:source",revision:1,value:[]});await rejected;
   assert.deepEqual(projected,["lineage","lineage"],"a previous project's settings must never hydrate the current stores");
 }
+{
+  const requests: Array<ReturnType<typeof deferred<ProjectSettingRecord | null>>> = [];
+  const store = createProjectCatalogStore({
+    service: {
+      getProjectDocument: async () => { throw new Error("unexpected body fetch"); },
+      listProjectCatalog: async () => { throw new Error("unexpected page fetch"); },
+      getProjectSetting: () => {
+        const request = deferred<ProjectSettingRecord | null>();
+        requests.push(request);
+        return request.promise;
+      },
+    },
+  });
+  store.getState().installOpenSummary(opened([]));
+  const initial = store.getState().ensureSetting("lineage");
+  const original = { key: "lineage", revision: 1, value: { nodes: ["original"] } };
+  requests[0].resolve(original);
+  await initial;
+
+  const failedRefresh = store.getState().ensureSetting("lineage", true);
+  const duplicate = store.getState().ensureSetting("lineage", true);
+  assert.equal(failedRefresh, duplicate);
+  assert.equal(requests.length, 2);
+  assert.equal(store.getState().settings.lineage.status, "ready");
+  const rejection = assert.rejects(failedRefresh, /read failed/);
+  requests[1].reject(new Error("read failed"));
+  await rejection;
+  assert.deepEqual(await store.getState().ensureSetting("lineage"), original);
+
+  const successfulRefresh = store.getState().ensureSetting("lineage", true);
+  const updated = { key: "lineage", revision: 2, value: { nodes: ["updated"] } };
+  requests[2].resolve(updated);
+  assert.deepEqual(await successfulRefresh, updated);
+  assert.deepEqual(await store.getState().ensureSetting("lineage"), updated);
+}
+
 console.log("project catalog store: metadata-only open, bounded selection, stale fences and paging restart passed");
