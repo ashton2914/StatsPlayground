@@ -436,6 +436,8 @@
     "revisionRuns": "版本 {{revision}} · {{count}} 次執行",
     "definition": "工作流程定義",
     "lineage": "譜系",
+    "refreshLineage": "重新整理專案譜系",
+    "refreshLineageFailed": "無法重新整理專案譜系，請再試一次。",
     "graphSummary": "{{nodes}} 個節點 · {{edges}} 條連線",
     "inputs": "工作流程輸入",
     "chooseTable": "選擇輸入資料表",

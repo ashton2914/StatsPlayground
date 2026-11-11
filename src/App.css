@@ -2441,6 +2441,13 @@
   gap: 20px;
 }
 
+.workflow-refresh-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
 .sp-ctx-shortcut {
   font-size: 11px;
   color: var(--fg-ctx-shortcut);

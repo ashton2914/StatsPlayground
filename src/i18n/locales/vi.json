@@ -374,6 +374,8 @@
     "revisionRuns": "Bản {{revision}} · {{count}} lần chạy",
     "definition": "Định nghĩa quy trình",
     "lineage": "Dòng dữ liệu",
+    "refreshLineage": "Làm mới sơ đồ dự án",
+    "refreshLineageFailed": "Không thể làm mới sơ đồ dự án. Hãy thử lại.",
     "graphSummary": "{{nodes}} nút · {{edges}} kết nối",
     "inputs": "Đầu vào quy trình",
     "chooseTable": "Chọn bảng đầu vào",

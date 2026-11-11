@@ -457,3 +457,27 @@ test("prompts for a name and saves the selected lineage nodes", async ({ mount }
     nodeIds: ["table-1", "operation-1"],
   });
 });
+test("refreshes project lineage from the canvas without clearing its selection", async ({ mount }) => {
+  let refreshes = 0;
+  const component = await mount(
+    <WorkflowView
+      lineageGraph={directedLineageGraph}
+      datasets={[dataset]}
+      onRefreshLineage={async () => { refreshes += 1; }}
+    />,
+  );
+  const nodes = component.locator(".workflow-node");
+  await nodes.first().click();
+  await component.locator(".workflow-canvas").click({ button: "right" });
+  const menuButton = component.locator(".sp-ctx-menu").getByRole("button", { name: "Refresh lineage" });
+  await expect(menuButton).toBeFocused();
+  await menuButton.press("Escape");
+  await expect(nodes.first()).toHaveClass(/selected/);
+  await expect(menuButton).toHaveCount(0);
+  await component.locator(".workflow-canvas").click({ button: "right" });
+  await menuButton.click();
+  await expect.poll(() => refreshes).toBe(1);
+  await expect(nodes).toHaveCount(3);
+  await expect(nodes.first()).toHaveClass(/selected/);
+  await expect(component.getByText("3 nodes · 2 connections")).toBeVisible();
+});

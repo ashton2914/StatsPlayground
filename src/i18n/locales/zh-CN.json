@@ -480,6 +480,8 @@
     "revisionRuns": "版本 {{revision}} · {{count}} 次运行",
     "definition": "工作流定义",
     "lineage": "谱系",
+    "refreshLineage": "刷新项目谱系",
+    "refreshLineageFailed": "无法刷新项目谱系，请重试。",
     "graphSummary": "{{nodes}} 个节点 · {{edges}} 条连接",
     "inputs": "工作流输入",
     "chooseTable": "选择输入表",

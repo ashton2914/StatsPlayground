@@ -1,10 +1,19 @@
 import React from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import ReactDOM from "react-dom/client";
 import "@fortawesome/fontawesome-free/css/all.min.css";
 import App from "./App";
 import "./index.css";
 import "./i18n";
 import "./stores/useThemeStore";
+
+if (isTauri()) {
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "F5" || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r")) {
+      event.preventDefault();
+    }
+  });
+}
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 

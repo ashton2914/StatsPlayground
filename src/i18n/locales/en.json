@@ -484,6 +484,8 @@
     "revisionRuns": "Revision {{revision}} · {{count}} runs",
     "definition": "Workflow definition",
     "lineage": "Lineage",
+    "refreshLineage": "Refresh lineage",
+    "refreshLineageFailed": "Could not refresh project lineage. Try again.",
     "graphSummary": "{{nodes}} nodes · {{edges}} connections",
     "inputs": "Workflow inputs",
     "chooseTable": "Choose input table",
