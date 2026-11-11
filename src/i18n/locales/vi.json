@@ -1320,6 +1320,7 @@
     "dimensions": "{{rows}} hàng × {{cols}} cột"
   },
   "graph": {
+    "errors": {"numericColumnRequired": "Cột “{{column}}” phải có kiểu số cho biểu đồ này. Hãy làm sạch ký hiệu tiền tệ, dấu phân cách hàng nghìn hoặc văn bản khác, rồi đổi kiểu cột thành số trong Thuộc tính cột.", "queryFailed": "Không thể tải biểu đồ. Hãy kiểm tra các cột và bộ lọc đã chọn, rồi thử lại."},
     "type": {
       "points": "Điểm",
       "line": "Đường",

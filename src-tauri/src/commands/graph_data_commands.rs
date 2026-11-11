@@ -15,7 +15,7 @@ pub fn stream_graph_data(
     on_chunk: Channel<InvokeResponseBody>,
 ) -> Result<GraphDataCompletion, AppError> {
     let service = GraphDataService::new(&state);
-    service.stream(&request, &on_chunk)
+    service.stream(&request, &on_chunk).map_err(AppError::into_graph_error)
 }
 
 #[tauri::command]

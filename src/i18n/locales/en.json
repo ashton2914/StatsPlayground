@@ -1581,6 +1581,7 @@
     "dimensions": "{{rows}} rows × {{cols}} cols"
   },
   "graph": {
+    "errors": {"numericColumnRequired": "Column “{{column}}” must have a numeric type for this graph. Clean currency symbols, thousands separators, or other text, then change the column type to a number in Column Properties.", "queryFailed": "The graph could not be loaded. Check the selected columns and filters, then try again."},
     "type": {
       "points": "Scatter",
       "line": "Line",

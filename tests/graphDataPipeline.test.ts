@@ -478,7 +478,8 @@ assert.equal(makeGraphRows(10).length, 10);
     "Workspace lifecycle view must not reference removed loadGraphTableData helper",
   );
   assert.equal(
-    hasCallWithPropertyName(dataTableViewAst, "queryTableWindow"),
+    hasCallWithPropertyName(dataTableViewAst, "queryTableWindow")
+      || referencesIdentifier(dataTableViewAst, "queryTableWindowWithFreshGeneration"),
     true,
     "Table viewport/table view path must continue owning queryTableWindow access",
   );

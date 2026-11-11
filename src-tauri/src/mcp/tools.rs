@@ -2434,7 +2434,7 @@ fn command_error_from_app_error(error: AppError) -> McpCommandError {
             retryable: false,
             details: None,
         },
-        AppError::Database(_) | AppError::FileIO(_) | AppError::Stats(_) => McpCommandError {
+        AppError::GraphData(_) | AppError::Database(_) | AppError::FileIO(_) | AppError::Stats(_) => McpCommandError {
             code: "execution_failed".to_string(),
             message: "Application command failed".to_string(),
             retryable: false,

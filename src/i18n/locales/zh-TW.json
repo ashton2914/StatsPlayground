@@ -1376,6 +1376,7 @@
     "dimensions": "{{rows}} 列 × {{cols}} 欄"
   },
   "graph": {
+    "errors": {"numericColumnRequired": "此圖表要求「{{column}}」欄為數值類型。請先清理貨幣符號、千位分隔符號或其他文字，再於「欄屬性」中將欄類型改為數值。", "queryFailed": "無法載入圖表。請檢查所選欄和篩選條件，然後重試。"},
     "type": {
       "points": "散佈",
       "line": "折線",
