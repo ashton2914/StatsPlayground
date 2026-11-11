@@ -253,7 +253,19 @@ impl<'a> ProjectCatalog<'a> {
         for write in &patch.settings {
             let allowed = ["lineage", "logicalFolders", "snapshots"].contains(&write.key.as_str())
                 || ["filter:", "display:", "workflowBinding:", "workflowRun:", "transformBinding:"].iter().any(|prefix| write.key.starts_with(prefix) && write.key.len() > prefix.len());
-            if !allowed { return Err(invalid("project_setting_unknown")); }
+            if let Some(id) = write.key.strip_prefix("operationHistory:") {
+                if uuid::Uuid::parse_str(id).is_err()
+                    || write.expected_revision.is_some()
+                    || !write.value.get("description").and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty() && value.chars().count() <= 512)
+                    || !write.value.get("timestamp").and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty() && value.len() <= 64)
+                {
+                    return Err(invalid("project_operation_history_invalid"));
+                }
+            } else if !allowed {
+                return Err(invalid("project_setting_unknown"));
+            }
             let old: Option<u64> = conn.query_row("SELECT revision FROM _project_settings WHERE key=?", [&write.key], |r| r.get(0)).optional()?;
             if old != write.expected_revision { return Err(invalid("project_setting_revision_stale")); }
             if !write.value.is_null() {
@@ -305,32 +317,43 @@ impl<'a> ProjectCatalog<'a> {
     pub fn list_history(&self, request: &HistoryPageRequest) -> Result<ProjectHistoryPage, AppError> {
         if !(1..=1000).contains(&request.limit) { return Err(invalid("project_page_limit_invalid")); }
         let revision = project_schema::read_header(self.engine.conn(), false)?.committed_revision;
-        let after = if let Some(cursor) = &request.after {
-            let (expected, dataset, id): (u64, Option<String>, String) = decode(cursor)?;
+        let (after_timestamp, after_id) = if let Some(cursor) = &request.after {
+            let (expected, dataset, timestamp, id): (u64, Option<String>, String, String) = decode(cursor)?;
             if expected != revision || dataset != request.dataset_id { return Err(invalid("project_history_cursor_stale")); }
-            id
-        } else { String::new() };
+            (Some(timestamp), id)
+        } else { (None, String::new()) };
         let public_history = super::project_history_group::public_timeline(self.engine)?;
         let lifecycle_history=super::project_table_lifecycle::history_source(self.engine)?;
         let output_history=super::project_table_lifecycle::output_history_source(self.engine)?;
         let has_imported:bool=self.engine.conn().query_row("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='_project_imported_history_summary')",[],|row|row.get(0))?;
         let imported=if has_imported {"SELECT id,dataset_id,'archived',TRUE,0::UBIGINT,NULL::VARCHAR,description,timestamp FROM _project_imported_history_summary"}else{"SELECT NULL::VARCHAR,NULL::VARCHAR,NULL::VARCHAR,TRUE,0::UBIGINT,NULL::VARCHAR,NULL::VARCHAR,NULL::VARCHAR WHERE FALSE"};
         let sql = format!(
-            "SELECT change_set_id,dataset_id,operation,applied,current_generation,dataset_name,description,timestamp FROM (
+            "WITH history AS (
                  SELECT change_set_id,dataset_id,operation,applied,current_generation,NULL::VARCHAR AS dataset_name,NULL::VARCHAR AS description,NULL::VARCHAR AS timestamp FROM ({public_history}) visible
                  UNION ALL SELECT id,dataset_id,operation,TRUE,generation,NULL::VARCHAR,NULL::VARCHAR,NULL::VARCHAR FROM ({output_history}) outputs
                  UNION ALL SELECT id,dataset_id,operation,applied,generation,dataset_name,NULL::VARCHAR,NULL::VARCHAR FROM ({lifecycle_history}) lifecycle
                  UNION ALL {imported}
-             ) history
-             WHERE (CAST(? AS VARCHAR) IS NULL OR dataset_id=?) AND change_set_id > ? ORDER BY change_set_id LIMIT ?");
+                 UNION ALL SELECT key,''::VARCHAR,'archived',TRUE,0::UBIGINT,NULL::VARCHAR,
+                     json_extract_string(value_json,'$.description'),json_extract_string(value_json,'$.timestamp')
+                     FROM _project_settings WHERE starts_with(key,'operationHistory:')
+             ), ordered AS (
+                 SELECT *, CASE WHEN starts_with(change_set_id,'operationHistory:') THEN timestamp ELSE '' END AS sort_timestamp
+                 FROM history
+             )
+             SELECT change_set_id,dataset_id,operation,applied,current_generation,dataset_name,description,timestamp,sort_timestamp FROM ordered
+             WHERE (CAST(? AS VARCHAR) IS NULL OR dataset_id=?)
+                 AND (CAST(? AS VARCHAR) IS NULL OR sort_timestamp < ? OR (sort_timestamp = ? AND change_set_id > ?))
+             ORDER BY sort_timestamp DESC, change_set_id LIMIT ?");
         let mut statement = self.engine.conn().prepare(&sql)?;
-        let mut items = statement.query_map(params![&request.dataset_id, &request.dataset_id, after, (request.limit + 1) as i64], |r| Ok(ProjectHistorySummary {
+        let mut rows = statement.query_map(params![&request.dataset_id, &request.dataset_id, &after_timestamp, &after_timestamp, &after_timestamp, after_id, (request.limit + 1) as i64], |r| Ok((ProjectHistorySummary {
             id: r.get(0)?, dataset_id: r.get(1)?, operation: r.get(2)?, applied: r.get(3)?, generation: r.get(4)?, dataset_name:r.get(5)?,description:r.get(6)?,timestamp:r.get(7)?,
-        }))?.collect::<Result<Vec<_>, _>>()?;
-        let more = items.len() > request.limit;
-        items.truncate(request.limit);
-        let next_cursor = if more { items.last().map(|last| encode(&(revision, &request.dataset_id, &last.id))).transpose()? } else { None };
-        Ok(ProjectHistoryPage { items, next_cursor, committed_revision: revision })
+        }, r.get::<_, String>(8)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let more = rows.len() > request.limit;
+        rows.truncate(request.limit);
+        let next_cursor = if more {
+            rows.last().map(|(last, timestamp)| encode(&(revision, &request.dataset_id, timestamp, &last.id))).transpose()?
+        } else { None };
+        Ok(ProjectHistoryPage { items: rows.into_iter().map(|(item, _)| item).collect(), next_cursor, committed_revision: revision })
     }
 }
 
@@ -380,6 +403,52 @@ mod tests {
             document_revisions: vec![], dataset_generations: vec![] };
         db.commit(&context, patch, |engine| ProjectCatalog::new(engine).apply_patch(patch))?;
         Ok(())
+    }
+
+    #[test]
+    fn project_v5_catalog_operation_history_survives_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("operation-history.spprj");
+        let db = ProjectDatabase::create(&path, false).unwrap();
+        let key = format!("operationHistory:{}", uuid::Uuid::new_v4());
+        let timestamp = "2026-11-11T00:00:00.000Z";
+        let patch = ProjectRecordPatch {
+            settings: vec![crate::models::project_persistence::ProjectSettingWrite {
+                key: key.clone(),
+                expected_revision: None,
+                value: json!({"description":"New analysis Example","timestamp":timestamp}),
+            }],
+            ..Default::default()
+        };
+        commit(&db, "operation-history", &patch).unwrap();
+        assert!(commit(&db, "duplicate", &patch).is_err());
+        let mut earlier = patch.clone();
+        earlier.settings[0].key = format!("operationHistory:{}", uuid::Uuid::new_v4());
+        earlier.settings[0].value = json!({"description":"Earlier action","timestamp":"2026-11-10T00:00:00.000Z"});
+        commit(&db, "earlier-operation", &earlier).unwrap();
+        db.shutdown().unwrap();
+
+        let db = ProjectDatabase::open(&path, true).unwrap();
+        db.with_reader(db.epoch(), |engine| {
+            let page = ProjectCatalog::new(engine).list_history(&HistoryPageRequest {
+                dataset_id: None, after: None, limit: 1,
+            })?;
+            assert_eq!(page.items.len(), 1);
+            let entry = &page.items[0];
+            assert_eq!(entry.id, key);
+            assert_eq!(entry.operation, "archived");
+            assert_eq!(entry.description.as_deref(), Some("New analysis Example"));
+            assert_eq!(entry.timestamp.as_deref(), Some(timestamp));
+            assert!(page.next_cursor.is_some());
+            let second = ProjectCatalog::new(engine).list_history(&HistoryPageRequest {
+                dataset_id: None, after: page.next_cursor, limit: 1,
+            })?;
+            assert_eq!(second.items.len(), 1);
+            assert_eq!(second.items[0].description.as_deref(), Some("Earlier action"));
+            assert!(second.next_cursor.is_none());
+            Ok(())
+        }).unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]

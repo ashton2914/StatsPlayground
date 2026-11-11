@@ -75,3 +75,10 @@ export function prepareArchivedHistory(history: HistoryEntry[]): HistoryEntry[] 
       : entry
   );
 }
+
+/** Table change sets are saved by the native archive. Keep only display data here. */
+export function projectOperationHistory(history: HistoryEntry[]): HistoryEntry[] {
+  return history
+    .filter(entry => !entry.action && entry.description !== "__init__")
+    .map(({ id, timestamp, description }) => ({ id, timestamp, description, replayable: false }));
+}

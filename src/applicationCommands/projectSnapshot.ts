@@ -1,3 +1,4 @@
+import { projectOperationHistory } from "@/utils/historyTimeline";
 import { buildAnalysisProjectPayload } from "@/components/analysis/analysisWorkspaceLifecycle";
 import type { SaveProjectRequest } from "@/services/projectService";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
@@ -11,7 +12,7 @@ import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 
 export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
-  const { snapshots } = useHistoryStore.getState();
+  const { history, snapshots } = useHistoryStore.getState();
   const graphBuilders = useGraphBuilderStore.getState().items;
   const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
   const tabulates = useTabulateStore.getState().items;
@@ -38,7 +39,7 @@ export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
 
   return {
     ...(filePath ? { filePath } : {}),
-    history: [],
+    history: projectOperationHistory(history),
     snapshots,
     datasetFilters,
     graphBuilders,

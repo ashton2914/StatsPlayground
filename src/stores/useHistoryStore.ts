@@ -1,3 +1,4 @@
+import { emitProjectRecordMutation } from "@/projectPersistence/recordMutations";
 import {useProjectDataSnapshotStore} from "@/stores/useProjectDataSnapshotStore";
 import type { ProjectHistorySummary } from "../types/projectPersistence";
 import { create } from "zustand";
@@ -192,6 +193,16 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   record: (description: string, afterState?: unknown) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const owner = useProjectStore.getState().persistence;
+    if (owner) {
+      if (!get().pendingAction && description !== "__init__" && description.trim()) {
+        emitProjectRecordMutation({ kind: "settings", settings: [{
+          key: `operationHistory:${crypto.randomUUID()}`,
+          value: { description: Array.from(description.trim()).slice(0, 512).join(""), timestamp: nowISO() },
+        }] });
+      }
+      return;
+    }
     const entry: HistoryEntry = {
       id: nextId(),
       timestamp: nowISO(),

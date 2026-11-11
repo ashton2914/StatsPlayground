@@ -1,3 +1,4 @@
+import { projectOperationHistory } from "@/utils/historyTimeline";
 import {readNativeProjectDirectory,hydrateNativeProjectDocument,type NativeProjectDirectory} from "@/projectPersistence/catalogAccess";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import { buildAnalysisProjectPayload } from "@/components/analysis/analysisWorkspaceLifecycle";
@@ -154,7 +155,7 @@ export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
 
   return {
     filePath,
-    history: [],
+    history: projectOperationHistory(historyStore.history),
     snapshots: historyStore.snapshots,
     datasetFilters: useDatasetFilterStore.getState().toProjectPayload(),
     graphBuilders: useGraphBuilderStore.getState().items,
