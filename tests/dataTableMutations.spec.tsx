@@ -24,6 +24,7 @@ async function expectCommittedAppend(component: any) {
       kind: "changeSet",
       datasetId: "logical-scroll-dataset",
       changeSetId: "add-rows-2",
+      generation: 2,
     }),
   );
   await expect(component.getByTestId("project-dirty")).toHaveText("true");
@@ -65,6 +66,7 @@ test("applies append result metadata and reloads only the current window", async
       kind: "changeSet",
       datasetId: "logical-scroll-dataset",
       changeSetId: "add-rows-2",
+      generation: 2,
     }),
   );
 
@@ -181,6 +183,7 @@ test("delete row applies the returned generation and exact row count locally", a
       kind: "changeSet",
       datasetId: "logical-scroll-dataset",
       changeSetId: "delete-rows-2",
+      generation: 2,
     }),
   );
 });

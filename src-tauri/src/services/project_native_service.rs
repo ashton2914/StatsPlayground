@@ -1860,12 +1860,32 @@ mod tests {
             .unwrap(),
             17
         );
-        next.operation_id = "redo-clear".into();
-        next.expected_revision = undone.committed_revision;
-        next.dataset_generations[0].generation = undone.changed_dataset_generations[0].generation;
-        service
-            .apply_change_set(&next, &table.id, &clear_history, false)
-            .unwrap();
+        let cell_history = committed.changed_history_entries[0].id.clone();
+        let mut revision = undone.committed_revision;
+        let mut generation = undone.changed_dataset_generations[0].generation;
+        for (operation_id, history_id, undo, expected_value) in [
+            ("undo-edit", &cell_history, true, Some(1)),
+            ("redo-edit", &cell_history, false, Some(17)),
+            ("redo-clear", &clear_history, false, None),
+        ] {
+            let frontier = service.history_frontier(summary.epoch, None, undo).unwrap();
+            let entry = frontier.entry.unwrap();
+            assert_eq!((&entry.id, entry.generation), (history_id, generation));
+            next.operation_id = operation_id.into();
+            next.expected_revision = revision;
+            next.dataset_generations[0].generation = generation;
+            let receipt = service.apply_change_set(&next, &table.id, history_id, undo).unwrap();
+            revision = receipt.committed_revision;
+            generation = receipt.changed_dataset_generations[0].generation;
+            let value = live.with_reader(summary.epoch, |engine| {
+                Ok(engine.conn().query_row(
+                    &format!("SELECT value FROM {quoted} WHERE _row_id=?"),
+                    [row_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )?)
+            }).unwrap();
+            assert_eq!(value, expected_value);
+        }
         assert_eq!(full_anchor_rebuild_counter(), 0);
         assert_eq!(
             table_mutation_coordinator::full_before_table_copy_counter(),

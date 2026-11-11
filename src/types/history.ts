@@ -39,7 +39,7 @@ export type TableHistoryAction =
   | { kind: "addedRows"; datasetId: string; generation: number; rowIds: number[] }
   | { kind: "reorderColumns"; datasetId: string; generation: number; from: number; to: number }
   | { kind: "tableLifecycle"; datasetId: string; eventId: string }
-  | { kind: "changeSet"; datasetId: string; changeSetId: string };
+  | { kind: "changeSet"; datasetId: string; changeSetId: string; generation?: number };
 
 export interface PendingHistoryAction {
   entryId: string;

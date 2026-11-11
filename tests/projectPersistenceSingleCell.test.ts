@@ -9,6 +9,10 @@ let revision=1;let generation=3;let native=true;let generationReads=0;const writ
 mockIPC((command,args:any)=>{
  if(command==="get_dataset_generation") {generationReads++;return generation;}
  if(command==="update_cell") {assert.ok(!native,"native inline cell edits must use the receipt-protected batch writer");writes.push({command,args});return;}
+ if(!native) {
+  assert.equal(command,"update_cells");assert.equal(args.expectedGeneration,generation);
+  assert.equal(args.context,undefined);writes.push(structuredClone({command,args}));return ++generation;
+ }
  assert.equal(command,"update_cells");if(args.expectedGeneration!==undefined)assert.equal(args.expectedGeneration,generation);assert.deepEqual(args.context.datasetGenerations,[{id:"table",generation}]);assert.equal(args.updates.length,1);writes.push(structuredClone({command,args}));
  return {operationId:args.context.operationId,epoch:7,committedRevision:++revision,value:++generation,changedDatasetGenerations:[{id:"table",generation}],changedDocumentRevisions:[]};
 });
@@ -21,5 +25,8 @@ try {
  await dataService.updateCell("table",1,"value","8");assert.equal(generationReads,1,"callers without a visible generation retain a metadata-only compatibility lookup");
  await queue.close();native=false;useProjectStore.getState().installPersistence(null);
  await dataService.updateCell("table",1,"value","9");assert.equal(writes[3].command,"update_cell");assert.deepEqual(writes[3].args,{datasetId:"table",rowId:1,columnName:"value",value:"9"});
+ const previousGeneration=generation;
+ assert.equal(await dataService.updateCell("table",1,"value","",previousGeneration),previousGeneration+1);
+ assert.deepEqual(writes[4].args.updates,[{rowId:1,columnName:"value",value:null}]);
  console.log("single cell persistence: native one-cell receipt, visible generation CAS, empty values and legacy compatibility passed");
 } finally {useProjectStore.getState().installPersistence(null);clearMocks();delete (globalThis as any).window;}

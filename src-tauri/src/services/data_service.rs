@@ -1274,7 +1274,8 @@ impl<'a> DataService<'a> {
         &self,
         dataset_id: &str,
         cells: &[crate::models::table::CellPosition],
-    ) -> Result<(), AppError> {
+        expected_generation: Option<u64>,
+    ) -> Result<Option<u64>, AppError> {
         let db = self
             .state
             .db
@@ -1285,7 +1286,11 @@ impl<'a> DataService<'a> {
             dataset_id,
             cells.iter().map(|cell| cell.column_name.as_str()),
         )?;
-        db.clear_cells(dataset_id, cells)
+        if expected_generation.is_some() {
+            db.clear_cells_if_generation(dataset_id, cells, expected_generation).map(Some)
+        } else {
+            db.clear_cells(dataset_id, cells).map(|_| None)
+        }
     }
 
     pub fn update_cells(
@@ -1705,6 +1710,21 @@ impl<'a> DataService<'a> {
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
         db.apply_change_set(change_set_id, undo)
+    }
+
+    pub fn apply_change_set_if_generation(
+        &self,
+        change_set_id: &str,
+        dataset_id: &str,
+        undo: bool,
+        expected_generation: u64,
+    ) -> Result<u64, AppError> {
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        db.apply_legacy_change_set_if_generation(change_set_id, dataset_id, undo, expected_generation)
     }
 
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
