@@ -432,22 +432,30 @@ pub fn update_cell(
     service.update_cell(&dataset_id, row_id, &column_name, &value)
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum GenerationMutationResult {
+    Legacy(Option<u64>),
+    Committed(Box<crate::models::project_persistence::ProjectCommit<()>>),
+}
+
 #[tauri::command(async)]
 pub fn clear_cells(
     app:tauri::AppHandle,
     state: State<'_, AppState>,
     dataset_id: String,
     cells: Vec<CellPosition>,
+    expected_generation: Option<u64>,
     context:Option<ProjectWriteContext>,
-) -> Result<ProjectMutationResult<()>, AppError> {
+) -> Result<GenerationMutationResult, AppError> {
     if let Some(context) = context {
         let commit = crate::services::project_native_service::NativeProjectService::new(&state).clear_cells(&context,&dataset_id,&cells)?;
         if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
-        return Ok(ProjectMutationResult::Committed(commit));
+        return Ok(GenerationMutationResult::Committed(Box::new(commit)));
     }
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
-    service.clear_cells(&dataset_id, &cells).map(ProjectMutationResult::Legacy)
+    service.clear_cells(&dataset_id, &cells, expected_generation).map(GenerationMutationResult::Legacy)
 }
 
 #[tauri::command(async)]
@@ -809,16 +817,26 @@ pub fn apply_table_change_set(
     change_set_id: String,
     undo: bool,
     dataset_id:Option<String>,
+    expected_generation: Option<u64>,
     context:Option<ProjectWriteContext>,
-) -> Result<ProjectMutationResult<()>, AppError> {
+) -> Result<GenerationMutationResult, AppError> {
     if let Some(context) = context {
         let dataset_id=dataset_id.ok_or_else(||AppError::InvalidParam("project_history_dataset_required".into()))?;
         let commit = crate::services::project_native_service::NativeProjectService::new(&state).apply_change_set(&context,&dataset_id,&change_set_id,undo)?;
         if app.emit("project-committed",&commit).is_err() { eprintln!("project_commit_event_delivery_failed"); }
-        return Ok(ProjectMutationResult::Committed(commit));
+        return Ok(GenerationMutationResult::Committed(Box::new(commit)));
     }
     let _permit = acquire_mutation_permit(state.inner())?;
-    DataService::new(&state).apply_change_set(&change_set_id, undo).map(ProjectMutationResult::Legacy)
+    let service = DataService::new(&state);
+    let generation = if let Some(expected_generation) = expected_generation {
+        let dataset_id = dataset_id
+            .ok_or_else(|| AppError::InvalidParam("History dataset is required".into()))?;
+        Some(service.apply_change_set_if_generation(&change_set_id, &dataset_id, undo, expected_generation)?)
+    } else {
+        service.apply_change_set(&change_set_id, undo)?;
+        None
+    };
+    Ok(GenerationMutationResult::Legacy(generation))
 }
 
 #[tauri::command]

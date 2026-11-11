@@ -304,7 +304,7 @@ fn notify_open_perf_observer(_metrics: OpenPerfMetrics) {}
 
 fn reconcile_archived_history(
     history: Vec<serde_json::Value>,
-    retained_change_set_ids: &std::collections::HashSet<String>,
+    retained_change_sets: &std::collections::HashMap<String, (String, u64)>,
 ) -> Vec<serde_json::Value> {
     history
         .into_iter()
@@ -317,7 +317,12 @@ fn reconcile_archived_history(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
             if let Some(change_set_id) = change_set_id {
-                if !retained_change_set_ids.contains(&change_set_id) {
+                if let Some((dataset_id, generation)) = retained_change_sets.get(&change_set_id) {
+                    if let Some(action) = entry.get_mut("action").and_then(serde_json::Value::as_object_mut) {
+                        action.insert("datasetId".into(), serde_json::Value::String(dataset_id.clone()));
+                        action.insert("generation".into(), serde_json::Value::from(*generation));
+                    }
+                } else {
                     if let Some(object) = entry.as_object_mut() {
                         object.remove("action");
                         object.insert("replayable".into(), serde_json::Value::Bool(false));
@@ -937,17 +942,17 @@ impl<'a> ProjectService<'a> {
             })
             .collect();
 
-        let retained_change_set_ids = {
+        let retained_change_sets = {
             let db = staged_state
                 .db
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
             db.conn()
-                .prepare("SELECT id FROM _history_change_sets")?
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<std::collections::HashSet<_>, _>>()?
+                .prepare("SELECT id, dataset_id, generation FROM _history_change_sets")?
+                .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+                .collect::<Result<std::collections::HashMap<_, _>, _>>()?
         };
-        let restored_history = reconcile_archived_history(bundle.history, &retained_change_set_ids);
+        let restored_history = reconcile_archived_history(bundle.history, &retained_change_sets);
         let history_current_idx = archived_history_current_idx(
             &restored_history,
             bundle
@@ -3656,7 +3661,7 @@ mod tests {
         let history = vec![
             serde_json::json!({
                 "id": "retained",
-                "action": {"kind": "changeSet", "changeSetId": retained_id}
+                "action": {"kind": "changeSet", "changeSetId": retained_id, "generation": 900}
             }),
             serde_json::json!({
                 "id": "missing",
@@ -3665,12 +3670,14 @@ mod tests {
         ];
         let reconciled = reconcile_archived_history(
             history,
-            &std::collections::HashSet::from([retained_id.to_string()]),
+            &std::collections::HashMap::from([(retained_id.to_string(), ("retained-dataset".into(), 7))]),
         );
         assert_eq!(
             reconciled[0].pointer("/action/changeSetId"),
             Some(&serde_json::Value::String(retained_id.into()))
         );
+        assert_eq!(reconciled[0]["action"]["datasetId"], "retained-dataset");
+        assert_eq!(reconciled[0]["action"]["generation"], 7);
         assert!(reconciled[1].get("action").is_none());
         assert_eq!(reconciled[1]["replayable"], serde_json::json!(false));
         assert_eq!(

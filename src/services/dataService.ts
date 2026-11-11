@@ -201,13 +201,23 @@ export const dataService = {
 
   /** 更新单元格 */
   updateCell: (datasetId: string, rowId: number, columnName: string, value: string, expectedGeneration?: number) => {
-    if(!useProjectStore.getState().persistence)return invoke<void>("update_cell", { datasetId, rowId, columnName, value });
-    return invokeProjectTableMutation<number>("update_cells",{datasetId,updates:[{rowId,columnName,value:value===""?null:value}],expectedGeneration},datasetId,expectedGeneration).then(()=>undefined);
+    const native = useProjectStore.getState().persistence !== null;
+    if (!native && expectedGeneration === undefined) {
+      return invoke<void>("update_cell", { datasetId, rowId, columnName, value });
+    }
+    const write = invokeProjectTableMutation<number>("update_cells", {
+      datasetId, updates: [{ rowId, columnName, value: value === "" ? null : value }], expectedGeneration,
+    }, datasetId, expectedGeneration);
+    return native ? write.then(() => undefined) : write;
   },
 
   /** 原子清空多个单元格 */
-  clearCells: (datasetId: string, cells: CellPosition[]) =>
-    invokeProjectTableMutation<void>("clear_cells", { datasetId, cells },datasetId),
+  clearCells: (datasetId: string, cells: CellPosition[], expectedGeneration?: number) => {
+    if (!useProjectStore.getState().persistence && expectedGeneration !== undefined) {
+      return invoke<number>("clear_cells", { datasetId, cells, expectedGeneration });
+    }
+    return invokeProjectTableMutation<void>("clear_cells", { datasetId, cells }, datasetId);
+  },
 
   /** 原子更新多个单元格，用于增量撤销/重做 */
   updateCells: (datasetId: string, updates: CellUpdate[], expectedGeneration: number) =>
@@ -371,8 +381,8 @@ export const dataService = {
       datasetGenerations:event.datasetGeneration===null?[]:[{id:event.datasetId,generation:event.datasetGeneration}]});
   },
 
-  applyTableChangeSet: (changeSetId: string, undo: boolean, datasetId?: string) => {
-    if (!useProjectStore.getState().persistence) return invoke<void>("apply_table_change_set", { changeSetId, undo });
+  applyTableChangeSet: (changeSetId: string, undo: boolean, datasetId?: string, expectedGeneration?: number): Promise<number | void> => {
+    if (!useProjectStore.getState().persistence) return invoke<number | void>("apply_table_change_set", { changeSetId, undo, datasetId, expectedGeneration });
     if (!datasetId) return Promise.reject(new Error("Native history replay requires its dataset"));
     return invokeProjectTableMutation<void>("apply_table_change_set", { changeSetId, undo, datasetId },datasetId);
   },

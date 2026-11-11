@@ -113,11 +113,14 @@ async function replayNativeHistoryFrontier(undo:boolean) {
 
 function updateReplayGeneration(
   entry: HistoryEntry,
-  entryId: string,
+  datasetId: string,
+  previousGeneration: number,
   generation: number,
 ): HistoryEntry {
-  if (entry.id !== entryId || !entry.action || (entry.action.kind === "changeSet" || entry.action.kind === "tableLifecycle")) return entry;
-  return { ...entry, action: { ...entry.action, generation } };
+  const action = entry.action;
+  if (!action || action.datasetId !== datasetId || !("generation" in action)
+      || action.generation !== previousGeneration) return entry;
+  return { ...entry, action: { ...action, generation } };
 }
 
 interface HistoryStore {
@@ -249,7 +252,14 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       if (state.pendingAction) return state;
       const next = recordIncrementalEntry(state, entry, MAX_HISTORY);
       dropDiscardedChangeSets(state.history, next.history);
-      return { ...next, dataRevision: state.dataRevision + 1 };
+      // A recorded mutation advances the same dataset by one generation.
+      const generation = "generation" in action ? action.generation : undefined;
+      const history = generation !== undefined
+        ? next.history.map((item) => updateReplayGeneration(
+            item, action.datasetId, generation - 1, generation,
+          ))
+        : next.history;
+      return { ...next, history, dataRevision: state.dataRevision + 1 };
     });
   },
 
@@ -279,6 +289,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     if (transition) {
       const request = transition.request;
       const requestEpoch = historyEpoch;
+      const expectedGeneration = "generation" in request.action ? request.action.generation : undefined;
       set({ ...transition.state, pendingAction: request, historyError: null, historyErrorNotification: null });
       try {
         let nextGeneration: number | null = null;
@@ -309,18 +320,21 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         } else if (request.action.kind === "tableLifecycle") {
           await dataService.applyTableLifecycle(request.action.eventId, true);
         } else {
-          await dataService.applyTableChangeSet(request.action.changeSetId, true, request.action.datasetId);
+          nextGeneration = (await dataService.applyTableChangeSet(
+            request.action.changeSetId, true, request.action.datasetId, expectedGeneration,
+          )) ?? null;
         }
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
               pendingAction: null,
               historyRevision: state.historyRevision + 1,
               dataRevision: state.dataRevision + 1,
-              history: nextGeneration == null
+              history: nextGeneration == null || expectedGeneration === undefined
                 ? state.history
                 : state.history.map((entry) => updateReplayGeneration(
                     entry,
-                    request.entryId,
+                    request.action.datasetId,
+                    expectedGeneration,
                     nextGeneration,
                   )),
             }
@@ -328,7 +342,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       } catch (error) {
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
-              currentIdx: Math.max(0, state.currentIdx - 1),
+              currentIdx,
               pendingAction: null,
               historyError: String(error),
               historyErrorNotification: createHistoryErrorNotification(error, request.action.datasetId),
@@ -353,6 +367,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     if (transition) {
       const request = transition.request;
       const requestEpoch = historyEpoch;
+      const expectedGeneration = "generation" in request.action ? request.action.generation : undefined;
       set({ ...transition.state, pendingAction: request, historyError: null, historyErrorNotification: null });
       try {
         let nextGeneration: number | null = null;
@@ -383,18 +398,21 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         } else if (request.action.kind === "tableLifecycle") {
           await dataService.applyTableLifecycle(request.action.eventId, false);
         } else {
-          await dataService.applyTableChangeSet(request.action.changeSetId, false, request.action.datasetId);
+          nextGeneration = (await dataService.applyTableChangeSet(
+            request.action.changeSetId, false, request.action.datasetId, expectedGeneration,
+          )) ?? null;
         }
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
               pendingAction: null,
               historyRevision: state.historyRevision + 1,
               dataRevision: state.dataRevision + 1,
-              history: nextGeneration == null
+              history: nextGeneration == null || expectedGeneration === undefined
                 ? state.history
                 : state.history.map((entry) => updateReplayGeneration(
                     entry,
-                    request.entryId,
+                    request.action.datasetId,
+                    expectedGeneration,
                     nextGeneration,
                   )),
             }
@@ -402,7 +420,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       } catch (error) {
         set((state) => historyEpoch === requestEpoch && state.pendingAction?.entryId === request.entryId
           ? {
-              currentIdx: Math.min(state.history.length, state.currentIdx + 1),
+              currentIdx,
               pendingAction: null,
               historyError: String(error),
               historyErrorNotification: createHistoryErrorNotification(error, request.action.datasetId),

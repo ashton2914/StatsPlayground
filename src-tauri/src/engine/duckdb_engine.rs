@@ -7191,18 +7191,31 @@ impl DuckDbEngine {
         if cells.is_empty() {
             return Ok(());
         }
+        self.clear_cells_if_generation(dataset_id, cells, None).map(|_| ())
+    }
+
+    pub(crate) fn clear_cells_if_generation(
+        &self,
+        dataset_id: &str,
+        cells: &[CellPosition],
+        expected_generation: Option<u64>,
+    ) -> Result<u64, AppError> {
+        if cells.is_empty() {
+            return self.get_dataset_generation(dataset_id);
+        }
         if !matches!(self.storage.as_ref(), DatabaseStorage::Temporary(_)) {
             let updates = cells.iter().map(|cell| CellUpdate { row_id:cell.row_id,column_name:cell.column_name.clone(),value:None }).collect::<Vec<_>>();
-            return self.update_cells(dataset_id, &updates);
+            return self.update_cells_if_generation(dataset_id, &updates, expected_generation);
         }
         let changed_column_ids = self.resolve_column_ids_by_name(
             dataset_id,
             cells.iter().map(|cell| cell.column_name.as_str()),
         )?;
-        execute_table_mutation(self, dataset_id, None, |engine| {
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
             engine.clear_cells_inner(dataset_id, cells)?;
+            let generation = engine.get_dataset_generation(dataset_id)? + 1;
             Ok(TableMutationEffects {
-                value: (),
+                value: generation,
                 changed_column_ids: changed_column_ids.clone(),
                 change_set_id: None,
                 recompute_column_ids: None,
@@ -8625,6 +8638,44 @@ impl DuckDbEngine {
     pub fn apply_change_set(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = self.apply_change_set_in_transaction(change_set_id, undo);
+        crate::services::table_delta_mutation::finish_transaction(self, result)
+    }
+
+    pub(crate) fn apply_legacy_change_set_if_generation(
+        &self,
+        change_set_id: &str,
+        dataset_id: &str,
+        undo: bool,
+        expected_generation: u64,
+    ) -> Result<u64, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| {
+            let generation = self.get_dataset_generation(dataset_id)?;
+            if generation != expected_generation {
+                return Err(AppError::InvalidParam(format!(
+                    "stale dataset generation: expected {generation}, received {expected_generation}"
+                )));
+            }
+            // Direct legacy history actions can advance the table between two
+            // change-set replays. Rebind the selected set only after checking
+            // the generation carried by the legacy history cursor.
+            let matched = self.conn.execute(
+                "UPDATE _history_change_sets SET generation = ? WHERE id = ? AND dataset_id = ?",
+                params![generation, change_set_id, dataset_id],
+            )?;
+            if matched != 1 {
+                return Err(AppError::InvalidParam("Unknown change set for dataset".into()));
+            }
+            self.conn.execute(
+                "UPDATE _history_delta_change_sets
+                 SET before_generation = CASE WHEN applied THEN before_generation ELSE ? END,
+                     after_generation = CASE WHEN applied THEN ? ELSE after_generation END
+                 WHERE id = ? AND dataset_id = ?",
+                params![generation, generation, change_set_id, dataset_id],
+            )?;
+            self.apply_change_set_in_transaction(change_set_id, undo)?;
+            self.get_dataset_generation(dataset_id)
+        })();
         crate::services::table_delta_mutation::finish_transaction(self, result)
     }
 
@@ -22062,6 +22113,44 @@ mod tests {
         assert!(matches!(result, Err(AppError::InvalidParam(_))));
         assert_eq!(db.get_dataset_generation("ragged-paste-id").unwrap(), 0);
         assert_eq!(db.get_dataset_meta("ragged-paste-id").unwrap().row_count, 0);
+    }
+
+    #[test]
+    fn legacy_change_set_replay_between_guarded_cell_edits_checks_generation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let dataset = "legacy-mixed";
+        db.seed_benchmark_table(dataset, "Legacy mixed", 3, 1).unwrap();
+        let added = crate::services::table_delta_mutation::add_rows_compact(&db, dataset, 1, None, 0)
+            .unwrap();
+        let updates = |value: Option<&str>| [CellUpdate {
+            row_id: 1,
+            column_name: "value_1".into(),
+            value: value.map(str::to_owned),
+        }];
+        let cleared = db.clear_cells_if_generation(dataset, &[CellPosition {
+            row_id: 1,
+            column_name: "value_1".into(),
+        }], Some(added.generation)).unwrap();
+        let restored = db.update_cells_if_generation(dataset, &updates(Some("7")), Some(cleared)).unwrap();
+
+        assert!(db.apply_legacy_change_set_if_generation(
+            &added.change_set_id, dataset, true, cleared,
+        ).unwrap_err().to_string().contains("stale dataset generation"));
+        assert_eq!(db.get_dataset_meta(dataset).unwrap().row_count, 4);
+        let other_dataset = "legacy-other";
+        db.seed_benchmark_table(other_dataset, "Legacy other", 1, 1).unwrap();
+        assert!(db.apply_legacy_change_set_if_generation(
+            &added.change_set_id, other_dataset, true, 0,
+        ).unwrap_err().to_string().contains("Unknown change set for dataset"));
+        let undone = db.apply_legacy_change_set_if_generation(
+            &added.change_set_id, dataset, true, restored,
+        ).unwrap();
+        assert_eq!(db.get_dataset_meta(dataset).unwrap().row_count, 3);
+        let redone = db.apply_legacy_change_set_if_generation(
+            &added.change_set_id, dataset, false, undone,
+        ).unwrap();
+        assert_eq!(db.get_dataset_meta(dataset).unwrap().row_count, 4);
+        assert_eq!(redone, restored + 2);
     }
 
     #[test]

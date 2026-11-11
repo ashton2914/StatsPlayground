@@ -2640,7 +2640,7 @@ export function DataTableView({
       request.formulaId
         ? t("history.editCalculatedColumn", { defaultValue: "Edit calculated column" })
         : t("history.createCalculatedColumn", { defaultValue: "Create calculated column" }),
-      { kind: "changeSet", datasetId, changeSetId: result.changeSetId },
+      { kind: "changeSet", datasetId, changeSetId: result.changeSetId, generation: result.datasetGeneration },
     );
     setCalculatedDialog(null);
     await load();
@@ -2669,6 +2669,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.datasetGeneration,
       });
       setColMenu(null);
       await load();
@@ -3391,6 +3392,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       await applyTableMutationResult(result);
       return true;
@@ -3455,6 +3457,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       setSelectedRows(EMPTY_NUM_SET);
       setRowMenu(null);
@@ -3488,6 +3491,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       setRowMenu(null);
       await applyTableMutationResult(result);
@@ -3567,6 +3571,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       await applyTableMutationResult(result);
       return true;
@@ -3649,6 +3654,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       await applyTableMutationResult(result);
     } catch (error) {
@@ -3720,6 +3726,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       setColMenu(null);
       await applyTableMutationResult(result);
@@ -3765,6 +3772,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
+        generation: result.generation,
       });
       setSelectedCols(EMPTY_NUM_SET);
       setColMenu(null);
@@ -3833,6 +3841,7 @@ export function DataTableView({
           kind: "changeSet",
           datasetId,
           changeSetId,
+          generation: generation + 1,
         });
       } else {
         recordAction(t("history.modifyColumnProps"));
@@ -3906,6 +3915,7 @@ export function DataTableView({
           kind: "changeSet",
           datasetId,
           changeSetId,
+          generation: generation + 1,
         });
         if (nameChanged) {
           onColumnRenamed?.(renameCol.oldName, renameValue.trim(), renameType);
@@ -4051,7 +4061,7 @@ export function DataTableView({
     try {
       setData(newData);
       dataRef.current = newData;
-      await dataService.updateCell(datasetId, rowId, colName, editValue, generationRef.current);
+      const generation = await dataService.updateCell(datasetId, rowId, colName, editValue, generationRef.current);
       if (projectEpoch !== undefined) {
         const acknowledged = useDataStore.getState().datasets.find((item) => item.id === datasetId);
         await applyTableMutationResult({ generation: acknowledged?.generation ?? generationRef.current });
@@ -4059,10 +4069,10 @@ export function DataTableView({
         markDirty();
         await load();
       }
-      recordTable(t("history.editCell"), {
+      if (typeof generation === "number") recordTable(t("history.editCell"), {
         kind: "cells",
         datasetId,
-        generation: generationRef.current,
+        generation,
         cells: [{
           rowId,
           columnName: colName,
@@ -4160,7 +4170,7 @@ export function DataTableView({
     try {
       setData(newData);
       dataRef.current = newData;
-      await dataService.updateCell(datasetId, rowId, colName, value, generationRef.current);
+      const generation = await dataService.updateCell(datasetId, rowId, colName, value, generationRef.current);
       if (projectEpoch !== undefined) {
         const acknowledged = useDataStore.getState().datasets.find((item) => item.id === datasetId);
         await applyTableMutationResult({ generation: acknowledged?.generation ?? generationRef.current });
@@ -4168,10 +4178,10 @@ export function DataTableView({
         markDirty();
         await load();
       }
-      recordTable(t("history.editCell"), {
+      if (typeof generation === "number") recordTable(t("history.editCell"), {
         kind: "cells",
         datasetId,
-        generation: generationRef.current,
+        generation,
         cells: [{
           rowId,
           columnName: colName,
@@ -4195,7 +4205,7 @@ export function DataTableView({
 
   // ---- Clear cells (Delete key) ----
   const clearCells = async (cells: { row: number; col: number }[]) => {
-    if (readOnly) return;
+    if (readOnly || cells.length === 0) return;
     if (containsCalculatedColumn(cells.map((cell) => cell.col))) {
       const firstCalculated = cells.find((cell) => getCalculatedAt(cell.col));
       if (firstCalculated) showCalculatedReadOnlyError(firstCalculated.col);
@@ -4225,16 +4235,17 @@ export function DataTableView({
     try {
       setData(newData);
       dataRef.current = newData;
-      await dataService.clearCells(
+      const generation = await dataService.clearCells(
         datasetId,
         updateInfos.map(({ rowId, colName }) => ({ rowId, columnName: colName })),
+        generationRef.current,
       );
       markDirty();
       await load();
-      recordTable(t("history.clearCells"), {
+      if (typeof generation === "number") recordTable(t("history.clearCells"), {
         kind: "cells",
         datasetId,
-        generation: generationRef.current,
+        generation,
         cells: updateInfos.map(({ rowId, colName, before }) => ({
           rowId,
           columnName: colName,
@@ -4560,6 +4571,7 @@ export function DataTableView({
         kind: "changeSet",
         datasetId,
         changeSetId,
+        generation: pasteGeneration + 1,
       });
       markDirty();
       try {
