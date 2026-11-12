@@ -135,6 +135,7 @@ export interface ProjectTopologyDiagnostic { code:string; id:string }
 export interface ProjectTopology {
   epoch:number; committedRevision:number; folders?:string[]; tables:ProjectTableNode[];
   transforms:ProjectTransformLink[]; ownedDocuments:ProjectOwnedDocument[];
+  dataLinks?: { tableId: string; name: string }[];
   diagnostics:ProjectTopologyDiagnostic[];
 }
 export type ProjectActionScope = 'component' | 'descendants';

@@ -496,6 +496,34 @@ impl<'a> NativeProjectService<'a> {
         cancelled: C,
     ) -> Result<ProjectCommit<crate::models::data_link::ImportSummary>, AppError>
     where F: Fn(usize,usize), C: Fn()->bool {
+        self.import_server_with_link(context, definition, credentials, object, target_name, None, None, on_progress, cancelled)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_server_with_link<F, C>(
+        &self,
+        context: &ProjectWriteContext,
+        definition: crate::models::data_link::ConnectionDefinition,
+        credentials: crate::models::data_link::ConnectionCredentials,
+        object: crate::models::data_link::SourceObjectRef,
+        target_name: &str,
+        link_name: Option<String>,
+        refresh: Option<crate::models::data_link::DataLinkRefresh>,
+        on_progress: F,
+        cancelled: C,
+    ) -> Result<ProjectCommit<crate::models::data_link::ImportSummary>, AppError>
+    where F: Fn(usize,usize), C: Fn()->bool {
+        use crate::models::data_link::{ConnectorKind, SavedDataLink};
+        if (link_name.is_some() || refresh.is_some()) && definition.connector != ConnectorKind::PostgreSql {
+            return Err(AppError::InvalidParam("Saved DataLinks require PostgreSQL".into()));
+        }
+        if refresh.is_some() && link_name.is_none() {
+            return Err(AppError::InvalidParam("A saved DataLink name is required".into()));
+        }
+        let link = link_name.map(|name| SavedDataLink {
+            version: 1, name: name.trim().into(), definition: definition.clone(),
+            username: credentials.username.clone(), object: object.clone(), imported_generation: 0,
+        });
         use sha2::{Digest,Sha256};
         use crate::models::data_link::{ImportSummary,ImportTableSummary};
         // Source identity excludes the password; only its hash enters the receipt digest.
@@ -503,6 +531,7 @@ impl<'a> NativeProjectService<'a> {
             .map_err(|_|AppError::InvalidParam("import_connection_identity_invalid".into()))?;
         let source_name=object.schema.as_ref().map(|schema|format!("{schema}.{}",object.name)).unwrap_or_else(||object.name.clone());
         let request=crate::services::project_output::ProjectServerImport {
+            link, refresh,
             connection_id:format!("{:x}",Sha256::digest(identity)),
             source_description:format!("{}.{source_name}",definition.database),
             object,target_name:target_name.trim().into(),folder:String::new(),
@@ -511,8 +540,8 @@ impl<'a> NativeProjectService<'a> {
         if let Some(commit)=database.preflight_commit::<ImportSummary,_>(context,&("import_server",&request))? {return Ok(commit);}
         let connector=crate::connectors::ServerConnector::new(definition,credentials)
             .map_err(|error|AppError::Database(error.message))?;
-        database.import_project_server_snapshot_with_result(context,&request,&connector,on_progress,cancelled,|(_,rows_written)|ImportSummary {
-            status:"completed".into(),imported:vec![ImportTableSummary {source_name,target_name:request.target_name.clone(),action:"create".into(),rows_written}],
+        database.import_project_server_snapshot_with_result(context,&request,&connector,on_progress,cancelled,|(meta,rows_written)|ImportSummary {
+            status:"completed".into(),imported:vec![ImportTableSummary {source_name,target_name:meta.name,action:"create".into(),rows_written}],
             skipped:vec![],failed_table:None,error:None,total_rows_written:rows_written,
         })
     }
@@ -2041,6 +2070,7 @@ mod tests {
         let definition=ConnectionDefinition {connector:ConnectorKind::PostgreSql,host:"127.0.0.1".into(),port:5432,database:"fixture".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:1};
         let object=SourceObjectRef {selection: None, catalog:None,schema:Some("public".into()),name:"values".into(),object_type:SourceObjectType::Table};
         let request=crate::services::project_output::ProjectServerImport {
+            link: None, refresh: None,
             connection_id:"e6b810e07aad82980a529dfff63318c6d42991c594ca0fef5ed7a583450efe89".into(),object:object.clone(),target_name:"Imported".into(),source_description:"fixture.public.values".into(),folder:String::new(),
         };
         let db=service.database(opened.epoch).unwrap();
@@ -3163,10 +3193,64 @@ mod live_server_fixture_tests {
             document_revisions: vec![],
             dataset_generations: vec![],
         };
-        let result = native.import_server(&context, definition, credentials, object, "Filtered data", |_, _| {}, || false).unwrap();
+        let import = |context: &ProjectWriteContext, name: &str, link: &str, refresh| {
+            native.import_server_with_link(context, definition.clone(), credentials.clone(), object.clone(),
+                name, Some(link.into()), refresh, |_, _| {}, || false)
+        };
+        let result = import(&context, "Filtered data", "Cell A DataLink", None).unwrap();
         assert_eq!(result.value.total_rows_written, 4000);
+        let id = &result.changed_dataset_generations[0].id;
+        let key = format!("datalink:{id}");
         native.close(opened.epoch).unwrap();
-        let reopened = native.open(&path, true).unwrap();
+        let reopened = native.open(&path, false).unwrap();
+        let db = native.database(reopened.epoch).unwrap();
+        let saved = native.get_setting(reopened.epoch, &key).unwrap().unwrap();
+        assert!(!saved.value.to_string().contains(&credentials.password));
+        let mut link: SavedDataLink = serde_json::from_value(saved.value).unwrap();
+        assert_eq!(link.object, object);
+        assert_eq!(native.topology(reopened.epoch).unwrap().data_links[0].name, "Cell A DataLink");
+        let context = |operation_id: &str| ProjectWriteContext {
+            operation_id: operation_id.into(),
+            expected_epoch: reopened.epoch,
+            expected_revision: db.committed_revision().unwrap(),
+            ..context.clone()
+        };
+        link.name = "Edited Cell A DataLink".into();
+        native.commit_records(&context("edit-link"), &ProjectRecordPatch {
+            settings: vec![ProjectSettingWrite { key: key.clone(), expected_revision: Some(saved.revision),
+                value: serde_json::to_value(&link).unwrap() }],
+            ..Default::default()
+        }).unwrap();
+        let (generation, before_column_ids) = db.with_engine(|engine| {
+            engine.bump_dataset_generation(id)?;
+            Ok((engine.get_dataset_generation(id)?, engine.get_archive_column_plans(id)?.into_iter()
+                .map(|column| column.column_id).collect::<Vec<_>>()))
+        }).unwrap();
+        let refresh = DataLinkRefresh {
+            table_id: id.clone(), expected_revision: saved.revision + 1,
+            expected_generation: generation, replace_modified: false,
+        };
+        let denied = import(&context("without-confirmation"), "Filtered data", &link.name, Some(refresh.clone())).unwrap_err();
+        assert!(denied.to_string().contains("local changes"));
+        let stale = import(&context("stale-confirmation"), "Filtered data", &link.name, Some(DataLinkRefresh {
+            expected_generation: generation - 1, replace_modified: true, ..refresh.clone()
+        })).unwrap_err();
+        assert!(stale.to_string().contains("changed"));
+        let copy = import(&context("keep-original"), "Filtered data copy", "Cell A copy", None).unwrap();
+        assert_ne!(copy.changed_dataset_generations[0].id, *id);
+        assert_eq!(db.with_reader(reopened.epoch, |engine| engine.get_dataset_generation(id)).unwrap(), generation);
+        let updated = import(&context("replace-confirmed"), "Filtered data", &link.name, Some(DataLinkRefresh {
+            replace_modified: true, ..refresh
+        })).unwrap();
+        assert_eq!(updated.changed_dataset_generations[0].id, *id);
+        assert_eq!(updated.changed_dataset_generations[0].generation, generation + 1);
+        assert_eq!(updated.value.total_rows_written, 4000);
+        let saved = native.get_setting(reopened.epoch, &key).unwrap().unwrap();
+        assert_eq!(saved.value["importedGeneration"], generation + 1);
+        assert_eq!(saved.value["name"], "Edited Cell A DataLink");
+        assert_eq!(db.with_reader(reopened.epoch, |engine| {
+            Ok(engine.get_archive_column_plans(id)?.into_iter().map(|column| column.column_id).collect::<Vec<_>>())
+        }).unwrap(), before_column_ids);
         native.database(reopened.epoch).unwrap().with_reader(reopened.epoch, |engine| {
             let id = &result.changed_dataset_generations[0].id;
             let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(id));

@@ -43,6 +43,26 @@ pub struct ConnectionDefinition {
     pub connect_timeout_seconds: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedDataLink {
+    pub version: u32,
+    pub name: String,
+    pub definition: ConnectionDefinition,
+    pub username: String,
+    pub object: SourceObjectRef,
+    pub imported_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataLinkRefresh {
+    pub table_id: String,
+    pub expected_revision: u64,
+    pub expected_generation: u64,
+    pub replace_modified: bool,
+}
+
 #[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionCredentials {

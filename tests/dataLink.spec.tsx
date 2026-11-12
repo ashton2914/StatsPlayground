@@ -78,3 +78,39 @@ test("localizes missing credentials and numeric validation in Chinese", async ({
   await expect(component.getByLabel("端口", { exact: true })).toHaveAccessibleDescription("请输入 1 至 65535 之间的整数。");
   await expect(component.getByRole("button", { name: "测试连接", exact: true })).toBeDisabled();
 });
+
+const saved = {
+  tableId: "table-a", tableName: "Local data", revision: 2, generation: 4, refresh: true,
+  link: {
+    version: 1, name: "Source A", importedGeneration: 3, username: "stats_reader",
+    definition: {
+      connector: "postgresql", host: "localhost", port: 55432, database: "review",
+      authenticationType: "usernamePassword", tlsMode: "disabled", connectTimeoutSeconds: 10,
+    },
+    object: { catalog: "review", schema: "public", name: "orders", objectType: "table" },
+  },
+} as const;
+
+test("modified DataLink requires a deliberate choice and cancel leaves the table alone", async ({ mount }) => {
+  const component = await mount(<DataLinkHarness saved={saved} />);
+  await expect(component.getByRole("alert")).toContainText("This table has changed");
+  await expect(component.getByRole("button", { name: "Replace current table" })).toBeDisabled();
+  await component.getByRole("button", { name: "Cancel" }).click();
+  await expect(component.getByLabel("Import request")).toBeEmpty();
+});
+
+test("reimport to a new table preserves the modified table", async ({ mount }) => {
+  const component = await mount(<DataLinkHarness saved={saved} />);
+  await component.getByLabel("Password").fill("temporary-secret");
+  await component.getByRole("button", { name: "Import into a new table" }).click();
+  await expect(component.getByLabel("Import request")).toHaveText('{"target":"Local data_2","options":{"linkName":"Local data_2"}}');
+});
+
+test("confirmed reimport carries the observed table and DataLink revisions", async ({ mount }) => {
+  const component = await mount(<DataLinkHarness saved={saved} />);
+  await component.getByLabel("Password").fill("temporary-secret");
+  await component.getByRole("button", { name: "Replace current table" }).click();
+  await expect(component.getByLabel("Import request")).toHaveText(
+    '{"target":"Local data","options":{"linkName":"Source A","refresh":{"tableId":"table-a","expectedRevision":2,"expectedGeneration":4,"replaceModified":true}}}',
+  );
+});

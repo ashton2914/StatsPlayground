@@ -7,6 +7,8 @@ import './tableDirectory.css';
 export interface TableDirectoryProps {
   model:TableDirectoryModel;folder:string;tableInfo?:Record<string,string>;selectedIds:(string|null)[];readOnly:boolean;
   labels:{expand:string;collapse:string;more:string;transform:string;normalize:string};
+  onOpenDataLink?: (tableId: string, refresh: boolean) => void;
+  dataLinkLabels?: { import: string; open: string };
   onActivate:(kind:ProjectDocumentKind,id:string)=>void;
   onContextMenu:(kind:ProjectDocumentKind,id:string,event:MouseEvent)=>void;
   onRename:(id:string,name:string)=>Promise<void>;
@@ -36,7 +38,23 @@ export function TableDirectory(props:TableDirectoryProps){
     {group.transforms.length>0&&<div className="sp-table-group-controls" draggable={!readOnly&&model.diagnostics.length===0} onDragStart={e=>props.onDragStart(e,groupDragPayload(model,group.tables[0].id)!)}>
       {group.transforms.length===1?<button type="button" title={group.transforms[0].name} aria-label={`${labels.transform}: ${group.transforms[0].name}`} onClick={()=>props.onActivate('transform',group.transforms[0].id)}><i className="fa-solid fa-shuffle"/></button>:<details><summary aria-label={labels.transform}><i className="fa-solid fa-shuffle"/></summary><div className="sp-table-transform-list">{group.transforms.map(t=><button key={t.id} onClick={()=>props.onActivate('transform',t.id)}>{t.name}</button>)}</div></details>}
     </div>}
-    <div className="sp-table-group-tables">{group.needsNormalization&&<span className="sp-directory-warning">{labels.normalize}</span>}{group.tables.slice(0,limits[group.id]??200).map(table=><div key={table.id} className="sp-directory-table">{row({...table,kind:'table'},true,table.children.length>0)}{expanded.has(table.id)&&<div className="sp-table-owned" role="group">{table.children.slice(0,limits[table.id]??100).map(child=>row(child,false))}{table.children.length>(limits[table.id]??100)&&<button onClick={()=>setLimits({...limits,[table.id]:(limits[table.id]??100)+100})}>{labels.more}</button>}</div>}</div>)}{group.tables.length>(limits[group.id]??200)&&<button onClick={()=>setLimits({...limits,[group.id]:(limits[group.id]??200)+200})}>{labels.more}</button>}</div>
+    <div className="sp-table-group-tables">{group.needsNormalization&&<span className="sp-directory-warning">{labels.normalize}</span>}{group.tables.slice(0,limits[group.id]??200).map(table=><div key={table.id} className="sp-directory-table">{table.dataLink && props.onOpenDataLink ? (
+      <div className="sp-datalink-group">
+        <div className="sp-table-group-controls">
+          <button type="button" disabled={readOnly} title={props.dataLinkLabels?.import}
+            aria-label={`${props.dataLinkLabels?.import}: ${table.dataLink.name}`}
+            onClick={() => props.onOpenDataLink?.(table.id, true)}><i className="fa-solid fa-file-import" aria-hidden="true" /></button>
+        </div>
+        <div className="sp-datalink-rows">
+          <button type="button" className="dataset-item sp-table-directory-row sp-datalink-source" title={props.dataLinkLabels?.open}
+            onClick={() => props.onOpenDataLink?.(table.id, false)}>
+            <span className="sp-directory-toggle" aria-hidden="true" />
+            <i className="ds-icon fa-solid fa-database" aria-hidden="true" /><span className="ds-name">{table.dataLink.name}</span>
+          </button>
+          {row({...table,kind:'table'},true,table.children.length>0)}
+        </div>
+      </div>
+    ) : row({...table,kind:'table'},true,table.children.length>0)}{expanded.has(table.id)&&<div className="sp-table-owned" role="group">{table.children.slice(0,limits[table.id]??100).map(child=>row(child,false))}{table.children.length>(limits[table.id]??100)&&<button onClick={()=>setLimits({...limits,[table.id]:(limits[table.id]??100)+100})}>{labels.more}</button>}</div>}</div>)}{group.tables.length>(limits[group.id]??200)&&<button onClick={()=>setLimits({...limits,[group.id]:(limits[group.id]??200)+200})}>{labels.more}</button>}</div>
   </div>;
   return <div className="sp-table-directory" role="tree">{error&&<div role="alert">{error}</div>}{groups.slice(0,groupLimit).map(renderGroup)}{groups.length>groupLimit&&<button onClick={()=>setGroupLimit(groupLimit+100)}>{labels.more}</button>}</div>;
 }

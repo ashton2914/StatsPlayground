@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 
 import i18n from "../src/i18n";
-import { PostgresDataLinkDialog } from "../src/components/dataLink/PostgresDataLinkDialog";
+import { PostgresDataLinkDialog, type OpenSavedDataLink } from "../src/components/dataLink/PostgresDataLinkDialog";
 import { dataLinkService } from "../src/services/dataLinkService";
 
-export function DataLinkHarness({ language = "en" }: { language?: string }) {
+export function DataLinkHarness({ language = "en", saved }: { language?: string; saved?: OpenSavedDataLink }) {
   const [ready, setReady] = useState(false);
   const [importedSelection, setImportedSelection] = useState("");
+  const [request, setRequest] = useState("");
+  const [closed, setClosed] = useState(false);
   const [connectionCalls, setConnectionCalls] = useState(0);
 
   useEffect(() => {
@@ -18,7 +20,8 @@ export function DataLinkHarness({ language = "en" }: { language?: string }) {
     const previousImport = dataLinkService.importServerSnapshot;
     let active = true;
 
-    dataLinkService.importServerSnapshot = async (_, __, object) => {
+    dataLinkService.importServerSnapshot = async (_, __, object, target, options) => {
+      setRequest(JSON.stringify({ target, options }));
       setImportedSelection(JSON.stringify(object.selection));
       return { status: "completed", imported: [], skipped: [], failedTable: null, error: null, totalRowsWritten: 1 };
     };
@@ -73,11 +76,13 @@ export function DataLinkHarness({ language = "en" }: { language?: string }) {
     <>
     <output aria-label="Imported selection">{importedSelection}</output>
     <output aria-label="Connection test calls">{connectionCalls}</output>
-    <PostgresDataLinkDialog
-      existingDatasetNames={[]}
-      onClose={() => {}}
+    <output aria-label="Import request">{request}</output>
+    {!closed && <PostgresDataLinkDialog
+      saved={saved}
+      existingDatasetNames={saved ? [saved.tableName] : []}
+      onClose={() => setClosed(true)}
       onImported={async () => {}}
-    />
+    />}
     </>
   );
 }

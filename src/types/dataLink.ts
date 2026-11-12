@@ -108,3 +108,20 @@ export interface ImportProgress {
   rowsDone: number;
   rowsTotal: number;
 }
+
+
+export interface SavedDataLink {
+  version: 1;
+  name: string;
+  definition: ConnectionDefinition;
+  username: string;
+  object: SourceObjectRef;
+  importedGeneration: number;
+}
+
+export interface DataLinkRefresh {
+  tableId: string;
+  expectedRevision: number;
+  expectedGeneration: number;
+  replaceModified: boolean;
+}

@@ -350,6 +350,14 @@
     }
   },
   "postgresDataLink": {
+    "reimport": "重新导入 DataLink",
+    "openLink": "查看 DataLink",
+    "modified": "此表自上次导入后已修改。你可以替换当前表，或保留当前表并导入到新表。",
+    "importNewTable": "导入到新表",
+    "replaceTable": "替换当前表",
+    "linkName": "DataLink 名称",
+    "saveLink": "保存 DataLink",
+    "linkMissing": "此 DataLink 或数据表已不存在。",
     "selectColumns": "要导入的列",
     "selectAllColumns": "选择全部列",
     "clearColumns": "清除列选择",

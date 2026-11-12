@@ -13,7 +13,7 @@ export type ProjectMutationCommand =
   | "apply_table_change_set" | "drop_table_change_set" | "rename_dataset"
   | "reorder_column_if_generation" | "set_column_display_props"
   | "create_managed_table" | "create_table_from_rows" | "create_table_from_sql_query"
-  | "import_file" | "import_table" | "import_selected_sqlite" | "import_server_snapshot" | "import_postgres_snapshot"
+  | "import_file" | "import_table" | "import_selected_sqlite" | "import_server_snapshot" | "import_postgres_snapshot" | "update_project_data_link"
   | "create_table_transform" | "run_table_transform" | "rebind_table_transform"
   | "run_workflow" | "upsert_calculated_column" | "convert_calculated_column_to_values"
   | "materialize_tabulate_table" | "save_fit_model_columns" | "delete_dataset";

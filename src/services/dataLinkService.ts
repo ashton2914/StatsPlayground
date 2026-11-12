@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   ConnectionCredentials,
+  DataLinkRefresh,
   ConnectionDefinition,
   ImportSummary,
   PreviewResult,
@@ -26,9 +27,9 @@ export const dataLinkService = {
   previewServerObject: (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, limit = 100) =>
     invoke<PreviewResult>("preview_server_source_object", { definition, credentials, object, limit }),
 
-  importServerSnapshot: async (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, targetName: string) => {
+  importServerSnapshot: async (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, targetName: string, options?: { linkName: string; refresh?: DataLinkRefresh }) => {
     const owner=useProjectStore.getState().persistence;
-    const payload={definition,credentials,object,targetName};
+    const payload={definition,credentials,object,targetName,...options};
     return owner?(await owner.submit<ImportSummary>({command:"import_server_snapshot",payload})).value:invoke<ImportSummary>("import_server_snapshot",payload);
   },
 

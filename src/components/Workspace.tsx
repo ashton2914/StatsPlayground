@@ -42,6 +42,8 @@ import { SqlQueryDialog } from "./SqlQueryDialog";
 import { UpdateDialogs } from "./UpdateDialogs";
 import { WorkspaceFrame } from "./layout";
 import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
+import type { OpenSavedDataLink } from "./dataLink/PostgresDataLinkDialog";
+import type { SavedDataLink } from "@/types/dataLink";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog } from "./TableOpsDialog";
 import { TableExportDialog, type TableExportPlan } from "./tableExport";
@@ -457,6 +459,28 @@ export function Workspace() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [showSqlQuery, setShowSqlQuery] = useState(false);
   const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
+  const [savedDataLink, setSavedDataLink] = useState<(OpenSavedDataLink & { epoch: number }) | null>(null);
+  const openSavedDataLink = async (tableId: string, refresh: boolean) => {
+    const owner = useProjectStore.getState().persistence;
+    if (!owner) return;
+    const epoch = owner.snapshot().epoch;
+    try {
+      await owner.flushThrough(owner.captureBarrier());
+      const [setting, tables] = await Promise.all([
+        projectService.getProjectSetting(epoch, `datalink:${tableId}`),
+        dataService.listDatasets(),
+      ]);
+      if (useProjectStore.getState().persistence !== owner) return;
+      const table = tables.find(({ id }) => id === tableId);
+      if (!setting?.value || !table) throw new Error(t("postgresDataLink.linkMissing", { defaultValue: "The DataLink or table no longer exists." }));
+      setSavedDataLink({
+        link: setting.value as SavedDataLink, tableId, tableName: table.name,
+        revision: setting.revision, generation: table.generation, refresh, epoch,
+      });
+    } catch (error) {
+      alert(String(error));
+    }
+  };
   const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
   const closeDataLink = useDataLinkStore((state) => state.close);
   const importDataLinkSelection = useDataLinkStore((state) => state.importSelected);
@@ -2532,6 +2556,8 @@ export function Workspace() {
       labels={{expand:t('directory.expand'),collapse:t('directory.collapse'),more:t('directory.more'),transform:t('directory.transform'),normalize:t('directory.normalize')}}
       onActivate={(kind,id)=>{if(kind==='graphNew')handleOpenGraphBuilderNew(id);else activateWorkspaceDocument(kind==='table'?'dataset':kind==='transform'?'tableTransform':kind as WorkspaceDocumentKind,id);}}
       onContextMenu={(kind,id,event)=>{event.preventDefault();event.stopPropagation();void readNativeProjectDirectory().catch(error=>alert(String(error)));setCtxMenu({kind:kind==='transform'?'tableTransform':kind as 'table',id,x:event.clientX,y:event.clientY});}}
+      onOpenDataLink={(id,refresh)=>void openSavedDataLink(id,refresh)}
+      dataLinkLabels={{import:t('postgresDataLink.reimport',{defaultValue:'Reimport DataLink'}),open:t('postgresDataLink.openLink',{defaultValue:'Open DataLink'})}}
       onRename={async(id,name)=>{const error=validateNativeGraphBasename(name);if(error)throw new Error(invalidProjectNameMessage(error));await readNativeProjectDirectory();await renameProjectDirectoryDocument(id,name,tableDirectory.epoch);}}
       renameRequest={renamingId?{id:renamingId,name:renameValue}:null} onRenameEnd={()=>setRenamingId(null)}
       onDragStart={handleDragStart}/>);
@@ -3445,13 +3471,26 @@ export function Workspace() {
 
       {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
 
-      {showPostgresDataLink && (
+      {(showPostgresDataLink || (savedDataLink && persistenceSnapshot?.epoch === savedDataLink.epoch)) && (
         <PostgresDataLinkDialog
+          key={savedDataLink ? `${savedDataLink.epoch}:${savedDataLink.tableId}:${savedDataLink.refresh}` : "new-datalink"}
+          persistLinks={Boolean(persistence)}
+          saved={savedDataLink?.epoch === persistenceSnapshot?.epoch ? savedDataLink ?? undefined : undefined}
+          readOnly={readOnly}
           existingDatasetNames={datasets.map((dataset) => dataset.name)}
-          onClose={() => setShowPostgresDataLink(false)}
+          onClose={() => { setShowPostgresDataLink(false); setSavedDataLink(null); }}
+          onSaveLink={async (link) => {
+            if (!persistence || !savedDataLink || persistence.snapshot().epoch !== savedDataLink.epoch
+              || useProjectStore.getState().persistence !== persistence) throw new Error("Project changed");
+            await persistence.submit({ command: "update_project_data_link", payload: {
+              tableId: savedDataLink.tableId, expectedRevision: savedDataLink.revision, link,
+            } });
+            setTopologyRetry((value) => value + 1);
+          }}
           onImported={async (targetName, connector) => {
             markDirty();
             await refreshDatasets();
+            setTopologyRetry((value) => value + 1);
             const imported = useDataStore
               .getState()
               .datasets.find((dataset) => dataset.name.toLowerCase() === targetName.toLowerCase());

@@ -159,8 +159,13 @@ pub async fn import_server_snapshot(
     credentials: ConnectionCredentials,
     object: SourceObjectRef,
     target_name: String,
+    link_name: Option<String>,
+    refresh: Option<crate::models::data_link::DataLinkRefresh>,
     context: Option<crate::models::project_persistence::ProjectWriteContext>,
 ) -> Result<crate::models::project_persistence::ProjectMutationResult<ImportSummary>, AppError> {
+    if context.is_none() && (link_name.is_some() || refresh.is_some()) {
+        return Err(AppError::InvalidParam("Saved DataLinks require a native project".into()));
+    }
     if target_name.trim().is_empty() {
         return Err(AppError::InvalidParam(
             "Target dataset name is required".into(),
@@ -170,7 +175,7 @@ pub async fn import_server_snapshot(
         let state = app.state::<AppState>();
         if let Some(context)=context {
             let commit=crate::services::project_native_service::NativeProjectService::new(state.inner())
-                .import_server(&context,definition,credentials,object,&target_name,|_,_|{},||false)?;
+                .import_server_with_link(&context,definition,credentials,object,&target_name,link_name,refresh,|_,_|{},||false)?;
             if app.emit("project-committed",&commit).is_err(){eprintln!("project_commit_event_delivery_failed");}
             return Ok(crate::models::project_persistence::ProjectMutationResult::Committed(commit));
         }
@@ -186,6 +191,34 @@ pub async fn import_server_snapshot(
     })
     .await
     .map_err(|_| AppError::Database("Database import worker failed".into()))?
+}
+
+#[tauri::command(async)]
+pub async fn update_project_data_link(
+    app: AppHandle,
+    context: crate::models::project_persistence::ProjectWriteContext,
+    table_id: String,
+    expected_revision: u64,
+    link: crate::models::data_link::SavedDataLink,
+) -> Result<crate::models::project_persistence::ProjectCommit<()>, AppError> {
+    use crate::models::project_persistence::{ProjectRecordPatch, ProjectSettingWrite};
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let patch = ProjectRecordPatch {
+            settings: vec![ProjectSettingWrite {
+                key: format!("datalink:{table_id}"),
+                expected_revision: Some(expected_revision),
+                value: serde_json::to_value(link).map_err(|error| AppError::InvalidParam(error.to_string()))?,
+            }],
+            ..Default::default()
+        };
+        let commit = crate::services::project_native_service::NativeProjectService::new(state.inner())
+            .commit_records(&context, &patch)?;
+        if app.emit("project-committed", &commit).is_err() {
+            eprintln!("project_commit_event_delivery_failed");
+        }
+        Ok(commit)
+    }).await.map_err(|_| AppError::Database("DataLink update worker failed".into()))?
 }
 
 fn server_worker_error() -> DataLinkError {
