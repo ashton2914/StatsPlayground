@@ -60,8 +60,8 @@ for (const locale of ["en", "zh-CN", "zh-TW", "vi"]) {
 }
 
 assert.match(dialogSource, /createServerConnectionDefinition/, "dialog must use shared connector defaults");
-assert.match(dialogSource, /setConnector/, "dialog must expose connector switching");
+assert.equal(fileMenu.includes("menu.importSqlite"), false, "SQLite import entry must be hidden");
 assert.match(dialogSource, /postgresql/, "dialog must offer PostgreSQL");
-assert.match(dialogSource, /mysql/, "dialog must offer MySQL");
+assert.doesNotMatch(dialogSource, />MySQL</, "dialog must hide MySQL");
 
 console.log("workspace DataLink contract passed");

@@ -252,7 +252,7 @@ impl<'a> ProjectCatalog<'a> {
         }
         for write in &patch.settings {
             let allowed = ["lineage", "logicalFolders", "snapshots"].contains(&write.key.as_str())
-                || ["filter:", "display:", "workflowBinding:", "workflowRun:", "transformBinding:"].iter().any(|prefix| write.key.starts_with(prefix) && write.key.len() > prefix.len());
+                || ["filter:", "display:", "workflowBinding:", "workflowRun:", "transformBinding:", "datalink:"].iter().any(|prefix| write.key.starts_with(prefix) && write.key.len() > prefix.len());
             if let Some(id) = write.key.strip_prefix("operationHistory:") {
                 if uuid::Uuid::parse_str(id).is_err()
                     || write.expected_revision.is_some()
@@ -268,6 +268,18 @@ impl<'a> ProjectCatalog<'a> {
             }
             let old: Option<u64> = conn.query_row("SELECT revision FROM _project_settings WHERE key=?", [&write.key], |r| r.get(0)).optional()?;
             if old != write.expected_revision { return Err(invalid("project_setting_revision_stale")); }
+            let value = if let Some(id) = write.key.strip_prefix("datalink:").filter(|_| !write.value.is_null()) {
+                let link: crate::models::data_link::SavedDataLink = serde_json::from_value(write.value.clone())
+                    .map_err(|_| invalid("project_datalink_invalid"))?;
+                if link.version != 1 || link.name.trim().is_empty()
+                    || link.definition.connector != crate::models::data_link::ConnectorKind::PostgreSql {
+                    return Err(invalid("project_datalink_invalid"));
+                }
+                self.engine.get_dataset_meta(id)?;
+                encode(&link)?
+            } else {
+                encode(&write.value)?
+            };
             if !write.value.is_null() {
                 if let Some(dataset)=write.key.strip_prefix("filter:").or_else(||write.key.strip_prefix("display:")) {
                     let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM _meta_datasets WHERE id=?)",[dataset],|row|row.get(0))?;
@@ -276,7 +288,7 @@ impl<'a> ProjectCatalog<'a> {
             }
             let revision = old.unwrap_or(0).checked_add(1).ok_or_else(|| invalid("project_revision_exhausted"))?;
             conn.execute("INSERT INTO _project_settings VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,value_json=excluded.value_json",
-                params![&write.key, revision, encode(&write.value)?])?;
+                params![&write.key, revision, value])?;
         }
         for folder in &patch.deleted_folders {
             validate_folder(folder)?;

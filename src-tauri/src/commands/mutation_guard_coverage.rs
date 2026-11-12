@@ -172,6 +172,10 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::data_link_commands::update_project_data_link",
+                CommandClass::NativeCommit,
+            ),
+            (
                 "commands::data_link_commands::test_postgres_connection",
                 CommandClass::ReadOnly,
             ),

@@ -50,6 +50,10 @@ pub struct ProjectSqliteImport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectServerImport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::models::data_link::SavedDataLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<crate::models::data_link::DataLinkRefresh>,
     pub connection_id: String,
     pub object: crate::models::data_link::SourceObjectRef,
     pub target_name: String,
@@ -117,10 +121,27 @@ impl ProjectDatabase {
                     "import_connection_identity_required".into(),
                 ));
             }
-            let (meta, written) = engine.import_server_snapshot_in_transaction(
+            let catalog = ProjectCatalog::new(engine);
+            let refresh = request.refresh.as_ref().map(|refresh| {
+                let key = format!("datalink:{}", refresh.table_id);
+                let (revision, saved) = catalog.get_setting(&key)?
+                    .ok_or_else(|| AppError::InvalidParam("DataLink no longer exists".into()))?;
+                let saved: crate::models::data_link::SavedDataLink = serde_json::from_value(saved)
+                    .map_err(|_| AppError::InvalidParam("Invalid saved DataLink".into()))?;
+                let current = engine.get_dataset_meta(&refresh.table_id)?;
+                if revision != refresh.expected_revision || current.generation != refresh.expected_generation {
+                    return Err(AppError::InvalidParam("The DataLink or table changed. Reopen it and try again.".into()));
+                }
+                if current.generation != saved.imported_generation && !refresh.replace_modified {
+                    return Err(AppError::InvalidParam("The table has local changes. Confirm replacement first.".into()));
+                }
+                Ok::<_, AppError>((key, revision, current))
+            }).transpose()?;
+            let staging_name = format!("DataLink staging {}", uuid::Uuid::new_v4());
+            let (mut meta, written) = engine.import_server_snapshot_in_transaction(
                 connector,
                 &request.object,
-                &request.target_name,
+                if refresh.is_some() { &staging_name } else { &request.target_name },
                 &request.source_description,
                 &on_progress,
                 &cancelled,
@@ -128,15 +149,44 @@ impl ProjectDatabase {
             if cancelled() {
                 return Err(AppError::Cancelled("import_cancelled".into()));
             }
-            let event=ProjectCatalog::new(engine).publish_new_table(&meta, &request.folder)?;
+            let (event_id, expected_revision) = if let Some((_, revision, current)) = refresh {
+                let previous = engine.get_archive_column_plans(&current.id)?;
+                meta = engine.replace_dataset_atomically_in_transaction(
+                    &current.id, &meta.id, &current.name, current.generation,
+                )?;
+                let mut columns = engine.get_archive_column_plans(&meta.id)?;
+                for column in &mut columns {
+                    if let Some(old) = previous.iter().find(|old| old.name == column.name && old.sql_type == column.sql_type) {
+                        column.column_id = old.column_id.clone();
+                    }
+                }
+                engine.replace_archive_column_ids(&meta.id, &columns)?;
+                (uuid::Uuid::new_v4().to_string(), Some(revision))
+            } else {
+                (catalog.publish_new_table(&meta, &request.folder)?.id, None)
+            };
+            let mut setting_ids = vec![];
+            if let Some(link) = &request.link {
+                let key = format!("datalink:{}", meta.id);
+                let mut link = link.clone();
+                link.imported_generation = meta.generation;
+                catalog.apply_patch(&crate::models::project_persistence::ProjectRecordPatch {
+                    settings: vec![crate::models::project_persistence::ProjectSettingWrite {
+                        key: key.clone(), expected_revision,
+                        value: serde_json::to_value(link).map_err(|error| AppError::InvalidParam(error.to_string()))?,
+                    }],
+                    ..Default::default()
+                })?;
+                setting_ids.push(key);
+            }
             engine.conn().execute(
                 "INSERT INTO _project_output_events VALUES (?, ?, 'import_server', ?)",
-                params![event.id, &meta.id, meta.generation],
+                params![event_id, &meta.id, meta.generation],
             )?;
             Ok(crate::services::project_transaction::CommitEffects {
                 dataset_ids: vec![meta.id.clone()],
                 document_ids: vec![],
-                setting_ids: vec![],
+                setting_ids,
                 value: project((meta, written)),
             })
         })
@@ -551,8 +601,10 @@ mod tests {
         let db = ProjectDatabase::create(&dir.path().join("server.spprj"), false).unwrap();
         // Missing schema fails locally if the connector is incorrectly accessed.
         let request = ProjectServerImport {
+            link: None, refresh: None,
             connection_id: "fixture".into(),
             object: SourceObjectRef {
+                selection: None,
                 catalog: None,
                 schema: None,
                 name: "table".into(),

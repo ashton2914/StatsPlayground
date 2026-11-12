@@ -10,13 +10,29 @@ import type {
   ConnectionDefinition,
   DataLinkError,
   PreviewResult,
+  PostgresSelection,
+  SavedDataLink,
+  DataLinkRefresh,
   SourceColumn,
   SourceObjectRef,
 } from "@/types/dataLink";
 
 import "./dataLink.css";
 
+export interface OpenSavedDataLink {
+  link: SavedDataLink;
+  tableId: string;
+  tableName: string;
+  revision: number;
+  generation: number;
+  refresh: boolean;
+}
+
 interface PostgresDataLinkDialogProps {
+  persistLinks?: boolean;
+  saved?: OpenSavedDataLink;
+  readOnly?: boolean;
+  onSaveLink?: (link: SavedDataLink) => Promise<void>;
   existingDatasetNames: string[];
   onClose: () => void;
   onImported: (targetName: string, connector: "postgresql" | "mysql") => Promise<void>;
@@ -41,13 +57,18 @@ function normalizeError(error: unknown): DataLinkError {
   return { category: "query", message: "Database operation could not be completed" };
 }
 
-export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImported }: PostgresDataLinkDialogProps) {
+export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImported, persistLinks, saved, readOnly, onSaveLink }: PostgresDataLinkDialogProps) {
   const { t } = useTranslation();
-  const [definition, setDefinition] = useState<ConnectionDefinition>(() => createServerConnectionDefinition("postgresql", false));
+  const [definition, setDefinition] = useState<ConnectionDefinition>(() => saved?.link.definition ?? createServerConnectionDefinition("postgresql", false));
   const [credentials, setCredentials] = useState<ConnectionCredentials>({
-    username: "stats_reader",
+    username: saved?.link.username ?? "stats_reader",
     password: "",
   });
+  const [linkName, setLinkName] = useState(saved?.link.name ?? "");
+  const connectionChanged = Boolean(saved && (
+    JSON.stringify(definition) !== JSON.stringify(saved.link.definition) || credentials.username !== saved.link.username
+  ));
+  const modified = Boolean(saved && saved.generation !== saved.link.importedGeneration);
   const [connected, setConnected] = useState(false);
   const [objects, setObjects] = useState<SourceObjectRef[]>([]);
   const [selectedObject, setSelectedObject] = useState<SourceObjectRef | null>(null);
@@ -82,20 +103,6 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
     return <span className="postgres-field-error" id={`${formId}-${field}-error`}>
       {t(`postgresDataLink.validation.${code}`, { field: t(`postgresDataLink.${field}`) })}
     </span>;
-  };
-
-  const setConnector = (connector: "postgresql" | "mysql") => {
-    if (definition.connector === connector || busy !== null) return;
-    setDefinition(createServerConnectionDefinition(connector, false));
-    setCredentials({ username: "stats_reader", password: "" });
-    setConnected(false);
-    setObjects([]);
-    setSelectedObject(null);
-    setColumns([]);
-    setPreview(null);
-    setItems([]);
-    setBatchProgress(null);
-    setError(null);
   };
 
   const setDefinitionField = <K extends keyof ConnectionDefinition>(
@@ -149,12 +156,17 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
     try {
       const discovered = await dataLinkService.listServerObjects(definition, credentials);
       setObjects(discovered);
-      setItems(createServerImportItems(discovered, existingDatasetNames));
+      const nextItems = createServerImportItems(discovered, existingDatasetNames);
+      const original = saved && nextItems.find(({ object }) =>
+        object.catalog === saved.link.object.catalog && object.schema === saved.link.object.schema && object.name === saved.link.object.name
+      );
+      if (original) original.selection = saved.link.object.selection;
+      setItems(nextItems);
       setBatchProgress(null);
       setSelectedObject(null);
       setPreview(null);
       setColumns([]);
-      if (discovered.length > 0) await selectObject(discovered[0]);
+      if (discovered.length > 0) await selectObject(original?.object ?? discovered[0]);
     } catch (discoveryError) {
       setError(normalizeError(discoveryError));
     } finally {
@@ -169,12 +181,7 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
     setBusy("preview");
     setError(null);
     try {
-      const [nextColumns, nextPreview] = await Promise.all([
-        dataLinkService.getServerSchema(definition, credentials, object),
-        dataLinkService.previewServerObject(definition, credentials, object),
-      ]);
-      setColumns(nextColumns);
-      setPreview(nextPreview);
+      setColumns(await dataLinkService.getServerSchema(definition, credentials, object));
     } catch (previewError) {
       setError(normalizeError(previewError));
     } finally {
@@ -182,8 +189,85 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
     }
   };
 
+  const selection = selectedItem?.selection ?? { columns: columns.map((column) => column.name), filters: [] };
+  const awaitingPreview = pendingItems.some((item) => !item.previewed);
+  const updateSelection = (next: PostgresSelection) => {
+    if (!selectedItem) return;
+    updateItem(selectedItem.key, { selection: next, previewed: false });
+    setPreview(null);
+  };
+
+  const refreshPreview = async () => {
+    if (!selectedItem || isBusy || selection.columns.length === 0) return;
+    setBusy("preview");
+    setError(null);
+    setPreview(null);
+    updateItem(selectedItem.key, { previewed: false });
+    try {
+      const result = await dataLinkService.previewServerObject(definition, credentials, {
+        ...selectedItem.object,
+        selection,
+      });
+      setPreview(result);
+      updateItem(selectedItem.key, { selection, previewed: true });
+    } catch (previewError) {
+      setError(normalizeError(previewError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveLink = async () => {
+    if (!saved || !onSaveLink || isBusy || readOnly || !linkName.trim()) return;
+    const configuredObject = selectedItem?.previewed
+      ? { ...selectedItem.object, selection: selectedItem.selection }
+      : saved.link.object;
+    if ((connectionChanged || selectedItem) && !selectedItem?.previewed) return;
+    setBusy("import");
+    setError(null);
+    try {
+      await onSaveLink({ ...saved.link, name: linkName.trim(), definition, username: credentials.username, object: configuredObject });
+      onClose();
+    } catch (failure) {
+      setError(normalizeError(failure));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshLink = async (newTable: boolean) => {
+    if (!saved || isBusy || readOnly || hasFieldErrors) return;
+    let targetName = saved.tableName;
+    let refresh: DataLinkRefresh | undefined;
+    if (newTable) {
+      let suffix = 2;
+      const names = new Set(existingDatasetNames.map((name) => name.toLowerCase()));
+      do { targetName = `${saved.tableName}_${suffix++}`; } while (names.has(targetName.toLowerCase()));
+    } else {
+      refresh = {
+        tableId: saved.tableId, expectedRevision: saved.revision,
+        expectedGeneration: saved.generation, replaceModified: modified,
+      };
+    }
+    setBusy("import");
+    setError(null);
+    try {
+      const result = await dataLinkService.importServerSnapshot(definition, credentials, saved.link.object, targetName, {
+        linkName: newTable ? targetName : saved.link.name,
+        refresh,
+      });
+      if (result.status !== "completed") throw result.error ?? result.status;
+      await onImported(result.imported[0]?.targetName ?? targetName, "postgresql");
+      onClose();
+    } catch (failure) {
+      setError(normalizeError(failure));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const importSnapshot = async () => {
-    if (busy || pendingItems.length === 0 || nameConflict) return;
+    if (busy || pendingItems.length === 0 || nameConflict || awaitingPreview) return;
     setBusy("import");
     setError(null);
     stopRequested.current = false;
@@ -193,11 +277,11 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
       await runServerImportBatch(
         pendingItems,
         async (item) => {
-          const summary = await dataLinkService.importServerSnapshot(definition, credentials, item.object, item.targetName);
+          const summary = await dataLinkService.importServerSnapshot(definition, credentials, { ...item.object, selection: item.selection }, item.targetName, persistLinks ? { linkName: `PostgreSQL · ${item.object.schema ?? "public"}.${item.object.name}` } : undefined);
           if (summary.status !== "completed") throw summary.error ?? summary.status;
           return summary.totalRowsWritten;
         },
-        (targetName) => onImported(targetName, definition.connector === "mysql" ? "mysql" : "postgresql"),
+        (targetName) => onImported(targetName, "postgresql"),
         (key, patch) => {
           updateItem(key, patch);
           if (patch.status === "completed" || patch.status === "failed") {
@@ -215,20 +299,46 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
 
   const isBusy = busy !== null;
 
+  if (saved?.refresh) return (
+    <div className="sp-dialog-overlay datalink-overlay">
+      <div className="sp-dialog" role="dialog" aria-modal="true" aria-labelledby={`${formId}-refresh`}>
+        <h2 id={`${formId}-refresh`}>{t("postgresDataLink.reimport", { defaultValue: "Reimport DataLink" })}</h2>
+        <p>{saved.link.name} → {saved.tableName}</p>
+        {modified && <p role="alert">{t("postgresDataLink.modified", {
+          defaultValue: "This table has changed since the last import. Replace it or keep it and import into a new table.",
+        })}</p>}
+        <label>
+          {t("postgresDataLink.password", { defaultValue: "Password" })}
+          <input type="password" value={credentials.password} autoComplete="current-password"
+            onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} disabled={isBusy} />
+        </label>
+        {error && <p role="alert">{error.message}</p>}
+        <footer className="datalink-actions">
+          <button disabled={isBusy} onClick={onClose}>{t("common.cancel")}</button>
+          {modified && <button disabled={isBusy || hasFieldErrors} onClick={() => void refreshLink(true)}>
+            {t("postgresDataLink.importNewTable", { defaultValue: "Import into a new table" })}
+          </button>}
+          <button className="btn-primary" disabled={isBusy || hasFieldErrors} onClick={() => void refreshLink(false)}>
+            {isBusy ? t("postgresDataLink.importing") : modified
+              ? t("postgresDataLink.replaceTable", { defaultValue: "Replace current table" })
+              : t("postgresDataLink.reimport", { defaultValue: "Reimport DataLink" })}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+
   return (
     <div className="sp-dialog-overlay datalink-overlay" onMouseDown={isBusy ? undefined : onClose}>
       <div className="sp-dialog datalink-dialog postgres-datalink-dialog" onMouseDown={(event) => event.stopPropagation()}>
         <header className="datalink-header">
           <div>
-            <h2>DataLink</h2>
+            <h2>{saved ? saved.link.name : "DataLink"}</h2>
             <p>{connected
               ? `${definition.host}:${definition.port} / ${definition.database}`
               : t("postgresDataLink.sessionOnly", { defaultValue: "Credentials remain in this dialog only" })}</p>
           </div>
-          <div className="datalink-connector-switch" role="group" aria-label={t("dataLink.connector", { defaultValue: "Database type" })}>
-            <button type="button" className={definition.connector === "postgresql" ? "active" : ""} aria-pressed={definition.connector === "postgresql"} onClick={() => setConnector("postgresql")} disabled={isBusy}>PostgreSQL</button>
-            <button type="button" className={definition.connector === "mysql" ? "active" : ""} aria-pressed={definition.connector === "mysql"} onClick={() => setConnector("mysql")} disabled={isBusy}>MySQL</button>
-          </div>
+          <span>PostgreSQL</span>
           <button className="datalink-close" onClick={onClose} title={t("common.cancel")} aria-label={t("common.cancel")} disabled={isBusy}>
             <i className="fa-solid fa-xmark" aria-hidden="true" />
           </button>
@@ -242,6 +352,12 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
                 ? t("postgresDataLink.connected", { defaultValue: "Connected" })
                 : t("postgresDataLink.notTested", { defaultValue: "Not tested" })}</span>
             </div>
+            {saved && (
+              <label>
+                {t("postgresDataLink.linkName", { defaultValue: "DataLink name" })}
+                <input value={linkName} disabled={isBusy || readOnly} onChange={(event) => setLinkName(event.target.value)} />
+              </label>
+            )}
             <div className="postgres-connection-grid">
               <label>
                 <span id={`${formId}-host-label`}>{t("postgresDataLink.host", { defaultValue: "Host" })}</span>
@@ -366,6 +482,73 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
             </aside>
 
             <main className="datalink-preview">
+              {saved && !selectedItem && (
+                <section>
+                  <strong>{saved.link.object.schema}.{saved.link.object.name}</strong>
+                  <p>{saved.link.object.selection?.columns.join(", ")}</p>
+                  {saved.link.object.selection?.filters.map((filter, index) => (
+                    <div key={index}>{filter.column} {filter.operator === "equals" ? "=" : filter.operator === "atLeast" ? "≥" : "≤"} {filter.value}</div>
+                  ))}
+                </section>
+              )}
+              {selectedItem && columns.length > 0 && (
+                <fieldset className="postgres-selection" disabled={isBusy || selectedItem.status === "completed"}>
+                  <legend>{t("postgresDataLink.selectColumns", { defaultValue: "Columns to import" })}</legend>
+                  <button type="button" className="btn-text"
+                    onClick={() => updateSelection({ ...selection, columns: columns.map(({ name }) => name) })}>
+                    {t("postgresDataLink.selectAllColumns", { defaultValue: "Select all columns" })}
+                  </button>
+                  <button type="button" className="btn-text"
+                    onClick={() => updateSelection({ ...selection, columns: [] })}>
+                    {t("postgresDataLink.clearColumns", { defaultValue: "Clear column selection" })}
+                  </button>
+                  <div className="postgres-selection-columns">
+                    {columns.map((column) => (
+                      <label key={column.name}>
+                        <input type="checkbox" checked={selection.columns.includes(column.name)}
+                          onChange={(event) => {
+                            const names = new Set(selection.columns);
+                            if (event.target.checked) names.add(column.name);
+                            else names.delete(column.name);
+                            updateSelection({ ...selection, columns: columns.map(({ name }) => name).filter((name) => names.has(name)) });
+                          }} />
+                        {column.name}
+                      </label>
+                    ))}
+                  </div>
+                  {selection.filters.map((filter, index) => {
+                    const changeFilter = (next: typeof filter) => updateSelection({
+                      ...selection, filters: selection.filters.map((current, i) => i === index ? next : current),
+                    });
+                    return (
+                      <div className="postgres-connection-grid" key={index}>
+                        <select aria-label={t("postgresDataLink.filterColumn", { defaultValue: "Filter column" })} value={filter.column}
+                          onChange={(event) => changeFilter({ ...filter, column: event.target.value })}>
+                          {columns.map(({ name }) => <option key={name}>{name}</option>)}
+                        </select>
+                        <select aria-label={t("postgresDataLink.filterOperator", { defaultValue: "Comparison" })} value={filter.operator}
+                          onChange={(event) => changeFilter({ ...filter, operator: event.target.value as typeof filter.operator })}>
+                          <option value="equals">=</option>
+                          <option value="atLeast">≥</option>
+                          <option value="atMost">≤</option>
+                        </select>
+                        <input aria-label={t("postgresDataLink.filterValue", { defaultValue: "Filter value" })} value={filter.value}
+                          onChange={(event) => changeFilter({ ...filter, value: event.target.value })} />
+                        <button type="button" onClick={() => updateSelection({ ...selection, filters: selection.filters.filter((_, i) => i !== index) })}>
+                          {t("common.remove", { defaultValue: "Remove" })}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <button type="button" className="btn-text"
+                    onClick={() => updateSelection({ ...selection, filters: [...selection.filters, { column: columns[0].name, operator: "equals", value: "" }] })}>
+                    {t("postgresDataLink.addFilter", { defaultValue: "Add filter" })}
+                  </button>
+                  <button type="button" className="btn-primary" disabled={selection.columns.length === 0} onClick={() => void refreshPreview()}>
+                    {t("postgresDataLink.previewSelection", { defaultValue: "Preview selected data" })}
+                  </button>
+                </fieldset>
+              )}
               {busy === "preview" ? (
                 <div className="datalink-state">{t("dataLink.loadingPreview", { defaultValue: "Loading preview..." })}</div>
               ) : preview ? (
@@ -376,14 +559,6 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
                       <span>{t("dataLink.previewRows", { count: preview.rows.length, defaultValue: "{{count}} preview rows" })}</span>
                     </div>
                     {preview.truncated && <span>{t("dataLink.limited", { defaultValue: "Limited to 100 rows" })}</span>}
-                  </div>
-                  <div className="datalink-schema">
-                    {columns.map((column) => (
-                      <span key={column.name} title={`${column.sourceType}${column.nullable ? "" : " NOT NULL"}`}>
-                        <strong>{column.name}</strong>
-                        <small>{column.sourceType}{column.precision !== null ? `(${column.precision}${column.scale !== null ? `,${column.scale}` : ""})` : ""}{column.primaryKey ? " · PK" : ""}</small>
-                      </span>
-                    ))}
                   </div>
                   <label className="datalink-target-name">
                     <span>{t("dataLink.targetName", { defaultValue: "Target dataset name" })}</span>
@@ -405,7 +580,7 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
                   </div>
                 </>
               ) : (
-                <div className="datalink-state">{t("dataLink.selectObject", { defaultValue: "Select an object to preview" })}</div>
+                <div className="datalink-state">{t("dataLink.selectObject", { defaultValue: "Choose columns and filters, then preview the data" })}</div>
               )}
             </main>
           </div>
@@ -420,6 +595,7 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
                     onChange={(event) => updateItem(item.key, { targetName: event.target.value })} />
                 </label>
               ))}
+              {!saved && awaitingPreview && <div role="status">{t("postgresDataLink.previewBeforeImport", { defaultValue: "Preview each selected table before importing." })}</div>}
               {nameConflict && <div className="server-batch-failure" role="alert">{t("serverBatch.nameConflict", { defaultValue: "Target names must be nonempty, unique, and different from existing datasets." })}</div>}
             </section>
           )}
@@ -435,16 +611,21 @@ export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImport
               : t("serverBatch.stop", { defaultValue: "Stop after current table" })}
           </button>}
           <button className="btn-text" onClick={onClose} disabled={isBusy}>{t("serverBatch.close", { defaultValue: "Close" })}</button>
-          <button
+          {saved ? (
+            <button className="btn-primary" onClick={() => void saveLink()} disabled={isBusy || readOnly || !linkName.trim() ||
+              (selectedItem ? !selectedItem.previewed : connectionChanged)}>
+              {t("postgresDataLink.saveLink", { defaultValue: "Save DataLink" })}
+            </button>
+          ) : <button
             className="btn-primary"
             onClick={() => void importSnapshot()}
-            disabled={isBusy || !connected || pendingItems.length === 0 || nameConflict}
+            disabled={isBusy || !connected || pendingItems.length === 0 || nameConflict || awaitingPreview}
           >
             <i className="fa-solid fa-file-import" aria-hidden="true" />{" "}
             {busy === "import"
               ? t("postgresDataLink.importing", { defaultValue: "Importing..." })
               : t("serverBatch.importSelected", { count: pendingItems.length, defaultValue: "Import selected ({{count}})" })}
-          </button>
+          </button>}
         </footer>
       </div>
     </div>

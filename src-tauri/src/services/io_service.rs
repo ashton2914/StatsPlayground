@@ -759,6 +759,7 @@ mod tests {
             password,
         };
         let object = SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".to_string()),
             schema: Some("datalink".to_string()),
             name: "customers".to_string(),
@@ -811,6 +812,7 @@ mod tests {
         let state = AppState::new().expect("app state");
         let service = IoService::new(&state);
         let object = |name: &str| SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".into()),
             schema: Some("statsplayground_test".into()),
             name: name.into(),
@@ -889,6 +891,7 @@ mod tests {
             password,
         };
         let object = SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".to_string()),
             schema: Some("datalink".to_string()),
             name: "measurements".to_string(),

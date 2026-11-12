@@ -9,7 +9,7 @@ use crate::connectors::{ConnectorBatch, ConnectorRow, ConnectorValue};
 use crate::error::AppError;
 use crate::models::data_link::{
     AuthenticationType, ConnectionCredentials, ConnectionDefinition, ConnectorKind, DataLinkError,
-    DataLinkErrorCategory, PreviewResult, SourceColumn, SourceObjectRef, SourceObjectType, TlsMode,
+    DataLinkErrorCategory, PostgresFilterOperator, PreviewResult, SourceColumn, SourceObjectRef, SourceObjectType, TlsMode,
 };
 
 const MAX_PREVIEW_ROWS: usize = 100;
@@ -68,6 +68,7 @@ impl PostgresConnector {
                     }
                 };
                 Ok(SourceObjectRef {
+                    selection: None,
                     catalog: row
                         .try_get("table_catalog")
                         .map_err(|_| Self::conversion_error("Invalid object catalog metadata"))?,
@@ -83,7 +84,7 @@ impl PostgresConnector {
             .collect()
     }
 
-    pub fn schema(&self, object: &SourceObjectRef) -> Result<Vec<SourceColumn>, DataLinkError> {
+    fn source_schema(&self, object: &SourceObjectRef) -> Result<Vec<SourceColumn>, DataLinkError> {
         let catalog = object
             .catalog
             .as_deref()
@@ -160,6 +161,55 @@ impl PostgresConnector {
             .collect()
     }
 
+    pub fn schema(&self, object: &SourceObjectRef) -> Result<Vec<SourceColumn>, DataLinkError> {
+        let source = self.source_schema(object)?;
+        let Some(selection) = &object.selection else {
+            return Ok(source);
+        };
+        if selection.columns.is_empty() {
+            return Err(Self::query_failure("Select at least one PostgreSQL column"));
+        }
+        let mut selected = std::collections::HashSet::new();
+        selection.columns.iter().map(|name| {
+            if !selected.insert(name) {
+                return Err(Self::query_failure("PostgreSQL column selected twice"));
+            }
+            source.iter().find(|column| column.name == *name).cloned()
+                .ok_or_else(|| Self::query_failure("Selected PostgreSQL column is unavailable"))
+        }).collect()
+    }
+
+    fn selected_query(
+        &self,
+        object: &SourceObjectRef,
+        columns: &[SourceColumn],
+        values: &mut Vec<String>,
+    ) -> Result<String, DataLinkError> {
+        let table = self.qualified_name(object)?;
+        let projection = columns.iter().map(|column| Self::quote_identifier(&column.name))
+            .collect::<Vec<_>>().join(", ");
+        let mut query = format!("SELECT {projection} FROM {table}");
+        if let Some(selection) = &object.selection {
+            for filter in &selection.filters {
+                let column = Self::quote_identifier(&filter.column);
+                let operator = match filter.operator {
+                    PostgresFilterOperator::Equals => "=",
+                    PostgresFilterOperator::AtLeast => ">=",
+                    PostgresFilterOperator::AtMost => "<=",
+                };
+                query.push_str(if values.is_empty() { " WHERE " } else { " AND " });
+                values.push(filter.column.clone());
+                let key = values.len();
+                values.push(filter.value.clone());
+                let value = values.len();
+                query.push_str(&format!(
+                    "{column} {operator} (pg_catalog.jsonb_populate_record(NULL::{table}, pg_catalog.jsonb_build_object(${key}::text, ${value}::text))).{column}"
+                ));
+            }
+        }
+        Ok(query)
+    }
+
     pub fn preview(
         &self,
         object: &SourceObjectRef,
@@ -178,19 +228,17 @@ impl PostgresConnector {
         let row_limit = limit.min(MAX_PREVIEW_ROWS);
         let fetch_limit = i64::try_from(row_limit + 1)
             .map_err(|_| Self::query_failure("PostgreSQL preview limit is too large"))?;
-        let qualified_name = format!(
-            "{}.{}",
-            Self::quote_identifier(schema),
-            Self::quote_identifier(&object.name)
-        );
+        let mut values = Vec::new();
+        let selection = self.selected_query(object, &columns, &mut values)?;
         let query = format!(
-            "SELECT to_jsonb(preview_row) AS row_data \
-             FROM (SELECT * FROM {qualified_name} LIMIT $1) AS preview_row"
+            "SELECT to_jsonb(preview_row) AS row_data FROM ({selection} LIMIT ${}) AS preview_row",
+            values.len() + 1
         );
-
+        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+            values.iter().map(|value| value as _).collect();
+        params.push(&fetch_limit);
         let mut client = self.connect()?;
-        let query_rows = client
-            .query(&query, &[&fetch_limit])
+        let query_rows = client.query(&query, &params)
             .map_err(|error| Self::query_error(&error))?;
         let truncated = query_rows.len() > row_limit;
         let mut rows = Vec::with_capacity(query_rows.len().min(row_limit));
@@ -246,15 +294,12 @@ impl PostgresConnector {
             ));
         }
         let columns = self.schema(object).map_err(Self::app_error)?;
-        let qualified_name = self.qualified_name(object).map_err(Self::app_error)?;
-        let query =
-            format!("SELECT to_jsonb(source_row) AS row_data FROM {qualified_name} AS source_row");
+        let mut values = Vec::new();
+        let selection = self.selected_query(object, &columns, &mut values).map_err(Self::app_error)?;
+        let query = format!("SELECT to_jsonb(source_row) AS row_data FROM ({selection}) AS source_row");
         let mut client = self.connect().map_err(Self::app_error)?;
         let mut rows = client
-            .query_raw(
-                &query,
-                std::iter::empty::<&(dyn postgres::types::ToSql + Sync)>(),
-            )
+            .query_raw(&query, values.iter().map(|value| value as &(dyn postgres::types::ToSql + Sync)))
             .map_err(|error| Self::app_error(Self::query_error(&error)))?;
         let mut batch = Vec::with_capacity(batch_size);
         let mut source_index = 0_usize;
@@ -817,6 +862,7 @@ mod tests {
             PostgresConnector::new(fixture_definition(), fixture_credentials(&password))
                 .expect("create connector");
         let object = SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".to_string()),
             schema: Some("datalink".to_string()),
             name: "customers".to_string(),
@@ -848,6 +894,7 @@ mod tests {
             PostgresConnector::new(fixture_definition(), fixture_credentials(&password))
                 .expect("create connector");
         let object = SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".to_string()),
             schema: Some("datalink".to_string()),
             name: "measurements".to_string(),
@@ -911,6 +958,7 @@ mod tests {
         assert_eq!(permission_error.category, DataLinkErrorCategory::Permission);
 
         let missing_object = SourceObjectRef {
+            selection: None,
             catalog: Some("statsplayground_test".to_string()),
             schema: Some("datalink".to_string()),
             name: "missing_object".to_string(),

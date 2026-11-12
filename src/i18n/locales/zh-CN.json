@@ -350,6 +350,23 @@
     }
   },
   "postgresDataLink": {
+    "reimport": "重新导入 DataLink",
+    "openLink": "查看 DataLink",
+    "modified": "此表自上次导入后已修改。你可以替换当前表，或保留当前表并导入到新表。",
+    "importNewTable": "导入到新表",
+    "replaceTable": "替换当前表",
+    "linkName": "DataLink 名称",
+    "saveLink": "保存 DataLink",
+    "linkMissing": "此 DataLink 或数据表已不存在。",
+    "selectColumns": "要导入的列",
+    "selectAllColumns": "选择全部列",
+    "clearColumns": "清除列选择",
+    "filterColumn": "筛选列",
+    "filterOperator": "比较条件",
+    "filterValue": "筛选值",
+    "addFilter": "添加筛选条件",
+    "previewSelection": "预览选中的数据",
+    "previewBeforeImport": "请先预览每个选中表的数据，再导入。",
     "validation": {
       "required": "请填写{{field}}。",
       "portRange": "请输入 1 至 65535 之间的整数。",

@@ -31,7 +31,13 @@ export interface ConnectionCredentials {
 
 export type SourceObjectType = "table" | "view";
 
+export interface PostgresSelection {
+  columns: string[];
+  filters: { column: string; operator: "equals" | "atLeast" | "atMost"; value: string }[];
+}
+
 export interface SourceObjectRef {
+  selection?: PostgresSelection;
   catalog: string | null;
   schema: string | null;
   name: string;
@@ -101,4 +107,21 @@ export interface ImportProgress {
   tableTotal: number;
   rowsDone: number;
   rowsTotal: number;
+}
+
+
+export interface SavedDataLink {
+  version: 1;
+  name: string;
+  definition: ConnectionDefinition;
+  username: string;
+  object: SourceObjectRef;
+  importedGeneration: number;
+}
+
+export interface DataLinkRefresh {
+  tableId: string;
+  expectedRevision: number;
+  expectedGeneration: number;
+  replaceModified: boolean;
 }

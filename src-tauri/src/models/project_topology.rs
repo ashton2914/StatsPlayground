@@ -5,6 +5,9 @@ use super::project_persistence::ProjectDocumentKind;
 #[serde(rename_all="camelCase")]
 pub struct ProjectTableNode { pub id:String, pub name:String, pub folder:String, pub revision:u64 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDataLinkNode { pub table_id: String, pub name: String }
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all="camelCase")]
 pub struct ProjectTransformInput { pub role:String, pub table_id:String }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -24,6 +27,8 @@ pub struct ProjectTopologyDiagnostic { pub code:String, pub id:String }
 pub struct ProjectTopology {
     pub epoch:u64, pub committed_revision:u64, pub folders:Vec<String>, pub tables:Vec<ProjectTableNode>,
     pub transforms:Vec<ProjectTransformLink>, pub owned_documents:Vec<ProjectOwnedDocument>,
+    #[serde(default)]
+    pub data_links: Vec<ProjectDataLinkNode>,
     pub diagnostics:Vec<ProjectTopologyDiagnostic>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

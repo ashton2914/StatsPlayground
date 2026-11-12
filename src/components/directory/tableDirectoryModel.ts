@@ -1,11 +1,15 @@
 import type {ProjectDocumentSummary,ProjectOwnedDocument,ProjectTableNode,ProjectTopology,ProjectTransformLink} from '../../types/projectPersistence';
 export interface DirectoryChild extends ProjectOwnedDocument {name:string}
-export interface DirectoryTable extends ProjectTableNode {children:DirectoryChild[]}
+export interface DirectoryTable extends ProjectTableNode {children:DirectoryChild[];dataLink?:{name:string}}
 export interface DirectoryGroup {id:string;folder:string;tables:DirectoryTable[];transforms:ProjectTransformLink[];needsNormalization:boolean}
 export interface TableDirectoryModel {epoch:number;revision:number;groups:DirectoryGroup[];owner:Map<string,string>;diagnostics:ProjectTopology['diagnostics']}
 /** Complete metadata owns membership; paged summaries only supplement presentation. */
 export function buildTableDirectory(topology:ProjectTopology,summaries:ProjectDocumentSummary[]):TableDirectoryModel {
-  const details=new Map(summaries.map(s=>[s.id,s]));const tables=new Map(topology.tables.map(t=>[t.id,{...t,children:[] as DirectoryChild[]}]));
+  const details=new Map(summaries.map(s=>[s.id,s]));const tables=new Map<string,DirectoryTable>(topology.tables.map(t=>[t.id,{...t,children:[] as DirectoryChild[]}]));
+  for (const link of topology.dataLinks ?? []) {
+    const table = tables.get(link.tableId);
+    if (table) table.dataLink = { name: link.name };
+  }
   const adjacency=new Map<string,Set<string>>();const children=new Map<string,Set<string>>();const degree=new Map(topology.tables.map(t=>[t.id,0]));const owner=new Map<string,string>();
   for(const t of tables.values()){adjacency.set(t.id,new Set());owner.set(t.id,t.id);}
   for(const link of topology.transforms){owner.set(link.id,link.outputTableId);for(const input of link.inputs){adjacency.get(input.tableId)?.add(link.outputTableId);adjacency.get(link.outputTableId)?.add(input.tableId);const next=children.get(input.tableId)??new Set<string>();if(!next.has(link.outputTableId)){next.add(link.outputTableId);degree.set(link.outputTableId,(degree.get(link.outputTableId)??0)+1);}children.set(input.tableId,next);}}

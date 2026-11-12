@@ -7,8 +7,38 @@
 .sp-directory-toggle { width:16px; flex-shrink:0; }
 .sp-directory-toggle:disabled { cursor:default; }
 .sp-table-directory-row { min-height:29px; padding:4px 6px; }
-.sp-table-owned { padding-left:38px; }
+.sp-table-owned { padding-inline-start:38px; }
 .sp-table-owned .dataset-item { padding-left:4px; }
 .sp-table-transform-list { position:absolute; z-index:10; background:var(--bg-secondary,#eee); box-shadow:0 2px 8px #0003; display:grid; min-width:130px; }
 .sp-table-transform-list button { text-align:left; padding:8px; }
 .sp-directory-warning { display:block; font-size:11px; padding:4px; color:var(--fg-secondary,#777); }
+
+.sp-datalink-group {
+  display: flex;
+  margin: 3px 0;
+}
+
+.sp-datalink-rows {
+  min-width: 0;
+  flex: 1;
+  border-inline-start: 2px solid var(--accent, #367b91);
+  border-radius: 8px;
+  padding-inline-start: 6px;
+}
+
+.sp-datalink-source {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: start;
+}
+
+.sp-datalink-source:hover {
+  background: var(--bg-cell-hover);
+}
+
+.sp-datalink-group + .sp-table-owned {
+  margin-inline-start: 31px;
+}

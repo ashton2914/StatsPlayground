@@ -496,6 +496,34 @@ impl<'a> NativeProjectService<'a> {
         cancelled: C,
     ) -> Result<ProjectCommit<crate::models::data_link::ImportSummary>, AppError>
     where F: Fn(usize,usize), C: Fn()->bool {
+        self.import_server_with_link(context, definition, credentials, object, target_name, None, None, on_progress, cancelled)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_server_with_link<F, C>(
+        &self,
+        context: &ProjectWriteContext,
+        definition: crate::models::data_link::ConnectionDefinition,
+        credentials: crate::models::data_link::ConnectionCredentials,
+        object: crate::models::data_link::SourceObjectRef,
+        target_name: &str,
+        link_name: Option<String>,
+        refresh: Option<crate::models::data_link::DataLinkRefresh>,
+        on_progress: F,
+        cancelled: C,
+    ) -> Result<ProjectCommit<crate::models::data_link::ImportSummary>, AppError>
+    where F: Fn(usize,usize), C: Fn()->bool {
+        use crate::models::data_link::{ConnectorKind, SavedDataLink};
+        if (link_name.is_some() || refresh.is_some()) && definition.connector != ConnectorKind::PostgreSql {
+            return Err(AppError::InvalidParam("Saved DataLinks require PostgreSQL".into()));
+        }
+        if refresh.is_some() && link_name.is_none() {
+            return Err(AppError::InvalidParam("A saved DataLink name is required".into()));
+        }
+        let link = link_name.map(|name| SavedDataLink {
+            version: 1, name: name.trim().into(), definition: definition.clone(),
+            username: credentials.username.clone(), object: object.clone(), imported_generation: 0,
+        });
         use sha2::{Digest,Sha256};
         use crate::models::data_link::{ImportSummary,ImportTableSummary};
         // Source identity excludes the password; only its hash enters the receipt digest.
@@ -503,6 +531,7 @@ impl<'a> NativeProjectService<'a> {
             .map_err(|_|AppError::InvalidParam("import_connection_identity_invalid".into()))?;
         let source_name=object.schema.as_ref().map(|schema|format!("{schema}.{}",object.name)).unwrap_or_else(||object.name.clone());
         let request=crate::services::project_output::ProjectServerImport {
+            link, refresh,
             connection_id:format!("{:x}",Sha256::digest(identity)),
             source_description:format!("{}.{source_name}",definition.database),
             object,target_name:target_name.trim().into(),folder:String::new(),
@@ -511,8 +540,8 @@ impl<'a> NativeProjectService<'a> {
         if let Some(commit)=database.preflight_commit::<ImportSummary,_>(context,&("import_server",&request))? {return Ok(commit);}
         let connector=crate::connectors::ServerConnector::new(definition,credentials)
             .map_err(|error|AppError::Database(error.message))?;
-        database.import_project_server_snapshot_with_result(context,&request,&connector,on_progress,cancelled,|(_,rows_written)|ImportSummary {
-            status:"completed".into(),imported:vec![ImportTableSummary {source_name,target_name:request.target_name.clone(),action:"create".into(),rows_written}],
+        database.import_project_server_snapshot_with_result(context,&request,&connector,on_progress,cancelled,|(meta,rows_written)|ImportSummary {
+            status:"completed".into(),imported:vec![ImportTableSummary {source_name,target_name:meta.name,action:"create".into(),rows_written}],
             skipped:vec![],failed_table:None,error:None,total_rows_written:rows_written,
         })
     }
@@ -2021,7 +2050,7 @@ mod tests {
         let mut context=ProjectWriteContext {operation_id:"cancelled-server".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
         let definition=ConnectionDefinition {connector:ConnectorKind::PostgreSql,host:"127.0.0.1".into(),port:5432,database:"fixture".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:1};
         let credentials=ConnectionCredentials {username:"fixture".into(),password:"unused-fixture".into()};
-        let object=SourceObjectRef {catalog:None,schema:None,name:"missing".into(),object_type:SourceObjectType::Table};
+        let object=SourceObjectRef {selection: None, catalog:None,schema:None,name:"missing".into(),object_type:SourceObjectType::Table};
         let error=service.import_server(&context,definition.clone(),credentials.clone(),object.clone(),"Imported",|_,_|{},||true).unwrap_err();
         assert!(matches!(error,AppError::Cancelled(_)),"{error}");
         assert_eq!(service.database(opened.epoch).unwrap().committed_revision().unwrap(),0);
@@ -2039,8 +2068,9 @@ mod tests {
         let opened=service.open_enabled(&path,false).unwrap();
         let context=ProjectWriteContext {operation_id:"server-replay".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
         let definition=ConnectionDefinition {connector:ConnectorKind::PostgreSql,host:"127.0.0.1".into(),port:5432,database:"fixture".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:1};
-        let object=SourceObjectRef {catalog:None,schema:Some("public".into()),name:"values".into(),object_type:SourceObjectType::Table};
+        let object=SourceObjectRef {selection: None, catalog:None,schema:Some("public".into()),name:"values".into(),object_type:SourceObjectType::Table};
         let request=crate::services::project_output::ProjectServerImport {
+            link: None, refresh: None,
             connection_id:"e6b810e07aad82980a529dfff63318c6d42991c594ca0fef5ed7a583450efe89".into(),object:object.clone(),target_name:"Imported".into(),source_description:"fixture.public.values".into(),folder:String::new(),
         };
         let db=service.database(opened.epoch).unwrap();
@@ -3111,6 +3141,130 @@ mod live_server_fixture_tests {
     use crate::services::project_database::ProjectDatabase;
 
     #[test]
+    #[ignore = "requires the local Issue 263 PostgreSQL review database"]
+    fn project_v5_imports_only_previewed_postgres_selection() {
+        let definition = ConnectionDefinition {
+            connector: ConnectorKind::PostgreSql,
+            host: "127.0.0.1".into(),
+            port: 55432,
+            database: "statspg_review".into(),
+            authentication_type: AuthenticationType::UsernamePassword,
+            tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
+            connect_timeout_seconds: 5,
+        };
+        let credentials = ConnectionCredentials {
+            username: "stats_reader".into(),
+            password: std::env::var("STATSPG_REVIEW_PASSWORD").unwrap(),
+        };
+        let columns = vec!["Rec#".into(), "Current (A)".into(), "Voltage (V)".into()];
+        let object = SourceObjectRef {
+            catalog: Some(definition.database.clone()),
+            schema: Some("public".into()),
+            name: "cell_a_raw".into(),
+            object_type: SourceObjectType::Table,
+            selection: Some(PostgresSelection {
+                columns,
+                filters: vec![
+                    PostgresFilter { column: "Rec#".into(), operator: PostgresFilterOperator::AtLeast, value: "1000".into() },
+                    PostgresFilter { column: "Rec#".into(), operator: PostgresFilterOperator::AtMost, value: "1999".into() },
+                ],
+            }),
+        };
+        let connector = crate::connectors::PostgresConnector::new(definition.clone(), credentials.clone()).unwrap();
+        let preview = connector.preview(&object, 100).unwrap();
+        assert_eq!(preview.columns.len(), 3);
+        assert_eq!(preview.rows.len(), 100);
+        assert!(preview.truncated);
+        assert!(preview.rows.iter().all(|row| (1000..=1999).contains(&row[0].as_i64().unwrap())));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.spprj");
+        ProjectDatabase::create(&path, false).unwrap().shutdown().unwrap();
+        let state = crate::state::AppState::new().unwrap();
+        let native = NativeProjectService::new(&state);
+        let opened = native.open(&path, false).unwrap();
+        let context = ProjectWriteContext {
+            operation_id: "import-filtered-review".into(),
+            expected_project_id: opened.header.project_id,
+            expected_epoch: opened.epoch,
+            expected_revision: 0,
+            request_digest: String::new(),
+            document_revisions: vec![],
+            dataset_generations: vec![],
+        };
+        let import = |context: &ProjectWriteContext, name: &str, link: &str, refresh| {
+            native.import_server_with_link(context, definition.clone(), credentials.clone(), object.clone(),
+                name, Some(link.into()), refresh, |_, _| {}, || false)
+        };
+        let result = import(&context, "Filtered data", "Cell A DataLink", None).unwrap();
+        assert_eq!(result.value.total_rows_written, 4000);
+        let id = &result.changed_dataset_generations[0].id;
+        let key = format!("datalink:{id}");
+        native.close(opened.epoch).unwrap();
+        let reopened = native.open(&path, false).unwrap();
+        let db = native.database(reopened.epoch).unwrap();
+        let saved = native.get_setting(reopened.epoch, &key).unwrap().unwrap();
+        assert!(!saved.value.to_string().contains(&credentials.password));
+        let mut link: SavedDataLink = serde_json::from_value(saved.value).unwrap();
+        assert_eq!(link.object, object);
+        assert_eq!(native.topology(reopened.epoch).unwrap().data_links[0].name, "Cell A DataLink");
+        let context = |operation_id: &str| ProjectWriteContext {
+            operation_id: operation_id.into(),
+            expected_epoch: reopened.epoch,
+            expected_revision: db.committed_revision().unwrap(),
+            ..context.clone()
+        };
+        link.name = "Edited Cell A DataLink".into();
+        native.commit_records(&context("edit-link"), &ProjectRecordPatch {
+            settings: vec![ProjectSettingWrite { key: key.clone(), expected_revision: Some(saved.revision),
+                value: serde_json::to_value(&link).unwrap() }],
+            ..Default::default()
+        }).unwrap();
+        let (generation, before_column_ids) = db.with_engine(|engine| {
+            engine.bump_dataset_generation(id)?;
+            Ok((engine.get_dataset_generation(id)?, engine.get_archive_column_plans(id)?.into_iter()
+                .map(|column| column.column_id).collect::<Vec<_>>()))
+        }).unwrap();
+        let refresh = DataLinkRefresh {
+            table_id: id.clone(), expected_revision: saved.revision + 1,
+            expected_generation: generation, replace_modified: false,
+        };
+        let denied = import(&context("without-confirmation"), "Filtered data", &link.name, Some(refresh.clone())).unwrap_err();
+        assert!(denied.to_string().contains("local changes"));
+        let stale = import(&context("stale-confirmation"), "Filtered data", &link.name, Some(DataLinkRefresh {
+            expected_generation: generation - 1, replace_modified: true, ..refresh.clone()
+        })).unwrap_err();
+        assert!(stale.to_string().contains("changed"));
+        let copy = import(&context("keep-original"), "Filtered data copy", "Cell A copy", None).unwrap();
+        assert_ne!(copy.changed_dataset_generations[0].id, *id);
+        assert_eq!(db.with_reader(reopened.epoch, |engine| engine.get_dataset_generation(id)).unwrap(), generation);
+        let updated = import(&context("replace-confirmed"), "Filtered data", &link.name, Some(DataLinkRefresh {
+            replace_modified: true, ..refresh
+        })).unwrap();
+        assert_eq!(updated.changed_dataset_generations[0].id, *id);
+        assert_eq!(updated.changed_dataset_generations[0].generation, generation + 1);
+        assert_eq!(updated.value.total_rows_written, 4000);
+        let saved = native.get_setting(reopened.epoch, &key).unwrap().unwrap();
+        assert_eq!(saved.value["importedGeneration"], generation + 1);
+        assert_eq!(saved.value["name"], "Edited Cell A DataLink");
+        assert_eq!(db.with_reader(reopened.epoch, |engine| {
+            Ok(engine.get_archive_column_plans(id)?.into_iter().map(|column| column.column_id).collect::<Vec<_>>())
+        }).unwrap(), before_column_ids);
+        native.database(reopened.epoch).unwrap().with_reader(reopened.epoch, |engine| {
+            let id = &result.changed_dataset_generations[0].id;
+            let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(id));
+            let actual: (i64, i64, i64) = engine.conn().query_row(
+                &format!(r#"SELECT COUNT(*), MIN("Rec#"), MAX("Rec#") FROM {table}"#),
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(actual, (4000, 1000, 1999));
+            Ok(())
+        }).unwrap();
+        native.close(reopened.epoch).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires authorized project-v5-servers Docker fixtures"]
     fn project_v5_live_server_fixtures_import_cancel_receipt_and_reopen() {
         assert_eq!(std::env::var("STATSPG_NATIVE_SERVER_FIXTURES").as_deref(),Ok("1"),"start the reviewed temporary fixtures explicitly");
@@ -3119,7 +3273,7 @@ mod live_server_fixture_tests {
             let state=crate::state::AppState::new().unwrap();let native=NativeProjectService::new(&state);let opened=native.open(&path,false).unwrap();let db=native.database(opened.epoch).unwrap();
             let definition=ConnectionDefinition{connector,host:"127.0.0.1".into(),port,database:"statsplayground_test".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:5};
             let credentials=ConnectionCredentials{username:"stats_reader".into(),password:"issue282-test-only-reader".into()};
-            let object=|name:&str|SourceObjectRef{catalog:Some("statsplayground_test".into()),schema:Some(schema.into()),name:name.into(),object_type:SourceObjectType::Table};
+            let object=|name:&str|SourceObjectRef{selection: None, catalog:Some("statsplayground_test".into()),schema:Some(schema.into()),name:name.into(),object_type:SourceObjectType::Table};
             let context=ProjectWriteContext{operation_id:"small".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
             crate::services::project_transaction::inject_commit_failure_for_test(2);
             assert!(native.import_server(&context,definition.clone(),credentials.clone(),object("native_small"),"Small",|_,_|{},||false).unwrap_err().to_string().contains("injected_lost_ack"));

@@ -43,6 +43,26 @@ pub struct ConnectionDefinition {
     pub connect_timeout_seconds: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedDataLink {
+    pub version: u32,
+    pub name: String,
+    pub definition: ConnectionDefinition,
+    pub username: String,
+    pub object: SourceObjectRef,
+    pub imported_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataLinkRefresh {
+    pub table_id: String,
+    pub expected_revision: u64,
+    pub expected_generation: u64,
+    pub replace_modified: bool,
+}
+
 #[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionCredentials {
@@ -60,10 +80,35 @@ pub enum SourceObjectType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceObjectRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<PostgresSelection>,
     pub catalog: Option<String>,
     pub schema: Option<String>,
     pub name: String,
     pub object_type: SourceObjectType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresSelection {
+    pub columns: Vec<String>,
+    pub filters: Vec<PostgresFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresFilter {
+    pub column: String,
+    pub operator: PostgresFilterOperator,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PostgresFilterOperator {
+    Equals,
+    AtLeast,
+    AtMost,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

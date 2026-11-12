@@ -6,7 +6,7 @@ fn invalid(code:&str)->AppError {AppError::InvalidParam(code.into())}
 impl ProjectTopology {
     pub fn from_parts(epoch:u64,committed_revision:u64,summaries:Vec<ProjectDocumentSummary>,transforms:Vec<ProjectTransformLink>,owned_documents:Vec<ProjectOwnedDocument>)->Self {
         let tables=summaries.into_iter().filter(|s|s.kind==ProjectDocumentKind::Table).map(|s|ProjectTableNode{id:s.id,name:s.name,folder:s.folder,revision:s.revision}).collect();
-        let mut result=Self{epoch,committed_revision,folders:vec![],tables,transforms,owned_documents,diagnostics:vec![]};
+        let mut result=Self{epoch,committed_revision,folders:vec![],tables,transforms,owned_documents,data_links:vec![],diagnostics:vec![]};
         result.validate();result
     }
     fn diagnose(&mut self,code:&str,id:&str) {self.diagnostics.push(ProjectTopologyDiagnostic{code:code.into(),id:id.into()});}
@@ -81,6 +81,14 @@ pub(crate) fn read_topology(engine:&DuckDbEngine,epoch:u64)->Result<ProjectTopol
         if let Some(link)=parsed{links.push(link);}else{diagnostics.push(ProjectTopologyDiagnostic{code:"project_transform_binding_invalid".into(),id});}
     }
     let mut topology=ProjectTopology::from_parts(epoch,revision,summaries,links,owned);topology.diagnostics.extend(diagnostics);
+    let mut links = engine.conn().prepare(
+        "SELECT d.id,json_extract_string(s.value_json,'$.name') FROM _project_directory d
+         JOIN _project_settings s ON s.key='datalink:'||d.id
+         WHERE d.kind='table' AND json_extract_string(s.value_json,'$.version')='1' ORDER BY d.id",
+    )?;
+    topology.data_links = links.query_map([], |row| Ok(ProjectDataLinkNode {
+        table_id: row.get(0)?, name: row.get(1)?,
+    }))?.collect::<Result<Vec<_>, _>>()?;
     let mut folders=engine.conn().prepare("SELECT CASE WHEN folder='' THEN name ELSE folder||'/'||name END FROM _project_directory WHERE kind='folder' ORDER BY id")?;
     topology.folders=folders.query_map([],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?;Ok(topology)
 }

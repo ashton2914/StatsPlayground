@@ -6372,9 +6372,11 @@ impl DuckDbEngine {
                 "Database object must contain at least one column".to_string(),
             ));
         }
-        let total_rows = connector
-            .row_count(object)
-            .map_err(|error| AppError::Database(error.message))?;
+        let total_rows = if object.selection.is_some() {
+            0
+        } else {
+            connector.row_count(object).map_err(|error| AppError::Database(error.message))?
+        };
         let id = uuid::Uuid::new_v4().to_string();
         let table_name = format!("dataset_{}", id.replace('-', "_"));
         let column_types = columns

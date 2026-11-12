@@ -1,10 +1,12 @@
-import type { SourceObjectRef } from "../types/dataLink";
+import type { PostgresSelection, SourceObjectRef } from "../types/dataLink";
 
 export interface ServerImportItem {
   key: string;
   object: SourceObjectRef;
   targetName: string;
   selected: boolean;
+  selection?: PostgresSelection;
+  previewed?: boolean;
   status: "pending" | "importing" | "completed" | "failed";
   rows?: number;
   message?: string;

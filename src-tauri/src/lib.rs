@@ -87,6 +87,7 @@ pub fn run() {
             commands::data_link_commands::get_server_source_schema,
             commands::data_link_commands::preview_server_source_object,
             commands::data_link_commands::import_server_snapshot,
+            commands::data_link_commands::update_project_data_link,
             commands::data_link_commands::list_postgres_source_objects,
             commands::data_link_commands::get_postgres_source_schema,
             commands::data_link_commands::preview_postgres_source_object,
