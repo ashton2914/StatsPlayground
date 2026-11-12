@@ -108,6 +108,8 @@ pub struct GraphNewPlotRect {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GraphNewRenderRequest {
+    #[serde(default)]
+    pub dark_theme: bool,
     pub request_id: String,
     pub session_id: String,
     pub dataset_id: String,

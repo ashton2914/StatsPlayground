@@ -348,3 +348,25 @@ for (const width of [1280, 600]) {
     expect(graph!.x + graph!.width).toBeLessThanOrEqual(width + 1);
   });
 }
+test("the open Graph Builder follows system theme changes without losing its camera", async ({ mount, page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  const component = await mount(<WorkspaceGraphNewHarness />);
+  await page.evaluate(() => (window as any).__workspacePersistence.setSystemTheme());
+  await component.getByTestId("graph-new-document-native-one").click();
+  const builder = component.locator(".graph-builder-new");
+  const colors = () => builder.evaluate(element => {
+    const styles = getComputedStyle(element);
+    return [styles.backgroundColor, styles.color];
+  });
+  const request = () => page.evaluate(() => (window as any).__workspacePersistence.snapshot().renderRequests.at(-1));
+  await expect.poll(async () => (await request())?.cameraDomain).toEqual({ xMin: 25, xMax: 75, yMin: 25, yMax: 75 });
+  const light = await colors();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(colors).not.toEqual(light);
+  await expect.poll(async () => (await request())?.darkTheme).toBe(true);
+  expect((await request()).cameraDomain).toEqual({ xMin: 25, xMax: 75, yMin: 25, yMax: 75 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect.poll(colors).toEqual(light);
+  await expect.poll(async () => (await request())?.darkTheme).toBeUndefined();
+  await expect(component.getByLabel("X field")).toHaveValue("x");
+});

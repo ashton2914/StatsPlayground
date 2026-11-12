@@ -30,14 +30,14 @@ interface Chart3DProps {
 
 export function Chart3D({ spec, data, frame, built: providedBuilt, title, minHeight = 240 }: Chart3DProps) {
   const { t } = useTranslation();
-  const themeMode = useThemeStore((s) => s.mode);
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
   const built = useMemo(
     () => providedBuilt ?? build3DOption(spec, data, getGraphTheme(), frame),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [spec, data, frame, providedBuilt, themeMode],
+    [spec, data, frame, providedBuilt, effectiveTheme],
   );
 
   // 初始化 / 销毁。

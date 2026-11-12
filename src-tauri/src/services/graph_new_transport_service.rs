@@ -599,8 +599,12 @@ fn fs_main() -> @location(0) vec4<f32> {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(if scene.is_some() {
-                            wgpu::Color::WHITE
+                        load: wgpu::LoadOp::Clear(if let Some(scene) = scene {
+                            if scene.presentation.dark_theme {
+                                wgpu::Color { r: 37.0 / 255.0, g: 37.0 / 255.0, b: 38.0 / 255.0, a: 1.0 }
+                            } else {
+                                wgpu::Color::WHITE
+                            }
                         } else {
                             wgpu::Color {
                                 r: 248.0 / 255.0,

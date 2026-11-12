@@ -15,6 +15,8 @@ use std::sync::{Arc, Weak};
 pub(crate) const MAX_SCENE_POINTS: usize = 2_100_000;
 const GRID: [f32; 4] = [226.0 / 255.0, 232.0 / 255.0, 240.0 / 255.0, 1.0];
 const INK: [f32; 4] = [71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0, 1.0];
+const DARK_GRID: [f32; 4] = [60.0 / 255.0, 60.0 / 255.0, 60.0 / 255.0, 1.0];
+const DARK_INK: [f32; 4] = [170.0 / 255.0, 170.0 / 255.0, 170.0 / 255.0, 1.0];
 const BLUE: [f32; 4] = [31.0 / 255.0, 111.0 / 255.0, 235.0 / 255.0, 1.0];
 const RED: [f32; 4] = [220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0];
 
@@ -34,6 +36,7 @@ pub(crate) struct GraphNewScene {
 
 #[derive(Clone)]
 pub(crate) struct ScenePresentation {
+    pub(crate) dark_theme: bool,
     pub(crate) raster: Option<Arc<super::graph_new_pixels::PixelRaster>>,
     pub(crate) point_radius: Option<u32>,
     pub(crate) raw_line: Option<Arc<Vec<GroupedLineSegment>>>,
@@ -43,7 +46,7 @@ pub(crate) struct ScenePresentation {
 }
 
 impl Default for ScenePresentation {
-    fn default() -> Self { Self { raster: None, point_radius: None, raw_line: None, show_points: true, x_axis: None, layer_geometry: None } }
+    fn default() -> Self { Self { dark_theme: false, raster: None, point_radius: None, raw_line: None, show_points: true, x_axis: None, layer_geometry: None } }
 }
 
 impl GraphNewScene {
@@ -577,27 +580,28 @@ impl ScenePipeline {
         let plot = scene.plot();
         let ratio = scene.device_pixel_ratio as f32;
         let mut marks = Vec::with_capacity(1024);
+        let (grid, ink) = if scene.presentation.dark_theme { (DARK_GRID, DARK_INK) } else { (GRID, INK) };
         let x_positions: Vec<f64> = match &scene.presentation.x_axis {
             Some(axis) => axis.ticks.iter().map(|tick| tick.position).collect(),
             None => numeric_ticks(scene.domain.x_min, scene.domain.x_max)?.into_iter().map(|tick| tick.position).collect(),
         };
         for position in x_positions {
             let horizontal = plot[0] + position as f32 * plot[2];
-            marks.push(rect([horizontal, plot[1]], [ratio, plot[3]], GRID));
+            marks.push(rect([horizontal, plot[1]], [ratio, plot[3]], grid));
         }
         for tick in numeric_ticks(scene.domain.y_min, scene.domain.y_max)? {
             let vertical = plot[1] + (1.0 - tick.position as f32) * plot[3];
-            marks.push(rect([plot[0], vertical], [plot[2], ratio], GRID));
+            marks.push(rect([plot[0], vertical], [plot[2], ratio], grid));
         }
         marks.push(rect(
             [plot[0] - ratio, plot[1]],
             [ratio, plot[3] + ratio],
-            INK,
+            ink,
         ));
         marks.push(rect(
             [plot[0] - ratio, plot[1] + plot[3]],
             [plot[2] + ratio, ratio],
-            INK,
+            ink,
         ));
         self.decorations = marks.len() as u32;
         self.total = if scene.presentation.show_points {
@@ -1350,6 +1354,7 @@ mod tests {
             EnabledOverlayMask::from_hidden(&overlay, &["blue".to_string()]).expect("enabled");
         GraphNewScene {
             presentation: ScenePresentation {
+                dark_theme: false,
                 layer_geometry: None,
                 raw_line: Some(Arc::new(vec![
                     GroupedLineSegment {
@@ -1859,6 +1864,16 @@ mod tests {
             assert!(frame.render_ms.is_finite() && frame.render_ms >= 0.0);
             assert!(frame.readback_ms.is_finite() && frame.readback_ms >= 0.0);
         }
+    }
+
+    #[test]
+    fn gpu_frame_uses_dark_background_grid_and_axes() {
+        let mut input = scene();
+        input.presentation.dark_theme = true;
+        let frame = GraphNewRenderer::render(&input).expect("dark plot frame");
+        assert_eq!(pixel(&frame, 240, 5, 5), [37, 37, 38, 255]);
+        assert!(frame.rgba.chunks_exact(4).any(|value| value == [60, 60, 60, 255]));
+        assert!(frame.rgba.chunks_exact(4).any(|value| value == [170, 170, 170, 255]));
     }
 
     #[test]

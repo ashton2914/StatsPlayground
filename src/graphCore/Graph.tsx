@@ -116,7 +116,7 @@ interface GraphProps {
 
 export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, panelLayout = "scroll", valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect, optionFactory }: GraphProps) {
   // 订阅主题变化以触发重渲染
-  const themeMode = useThemeStore((s) => s.mode);
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme);
 
   // 使用 3D 场景的条件：处于 3D 模式即可。2D 与 3D 图层完全分开，
   // 3D 模式只显示 3D 图层（surface / scatter3d）；无 3D 图层时由
@@ -143,13 +143,13 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
       })),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec, data, themeMode, valueOrders, frame, optionFactory]);
+  }, [spec, data, effectiveTheme, valueOrders, frame, optionFactory]);
 
   const built3D = useMemo(
     () => use3DScene
       ? build3DPanels(spec, data, getGraphTheme(), frame ?? undefined, valueOrders)
       : null,
-    [spec, data, frame, themeMode, use3DScene, valueOrders],
+    [spec, data, frame, effectiveTheme, use3DScene, valueOrders],
   );
 
   // 3D 场景：hooks 之后再分支返回，保证 hooks 调用顺序稳定。

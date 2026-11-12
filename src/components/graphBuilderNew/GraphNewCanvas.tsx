@@ -1,3 +1,4 @@
+import { useThemeStore } from "@/stores/useThemeStore";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -80,6 +81,7 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
 
 export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, layers, showMean, pointRadius, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
+  const darkTheme = useThemeStore(state => state.effectiveTheme === "dark");
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
   const [rawAvailable, setRawAvailable] = useState(true);
@@ -300,6 +302,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
           sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, layers, layerConfigurationId: layers === undefined ? undefined : JSON.stringify(layers), showMean, pointRadius, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
+          ...(darkTheme ? { darkTheme } : {}),
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -517,7 +520,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, darkTheme, t]);
 
   const controls = (<>
         <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
