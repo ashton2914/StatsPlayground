@@ -2021,7 +2021,7 @@ mod tests {
         let mut context=ProjectWriteContext {operation_id:"cancelled-server".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
         let definition=ConnectionDefinition {connector:ConnectorKind::PostgreSql,host:"127.0.0.1".into(),port:5432,database:"fixture".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:1};
         let credentials=ConnectionCredentials {username:"fixture".into(),password:"unused-fixture".into()};
-        let object=SourceObjectRef {catalog:None,schema:None,name:"missing".into(),object_type:SourceObjectType::Table};
+        let object=SourceObjectRef {selection: None, catalog:None,schema:None,name:"missing".into(),object_type:SourceObjectType::Table};
         let error=service.import_server(&context,definition.clone(),credentials.clone(),object.clone(),"Imported",|_,_|{},||true).unwrap_err();
         assert!(matches!(error,AppError::Cancelled(_)),"{error}");
         assert_eq!(service.database(opened.epoch).unwrap().committed_revision().unwrap(),0);
@@ -2039,7 +2039,7 @@ mod tests {
         let opened=service.open_enabled(&path,false).unwrap();
         let context=ProjectWriteContext {operation_id:"server-replay".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
         let definition=ConnectionDefinition {connector:ConnectorKind::PostgreSql,host:"127.0.0.1".into(),port:5432,database:"fixture".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:1};
-        let object=SourceObjectRef {catalog:None,schema:Some("public".into()),name:"values".into(),object_type:SourceObjectType::Table};
+        let object=SourceObjectRef {selection: None, catalog:None,schema:Some("public".into()),name:"values".into(),object_type:SourceObjectType::Table};
         let request=crate::services::project_output::ProjectServerImport {
             connection_id:"e6b810e07aad82980a529dfff63318c6d42991c594ca0fef5ed7a583450efe89".into(),object:object.clone(),target_name:"Imported".into(),source_description:"fixture.public.values".into(),folder:String::new(),
         };
@@ -3111,6 +3111,76 @@ mod live_server_fixture_tests {
     use crate::services::project_database::ProjectDatabase;
 
     #[test]
+    #[ignore = "requires the local Issue 263 PostgreSQL review database"]
+    fn project_v5_imports_only_previewed_postgres_selection() {
+        let definition = ConnectionDefinition {
+            connector: ConnectorKind::PostgreSql,
+            host: "127.0.0.1".into(),
+            port: 55432,
+            database: "statspg_review".into(),
+            authentication_type: AuthenticationType::UsernamePassword,
+            tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
+            connect_timeout_seconds: 5,
+        };
+        let credentials = ConnectionCredentials {
+            username: "stats_reader".into(),
+            password: std::env::var("STATSPG_REVIEW_PASSWORD").unwrap(),
+        };
+        let columns = vec!["Rec#".into(), "Current (A)".into(), "Voltage (V)".into()];
+        let object = SourceObjectRef {
+            catalog: Some(definition.database.clone()),
+            schema: Some("public".into()),
+            name: "cell_a_raw".into(),
+            object_type: SourceObjectType::Table,
+            selection: Some(PostgresSelection {
+                columns,
+                filters: vec![
+                    PostgresFilter { column: "Rec#".into(), operator: PostgresFilterOperator::AtLeast, value: "1000".into() },
+                    PostgresFilter { column: "Rec#".into(), operator: PostgresFilterOperator::AtMost, value: "1999".into() },
+                ],
+            }),
+        };
+        let connector = crate::connectors::PostgresConnector::new(definition.clone(), credentials.clone()).unwrap();
+        let preview = connector.preview(&object, 100).unwrap();
+        assert_eq!(preview.columns.len(), 3);
+        assert_eq!(preview.rows.len(), 100);
+        assert!(preview.truncated);
+        assert!(preview.rows.iter().all(|row| (1000..=1999).contains(&row[0].as_i64().unwrap())));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.spprj");
+        ProjectDatabase::create(&path, false).unwrap().shutdown().unwrap();
+        let state = crate::state::AppState::new().unwrap();
+        let native = NativeProjectService::new(&state);
+        let opened = native.open(&path, false).unwrap();
+        let context = ProjectWriteContext {
+            operation_id: "import-filtered-review".into(),
+            expected_project_id: opened.header.project_id,
+            expected_epoch: opened.epoch,
+            expected_revision: 0,
+            request_digest: String::new(),
+            document_revisions: vec![],
+            dataset_generations: vec![],
+        };
+        let result = native.import_server(&context, definition, credentials, object, "Filtered data", |_, _| {}, || false).unwrap();
+        assert_eq!(result.value.total_rows_written, 4000);
+        native.close(opened.epoch).unwrap();
+        let reopened = native.open(&path, true).unwrap();
+        native.database(reopened.epoch).unwrap().with_reader(reopened.epoch, |engine| {
+            let id = &result.changed_dataset_generations[0].id;
+            let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(id));
+            let actual: (i64, i64, i64) = engine.conn().query_row(
+                &format!(r#"SELECT COUNT(*), MIN("Rec#"), MAX("Rec#") FROM {table}"#),
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(actual, (4000, 1000, 1999));
+            Ok(())
+        }).unwrap();
+        native.close(reopened.epoch).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires authorized project-v5-servers Docker fixtures"]
     fn project_v5_live_server_fixtures_import_cancel_receipt_and_reopen() {
         assert_eq!(std::env::var("STATSPG_NATIVE_SERVER_FIXTURES").as_deref(),Ok("1"),"start the reviewed temporary fixtures explicitly");
@@ -3119,7 +3189,7 @@ mod live_server_fixture_tests {
             let state=crate::state::AppState::new().unwrap();let native=NativeProjectService::new(&state);let opened=native.open(&path,false).unwrap();let db=native.database(opened.epoch).unwrap();
             let definition=ConnectionDefinition{connector,host:"127.0.0.1".into(),port,database:"statsplayground_test".into(),authentication_type:AuthenticationType::UsernamePassword,tls_mode:TlsMode::Disabled,tls_root_certificate_pem:None,connect_timeout_seconds:5};
             let credentials=ConnectionCredentials{username:"stats_reader".into(),password:"issue282-test-only-reader".into()};
-            let object=|name:&str|SourceObjectRef{catalog:Some("statsplayground_test".into()),schema:Some(schema.into()),name:name.into(),object_type:SourceObjectType::Table};
+            let object=|name:&str|SourceObjectRef{selection: None, catalog:Some("statsplayground_test".into()),schema:Some(schema.into()),name:name.into(),object_type:SourceObjectType::Table};
             let context=ProjectWriteContext{operation_id:"small".into(),expected_project_id:opened.header.project_id,expected_epoch:opened.epoch,expected_revision:0,request_digest:String::new(),document_revisions:vec![],dataset_generations:vec![]};
             crate::services::project_transaction::inject_commit_failure_for_test(2);
             assert!(native.import_server(&context,definition.clone(),credentials.clone(),object("native_small"),"Small",|_,_|{},||false).unwrap_err().to_string().contains("injected_lost_ack"));

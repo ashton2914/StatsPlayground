@@ -31,7 +31,13 @@ export interface ConnectionCredentials {
 
 export type SourceObjectType = "table" | "view";
 
+export interface PostgresSelection {
+  columns: string[];
+  filters: { column: string; operator: "equals" | "atLeast" | "atMost"; value: string }[];
+}
+
 export interface SourceObjectRef {
+  selection?: PostgresSelection;
   catalog: string | null;
   schema: string | null;
   name: string;

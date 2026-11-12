@@ -55,6 +55,7 @@ impl MySqlConnector {
         Ok(rows
             .into_iter()
             .map(|(name, kind)| SourceObjectRef {
+                selection: None,
                 catalog: Some(self.definition.database.clone()),
                 schema: Some(self.definition.database.clone()),
                 name,

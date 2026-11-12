@@ -671,3 +671,30 @@
     grid-column: 1;
   }
 }
+
+.postgres-selection {
+  min-width: 0;
+  flex: 0 0 auto;
+  max-height: 55%;
+  overflow: auto;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-main);
+}
+
+.postgres-selection-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 4px 10px;
+  max-height: 100px;
+  overflow: auto;
+  margin: 6px 0;
+}
+
+.postgres-selection-columns label {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

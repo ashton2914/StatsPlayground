@@ -458,7 +458,6 @@ export function Workspace() {
   const [showSqlQuery, setShowSqlQuery] = useState(false);
   const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
   const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
-  const openDataLink = useDataLinkStore((state) => state.open);
   const closeDataLink = useDataLinkStore((state) => state.close);
   const importDataLinkSelection = useDataLinkStore((state) => state.importSelected);
   const importProgress = useDataLinkStore((state) => state.progress);
@@ -1680,17 +1679,6 @@ export function Workspace() {
     }
   };
 
-  const handleImportSqlite = async () => {
-    const selected = await open({
-      title: t("menu.importSqlite"),
-      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
-      multiple: false,
-    });
-    if (selected) {
-      openDataLink(selected as string);
-    }
-  };
-
   const importSelectedSqlite = async (selections: SqliteImportSelection[]): Promise<ImportSummary> => {
     const summary = await importDataLinkSelection(selections);
     if (summary.status === "completed" && summary.imported.length > 0) {
@@ -2907,7 +2895,6 @@ export function Workspace() {
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportTableSptb}>{t("menu.importSptb")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
-              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
               <div className="menu-sep" />
               {persistence&&<div className={`menu-item${readOnly?" menu-item-disabled":""}`} onClick={readOnly?undefined:()=>void handleGroupImport()}>{t("directory.importGroup")}</div>}
               <div className={`menu-item${datasets.length === 0 ? " menu-item-disabled" : ""}`} onClick={datasets.length === 0 ? undefined : (() => setShowTableExport(true))}>{t("menu.exportTables", { defaultValue: "Export Tables..." })}</div>

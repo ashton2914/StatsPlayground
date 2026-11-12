@@ -553,6 +553,7 @@ mod tests {
         let request = ProjectServerImport {
             connection_id: "fixture".into(),
             object: SourceObjectRef {
+                selection: None,
                 catalog: None,
                 schema: None,
                 name: "table".into(),

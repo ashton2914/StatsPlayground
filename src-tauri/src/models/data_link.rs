@@ -60,10 +60,35 @@ pub enum SourceObjectType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceObjectRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<PostgresSelection>,
     pub catalog: Option<String>,
     pub schema: Option<String>,
     pub name: String,
     pub object_type: SourceObjectType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresSelection {
+    pub columns: Vec<String>,
+    pub filters: Vec<PostgresFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresFilter {
+    pub column: String,
+    pub operator: PostgresFilterOperator,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PostgresFilterOperator {
+    Equals,
+    AtLeast,
+    AtMost,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
