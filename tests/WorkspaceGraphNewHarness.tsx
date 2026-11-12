@@ -11,6 +11,7 @@ import { useDataStore } from "../src/stores/useDataStore";
 import { useFolderStore } from "../src/stores/useFolderStore";
 import { useGraphBuilderNewStore } from "../src/stores/useGraphBuilderNewStore";
 import { useGraphBuilderStore } from "../src/stores/useGraphBuilderStore";
+import { useThemeStore } from "../src/stores/useThemeStore";
 import { useProjectStore } from "../src/stores/useProjectStore";
 import type { PersistedGraphBuilderNewDocument } from "../src/types/graphBuilderNew";
 import type { DatasetMeta } from "../src/types/data";
@@ -25,6 +26,7 @@ const documents: PersistedGraphBuilderNewDocument[] = [
 export function WorkspaceGraphNewHarness({ missingOnly = false, legacyFolders = false }: { missingOnly?: boolean; legacyFolders?: boolean }) {
   const [ready, setReady] = useState(false);
   useEffect(() => {
+    const previousTheme = useThemeStore.getState().mode;
     const previousData = useDataStore.getState();
     const previousProject = useProjectStore.getState();
     const previousFolder = useFolderStore.getState();
@@ -108,6 +110,7 @@ export function WorkspaceGraphNewHarness({ missingOnly = false, legacyFolders = 
     useGraphBuilderNewStore.getState().loadFromProject(missingOnly ? [{ ...documents[0], datasetId: "missing-source" }] : documents);
     useGraphBuilderStore.getState().loadFromProject(missingOnly ? [] : [{ id: "legacy", name: "Legacy", sourceDatasetId: "source", mode: "2d", modeStates: { twoD: createDefaultGraph2DState(), threeD: createDefaultGraph3DState(), multivariate: createDefaultMultivariateGraphState() }, createdAt: "2026-09-18" }]);
     (window as any).__workspacePersistence = {
+      setSystemTheme: () => useThemeStore.getState().setMode("system"),
       snapshot: () => ({ documents: useGraphBuilderNewStore.getState().items, sessions: useGraphBuilderNewStore.getState().sessions, folders: useFolderStore.getState().graphNewFolders, folderPaths: useFolderStore.getState().folders, datasets: useDataStore.getState().datasets, project: useProjectStore.getState().project, legacy: useGraphBuilderStore.getState().items, dirty: useProjectStore.getState().dirty, readOnly: useProjectStore.getState().readOnly, saved, saveCount, commands, renderRequests }),
       failOpen: (message: string) => { openFailure = message; },
       savePaths: () => savePaths,
@@ -129,6 +132,7 @@ export function WorkspaceGraphNewHarness({ missingOnly = false, legacyFolders = 
       useFolderStore.setState(previousFolder, true);
       useGraphBuilderNewStore.setState(previousNative, true);
       useGraphBuilderStore.setState(previousLegacy, true);
+      useThemeStore.getState().setMode(previousTheme);
       delete (window as any).__workspacePersistence;
     };
   }, [missingOnly, legacyFolders]);

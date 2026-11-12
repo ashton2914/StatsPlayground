@@ -56,6 +56,7 @@ export interface GraphNewProbeController {
 }
 
 export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
+  darkTheme?: boolean;
   sessionId: string;
   datasetId: string;
   xColumnId: string;

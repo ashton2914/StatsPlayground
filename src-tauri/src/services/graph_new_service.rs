@@ -464,6 +464,7 @@ impl<'a> GraphNewService<'a> {
                 device_pixel_ratio: request.device_pixel_ratio, domain, points,
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
+                    dark_theme: request.dark_theme,
                     raster: if layer_geometry.as_ref().is_some_and(|p| p.raw_points.is_empty() && p.line_sources.is_empty()) { None } else { raster }, point_radius: request.point_radius,
                     layer_geometry: layer_geometry.clone(),
                     raw_line: raw_line.clone(), show_points: layer_geometry.as_ref().is_some_and(|p| !p.line_sources.is_empty()) || request.layers.as_ref().map_or(request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line, |layers| layers.iter().any(|layer| matches!(layer, super::graph_new_layers::GraphNewLayer::Points { options, .. } if options.summary_stat == "none"))),
@@ -2398,7 +2399,7 @@ mod tests {
     #[test]
     fn graph_new_render_ownership_fences_switch_cancel_close_and_old_requests() {
         let runtime = super::GraphNewRuntime::default();
-        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { point_radius: None,
+        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { dark_theme: false, point_radius: None,
             request_id: format!("request-{generation}"), session_id: session.into(),
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
@@ -2501,7 +2502,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "render-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2546,7 +2547,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "error-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2588,7 +2589,7 @@ mod tests {
         use crate::error::AppError;
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "concurrent-fixture");
-        let request = GraphNewRenderRequest { point_radius: None, request_id: "first".into(), session_id: "session".into(),
+        let request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "first".into(), session_id: "session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,

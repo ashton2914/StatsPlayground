@@ -15,6 +15,11 @@
   --gbn-placeholder: #7d898f;
   --gbn-border: #cdd6da;
   --gbn-hover: #e5ecef;
+  --gbn-grid: rgba(37, 54, 71, 0.045);
+  --gbn-header-tint: #dbe6ec;
+  --gbn-control-tint: #edf3f5;
+  --gbn-preview: #edf1f2;
+  --gbn-preview-line: #d8e0e3;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -22,10 +27,26 @@
   flex-direction: column;
   color: var(--gbn-text);
   background:
-    linear-gradient(rgba(37, 54, 71, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(37, 54, 71, 0.045) 1px, transparent 1px),
+    linear-gradient(var(--gbn-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--gbn-grid) 1px, transparent 1px),
     var(--gbn-bg);
   background-size: 24px 24px;
+}
+
+[data-theme="dark"] .graph-builder-new {
+  --gbn-bg: var(--bg-main);
+  --gbn-panel: var(--bg-card);
+  --gbn-panel-soft: var(--bg-header);
+  --gbn-text: var(--fg-primary);
+  --gbn-muted: var(--fg-muted);
+  --gbn-placeholder: var(--fg-hint);
+  --gbn-border: var(--border-main);
+  --gbn-hover: var(--bg-header-hover);
+  --gbn-grid: rgba(255, 255, 255, 0.045);
+  --gbn-header-tint: var(--bg-header);
+  --gbn-control-tint: var(--bg-header);
+  --gbn-preview: var(--bg-card);
+  --gbn-preview-line: var(--border-main);
 }
 
 .graph-builder-new-header {
@@ -35,7 +56,7 @@
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--gbn-border);
-  background: color-mix(in srgb, var(--gbn-bg) 94%, #dbe6ec);
+  background: color-mix(in srgb, var(--gbn-bg) 94%, var(--gbn-header-tint));
 }
 
 .graph-builder-new-header h1 {
@@ -324,7 +345,7 @@
   position: relative;
   min-width: 0;
   min-height: 0;
-  background: white;
+  background: var(--gbn-panel);
 }
 
 .graph-new-canvas-host canvas {
@@ -346,7 +367,7 @@
 .graph-new-camera-preview { transform-origin: 0 0; opacity: 0; pointer-events: none; }
 .graph-new-canvas-host[data-provisional] > canvas { opacity: 0.25; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
-  background: repeating-linear-gradient(135deg, #edf1f2 0, #edf1f2 4px, #d8e0e3 4px, #d8e0e3 5px);
+  background: repeating-linear-gradient(135deg, var(--gbn-preview) 0, var(--gbn-preview) 4px, var(--gbn-preview-line) 4px, var(--gbn-preview-line) 5px);
 }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
 .graph-new-reset {
@@ -395,7 +416,7 @@
   overflow-y: auto;
   border: 1px solid var(--gbn-border);
   border-radius: 6px;
-  background-color: color-mix(in srgb, var(--gbn-panel) 94%, #edf3f5);
+  background-color: color-mix(in srgb, var(--gbn-panel) 94%, var(--gbn-control-tint));
   contain: inline-size;
 }
 .graph-new-overlay-legend label {
