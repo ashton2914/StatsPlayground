@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "fixture:datalink-postgres": "bash tests/fixtures/datalink-review/start-postgres.sh",
     "build": "tsc -b && vite build",
     "build:portable": "node scripts/buildPortable.mjs",
     "benchmark:graph-new-transport": "node scripts/runGraphNewTransportBudget.mjs",

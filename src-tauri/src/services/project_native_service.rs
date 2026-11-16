@@ -3146,7 +3146,9 @@ mod live_server_fixture_tests {
         let definition = ConnectionDefinition {
             connector: ConnectorKind::PostgreSql,
             host: "127.0.0.1".into(),
-            port: 55432,
+            port: std::env::var("STATSPG_REVIEW_PORT")
+                .map(|port| port.parse().expect("STATSPG_REVIEW_PORT must be a valid TCP port"))
+                .unwrap_or(55432),
             database: "statspg_review".into(),
             authentication_type: AuthenticationType::UsernamePassword,
             tls_mode: TlsMode::Disabled,
