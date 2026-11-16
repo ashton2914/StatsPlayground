@@ -41,8 +41,10 @@ impl ProjectDraftRegistry {
         temporary
             .write_all(&serde_json::to_vec(entry).map_err(|e| AppError::FileIO(e.to_string()))?)?;
         temporary.as_file().sync_all()?;
+        // Windows ReplaceFileW cannot replace a file with a source still open for writing.
+        let temporary = temporary.into_temp_path();
         super::streaming_project_writer::replace_archive_atomically_os(
-            temporary.path(),
+            &temporary,
             &root.join(format!("{id}.json")),
         )?;
         #[cfg(unix)]

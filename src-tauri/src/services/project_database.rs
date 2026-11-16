@@ -16,12 +16,26 @@ pub(crate) struct FileOwner(same_file::Handle);
 
 impl FileOwner {
     pub(crate) fn acquire(path: &Path) -> Result<Self, AppError> {
-        let identity = same_file::Handle::from_path(path)?;
+        let open_identity = || -> std::io::Result<same_file::Handle> {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // Keep the file identity alive without requesting data access:
+                // DuckDB's Windows write lock excludes data readers.
+                let file = std::fs::OpenOptions::new().access_mode(0).open(path)?;
+                same_file::Handle::from_file(file)
+            }
+            #[cfg(not(windows))]
+            {
+                same_file::Handle::from_path(path)
+            }
+        };
+        let identity = open_identity()?;
         let mut owners = OWNED_FILES
             .get_or_init(Default::default)
             .lock()
             .map_err(|_| AppError::Busy("project_ownership_unavailable".into()))?;
-        if !owners.insert(same_file::Handle::from_path(path)?) {
+        if !owners.insert(open_identity()?) {
             return Err(AppError::Busy("project_already_open".into()));
         }
         Ok(Self(identity))
@@ -69,7 +83,11 @@ impl ProjectDatabase {
         {
             let engine = DuckDbEngine::create_project_file(&temporary, draft)?;
             engine.conn().execute_batch("CHECKPOINT")?;
-            let storage_version = project_schema::physical_storage_version(&temporary)?;
+        }
+        // Read the physical header after releasing DuckDB's exclusive handle.
+        let storage_version = project_schema::physical_storage_version(&temporary)?;
+        {
+            let engine = DuckDbEngine::open_project_file(&temporary, draft, false)?;
             project_schema::create_header(engine.conn(), &storage_version)?;
             engine.conn().execute_batch("CHECKPOINT")?;
         }
