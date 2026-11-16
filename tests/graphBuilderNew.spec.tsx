@@ -155,11 +155,17 @@ test("Issue 245 layer cards independently add and remove graph elements", async 
  await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();
  await expect(component.getByTestId("graph-layer-line")).toBeVisible();await component.getByRole("button",{name:"Remove Scatter",exact:true}).click();
  await expect(component.getByTestId("graph-layer-points")).toHaveCount(0);await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Time Series",exact:true}).click();
- await expect(component.getByTestId("graph-layer-timeSeries")).toBeVisible();await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"time"');
+ await expect(component.getByTestId("graph-layer-timeSeries")).toBeVisible();await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"auto"');
 });
 
-test("Issue 245 ordinary Line stays Line on a duration axis",async({mount})=>{
- const component=await mount(<GraphBuilderNewHarness mode="render"/>);await component.getByLabel("X axis interpretation").selectOption("duration");await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();await expect(component.getByTestId("graph-layer-line")).toContainText("Line");await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
+test("ordinary Line uses numeric elapsed time from the source column", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  await component.getByRole("button", { name: "Add layer", exact: true }).click();
+  await component.getByRole("button", { name: "Line", exact: true }).click();
+  await expect(component.getByTestId("graph-layer-line")).toContainText("Line");
+  await expect(component.getByTestId("render-request")).toContainText('"xMode":"numeric"');
 });
 
 for (const mode of ["error", "missing", "deferredFields", "stale"] as const) {
@@ -167,13 +173,16 @@ for (const mode of ["error", "missing", "deferredFields", "stale"] as const) {
     const component = await mount(<GraphBuilderNewHarness mode={mode} />);
     await expect(component.getByRole("button", {name:"Add layer",exact:true})).toBeDisabled();
     await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toBeDisabled();
-    await expect(component.getByLabel("X axis interpretation")).toBeDisabled();
+    await expect(component.getByLabel("X axis interpretation")).toHaveCount(0);
     await expect(component.getByTestId("project-dirty")).toHaveText("false");
   });
 }
 
-test("Issue 245 X interpretation preserves independent layer options",async({mount})=>{
- const component=await mount(<GraphBuilderNewHarness mode="render"/>);await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("median");await component.getByTestId("graph-slot-x").getByLabel("X axis interpretation").selectOption("duration");await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toHaveValue("median");await expect(component.getByTestId("selected-columns")).toContainText('"xMode":"duration"');
+test("changing the source X field preserves independent layer options", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
+  await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("median");
+  await component.getByTestId("legacy-x-field").selectOption("timestamp-dpt");
+  await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toHaveValue("median");
 });
 
 test("Issue 245 Legend slot binds Overlay and hosts the existing group legend", async ({ mount }) => {
@@ -301,7 +310,7 @@ test("persistence save read-only disables document edits and camera gestures", a
   await component.getByRole("button", { name: "Begin save", exact: true }).click();
   await expect(component.getByTestId("legacy-x-field")).toBeDisabled();
   await expect(component.getByTestId("legacy-y-field")).toBeDisabled();
-  await expect(component.getByTestId("legacy-x-interpretation")).toBeDisabled();
+  await expect(component.getByTestId("legacy-x-interpretation")).toHaveCount(0);
   await expect(component.getByTestId("graph-layer-points").getByLabel("Summary Statistic")).toBeDisabled();
   await expect(component.getByRole("button", { name: "Reset view", exact: true })).toBeDisabled();
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
@@ -466,38 +475,34 @@ for (const width of [960, 390]) {
   }
 }
 
-test("phase1 typed X and raw line controls preserve mode camera and reset interpretation", async ({ mount }, testInfo) => {
-  const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
-  await expect(component.getByTestId("legacy-x-field").locator('option[value="text-test-time"]')).toHaveJSProperty("disabled", false);
-  await component.getByTestId("legacy-x-field").selectOption("text-test-time");
+test("X interpretation follows the source column and ignores a legacy chart override", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="mixedFields" legacyXMode="duration" />);
+  const x = component.getByTestId("legacy-x-field");
+  await x.selectOption("text-test-time");
   await component.getByTestId("legacy-y-field").selectOption("column-y");
-  const metrics = component.getByTestId("render-metrics");
-  await expect(metrics).toContainText('"presented":1');
-  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
-  await expect(metrics).toContainText('"presented":2');
-  const camera = JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain;
-  await component.getByTestId("graph-layer-points").getByLabel("Summary Statistic").selectOption("mean");
-  await expect(metrics).toContainText('"presented":3');
-  expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
-  await component.getByTestId("legacy-x-interpretation").selectOption("duration");
-  await expect(metrics).toContainText('"presented":4');
-  const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
-  expect(request.xMode).toBe("duration"); expect(request.layers[0].options.summaryStat).toBe("mean"); expect(request.cameraDomain).toBeNull();
-  await expect(component.getByTestId("x-axis-ticks")).toContainText("25:00:00");
-  await expect(metrics).toContainText('"maximumActive":1');
-  await component.screenshot({ path: testInfo.outputPath("typed-raw-controls.png") });
+  const request = component.getByTestId("render-request");
+  await expect(request).toContainText('"xMode":"category"');
+  await expect(component.getByText(/uses the source column type/)).toBeVisible();
+  await expect(component.getByLabel("X axis interpretation")).toHaveCount(0);
+  await expect(component.getByTestId("legacy-x-interpretation")).toHaveCount(0);
+  await x.selectOption("timestamp-dpt");
+  await expect(request).toContainText('"xMode":"time"');
+  await expect(component.getByText(/uses the source column type/)).toHaveCount(0);
+  await x.selectOption("column-x");
+  await expect(request).toContainText('"xMode":"numeric"');
+  await component.getByRole("button", { name: "Refresh field metadata" }).click();
+  await expect(request).toContainText('"xMode":"category"');
+  await expect(x).toHaveValue("column-x");
 });
 
 for (const width of [960, 390]) {
   test(`phase1 typed ticks fit and remain separated at ${width}px`, async ({ mount, page }, testInfo) => {
     await page.setViewportSize({ width, height: 800 });
-    const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
-    await component.getByTestId("legacy-x-field").selectOption("column-x");
+    const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
     await component.getByTestId("legacy-y-field").selectOption("column-y");
-    await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
-    for (const [index, mode] of ["duration", "time", "category"].entries()) {
-      await component.getByTestId("legacy-x-interpretation").selectOption(mode);
-      await expect(component.getByTestId("render-metrics")).toContainText(`"presented":${index + 2}`);
+    for (const [index, [column, mode]] of [["timestamp-dpt", "time"], ["text-test-time", "category"]].entries()) {
+      await component.getByTestId("legacy-x-field").selectOption(column);
+      await expect(component.getByTestId("render-metrics")).toContainText(`"presented":${index + 1}`);
       const ticks = component.getByTestId("x-axis-ticks");
       await expect(ticks).toBeVisible();
       if (mode === "time") await expect(ticks).toContainText("UTC");

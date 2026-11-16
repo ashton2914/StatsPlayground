@@ -77,7 +77,6 @@ export function GraphBuilderNewView({
   const setColumns = useGraphBuilderNewStore((state) => state.setColumns);
   const setOverlay = useGraphBuilderNewStore((state) => state.setOverlay);
   const setHiddenOverlayGroups = useGraphBuilderNewStore((state) => state.setHiddenOverlayGroups);
-  const setXMode = useGraphBuilderNewStore((state) => state.setXMode);
   const setCamera = useGraphBuilderNewStore((state) => state.setCamera);
   const readOnly = useProjectStore((state) => state.readOnly);
   const [columnMetadata, setColumnMetadata] = useState<{
@@ -110,6 +109,13 @@ export function GraphBuilderNewView({
     ? columnMetadata.descriptors : [];
   const numericColumns = columns.filter(({ sqlType }) => inferFieldType(sqlType) === "continuous");
   const numericColumnIds = new Set(numericColumns.map(({ columnId }) => columnId));
+  const xColumn = columns.find(({ columnId }) => columnId === session?.xColumnId);
+  const sqlType = xColumn?.sqlType.trim().toUpperCase();
+  const xMode: GraphNewXMode = !sqlType ? "auto"
+    : /^(?:DATE$|TIMESTAMP)/.test(sqlType) ? "time"
+    : /^(?:U?(?:TINYINT|SMALLINT|INTEGER|BIGINT)|HUGEINT|DOUBLE|REAL|FLOAT|DECIMAL(?:\(.*\))?)$/.test(sqlType) ? "numeric"
+    : "category";
+  const legacyModeConflict = Boolean(xColumn && session?.xMode && session.xMode !== "auto" && session.xMode !== xMode);
   const xColumnIds = new Set(columns.map(({ columnId }) => columnId));
   const overlayColumnIds = new Set(columns.map(({ columnId }) => columnId));
   const missingX = Boolean(session?.xColumnId && !xColumnIds.has(session.xColumnId));
@@ -292,7 +298,7 @@ export function GraphBuilderNewView({
           ) : transportAvailable && session.xColumnId && session.yColumnId
             && xColumnIds.has(session.xColumnId) && numericColumnIds.has(session.yColumnId) ? (
             <GraphNewCanvas
-              key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.overlayColumnId, session.xMode ?? "auto"])}
+              key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.overlayColumnId, xMode])}
               controlsHost={toolbarHost}
               transportId={session.transportId}
               datasetId={session.datasetId}
@@ -304,9 +310,9 @@ export function GraphBuilderNewView({
               layers={session.layers}
               showMean={false}
               pointRadius={pointRadius}
-              xMode={session.xMode ?? "auto"}
+              xMode={xMode}
               rawMode="scatter"
-              savedCamera={session.camera ?? null}
+              savedCamera={legacyModeConflict ? null : session.camera ?? null}
               readOnly={readOnly}
               onOverlayStateChange={setOverlayState}
               onCameraChange={(camera) => {
@@ -316,8 +322,7 @@ export function GraphBuilderNewView({
                   && current.runtimeEpoch === session.runtimeEpoch
                   && current.datasetId === session.datasetId && current.xColumnId === session.xColumnId
                   && current.yColumnId === session.yColumnId
-                  && current.overlayColumnId === session.overlayColumnId
-                  && current.xMode === session.xMode) setCamera(session.id, camera);
+                  && current.overlayColumnId === session.overlayColumnId) setCamera(session.id, camera);
               }}
             />
           ) : (
@@ -335,23 +340,6 @@ export function GraphBuilderNewView({
             clearAriaLabel={clearFieldLabel("X")}
             onDropFields={(fields) => updateX(fields[0]?.columnId ?? "")}
             onClear={() => updateX("")}
-            settings={(
-              <label className="graph-builder-new-axis-setting">
-                <span>{t("graphNew.xInterpretation")}</span>
-                <select
-                  aria-label="X axis interpretation"
-                  value={session.xMode ?? "auto"}
-                  disabled={controlsDisabled}
-                  onChange={(event) => setXMode(session.id, event.target.value as GraphNewXMode)}
-                >
-                  {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) => (
-                    <option key={mode} value={mode}>
-                      {t(`graphNew.xMode.${mode}`, { defaultValue: mode })}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
           />
           <GraphDropSlot
             slot="group-y"
@@ -439,19 +427,13 @@ export function GraphBuilderNewView({
               {columns.map((column) => <option key={column.columnId} value={column.columnId}>{column.name}</option>)}
             </select>
           </label>
-          <label>
-            <span>{t("graphNew.xInterpretation", { defaultValue: "X interpretation" })}</span>
-            <select data-testid="legacy-x-interpretation" tabIndex={-1} value={session.xMode ?? "auto"}
-              disabled={controlsDisabled}
-              onChange={(event) => setXMode(session.id, event.target.value as GraphNewXMode)}>
-              {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) =>
-                <option key={mode} value={mode}>{t(`graphNew.xMode.${mode}`, { defaultValue: mode })}</option>)}
-            </select>
-          </label>
 
         </div>
       </div>
 
+      {legacyModeConflict && <p className="graph-builder-new-source-notice" role="status">
+        {t("graphNew.legacyColumnType", { column: xColumn?.name, defaultValue: "X now uses the source column type for {{column}}. To change its interpretation, edit the column in the source table." })}
+      </p>}
       <footer className="graph-builder-new-status">
         <span className={transportAvailable ? "available" : "unavailable"} aria-hidden="true" />
         {transportAvailable

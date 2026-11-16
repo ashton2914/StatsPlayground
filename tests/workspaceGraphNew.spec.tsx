@@ -46,7 +46,9 @@ test("two configured documents survive Workspace save close reset open and indep
   expect((await state()).sessions[0].datasetGeneration).toBe(23);
   await component.getByTestId("graph-new-document-native-two").click();
   await expect(component.getByLabel("X field")).toHaveValue("y");
-  await expect(component.getByLabel("X interpretation")).toHaveValue("duration");
+  await expect(component.getByLabel("X axis interpretation")).toHaveCount(0);
+  await expect(component.getByText(/uses the source column type/)).toBeVisible();
+  await expect.poll(async () => (await state()).renderRequests.at(-1)).toMatchObject({ xColumnId: "y", xMode: "numeric" });
   await expect(component.getByTestId("graph-layer-line").first().getByLabel("Connection")).toHaveValue("step");
   await component.getByText("Legacy.spgh", { exact: true }).click();
   await expect(component.locator(".graph-builder-new")).toHaveCount(0);
@@ -197,20 +199,20 @@ test("dataset deletion removes both native dependents and their assignments", as
 
 test("actual create action clears table selection and saves two independently edited configurations", async ({ mount, page }) => {
   const component = await mount(<WorkspaceGraphNewHarness />);
-  for (const [xMode, rawMode] of [["numeric", "scatter"], ["duration", "pointsLine"]]) {
+  for (const rawMode of ["scatter", "pointsLine"]) {
     await component.getByText("Measurements.sptb", { exact: true }).click();
     await component.getByRole("button", { name: "Graph", exact: true }).click();
     await component.getByRole("menuitem", { name: "Graph Builder for massive data", exact: true }).click();
     await component.getByTestId("graph-field-x").dragTo(component.getByTestId("graph-slot-x"));
     await component.getByTestId("graph-field-y").dragTo(component.getByTestId("graph-slot-y"));
-    await component.getByLabel("X axis interpretation").selectOption(xMode);
+    await expect(component.getByLabel("X axis interpretation")).toHaveCount(0);
     if(rawMode === "pointsLine"){await component.getByRole("button",{name:"Add layer",exact:true}).click();await component.getByRole("button",{name:"Line",exact:true}).click();}
     await component.getByText("Measurements.sptb", {exact:true}).click();
   }
   await component.locator(".menu-bar-save").click();
   await expect.poll(() => page.evaluate(() => (window as any).__workspacePersistence.snapshot().saveCount)).toBe(1);
   const state = await page.evaluate(() => (window as any).__workspacePersistence.snapshot());
-  expect(state.saved.graphBuildersNew.slice(2).map((item: any) => [item.xMode, item.layers.map((l:any)=>l.kind)])).toEqual([["numeric", ["points"]], ["duration", ["points","line"]]]);
+  expect(state.saved.graphBuildersNew.slice(2).map((item: any) => [item.xMode, item.layers.map((l:any)=>l.kind)])).toEqual([["auto", ["points"]], ["auto", ["points","line"]]]);
   expect(state.sessions).toEqual([]);
 });
 
