@@ -34,6 +34,9 @@
       }
     }
   },
+  "graphNew": {
+    "legacyColumnType": "Trục X hiện dùng kiểu cột nguồn của {{column}}. Để đổi cách diễn giải, hãy chỉnh sửa cột trong bảng nguồn."
+  },
   "graphNewUi": {
     "columns": "Cột",
     "layers": "Lớp",

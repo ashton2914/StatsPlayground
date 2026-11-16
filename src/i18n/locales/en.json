@@ -51,6 +51,7 @@
     "unavailable": "{{feature}} is not available yet."
   },
   "graphNew": {
+    "legacyColumnType": "X now uses the source column type for {{column}}. To change its interpretation, edit the column in the source table.",
     "jitterBudget": "Jitter exceeds the resource budget; displaying the complete Scatter without jitter.",
     "pointRadius": "Point radius (px)",
     "sourceUnavailable": "The source table is no longer available.",

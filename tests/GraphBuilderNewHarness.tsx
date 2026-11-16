@@ -14,6 +14,7 @@ interface GraphBuilderNewHarnessProps {
   legacyLayers?: boolean;
   deferClose?: boolean;
   savedCamera?: GraphBuilderNewCamera;
+  legacyXMode?: GraphBuilderNewDocument["xMode"];
   locale?: "en" | "zh-CN";
   axisFixture?: "nanoTime" | "microTime" | "microDuration" | "unicode" | "compactNumeric";
   mode?: "summaryDomain" | "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "renderTransient" | "renderReplacementError" | "renderReplacementContractError" | "renderReplacementTransportError" | "renderCachePressure" | "renderGpuValidation" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields" | "overlay" | "overlayMean" | "overlayMany";
@@ -70,7 +71,7 @@ function createOverlayGroups(count: number) {
   }));
 }
 
-export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, legacyLayers = false, deferClose = false }: GraphBuilderNewHarnessProps) {
+export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, legacyLayers = false, deferClose = false, legacyXMode }: GraphBuilderNewHarnessProps) {
   const [ready, setReady] = useState(false);
   const [descriptorCalls, setDescriptorCalls] = useState(0);
   const [lastRequest, setLastRequest] = useState<GraphNewRenderRequest | null>(null);
@@ -267,7 +268,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         id: SESSION_ID,
         name: "Graph Builder-new 1",
         datasetId: DATASET.id,
-        xColumnId: savedCamera ? "column-x" : null,
+        xColumnId: legacyXMode ? "text-test-time" : savedCamera ? "column-x" : null,
         yColumnId: savedCamera ? "column-y" : null,
         showMean: true,
         xMode: "auto",
@@ -278,11 +279,11 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         id: SESSION_ID,
         name: "Graph Builder-new 1",
         datasetId: DATASET.id,
-        xColumnId: savedCamera ? "column-x" : null,
+        xColumnId: legacyXMode ? "text-test-time" : savedCamera ? "column-x" : null,
         yColumnId: savedCamera ? "column-y" : null,
         layers: [createGraphNewLayer("points", "points-1")],
         overlayColumnId: null, hiddenOverlayGroupIds: [],
-        xMode: "auto",
+        xMode: legacyXMode ?? "auto",
         camera: savedCamera ?? null,
       }]);
     useGraphBuilderNewStore.getState().reopen(SESSION_ID, mode === "stale" ? DATASET.generation - 1 : DATASET.generation);
@@ -318,7 +319,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       useGraphBuilderNewStore.setState(previousStoreState, true);
       useProjectStore.setState(previousProjectState, true);
     };
-  }, [mode, axisFixture, savedCamera, deferClose]);
+  }, [mode, axisFixture, savedCamera, deferClose, legacyXMode]);
 
   if (!ready) return null;
 

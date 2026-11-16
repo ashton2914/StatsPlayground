@@ -51,6 +51,7 @@
     "unavailable": "{{feature}} 尚未实现。"
   },
   "graphNew": {
+    "legacyColumnType": "X 轴现按源表中「{{column}}」的列类型显示。如需更改解析方式，请在源表中编辑该列。",
     "jitterBudget": "抖动计算超出资源预算；当前显示完整原始散点。",
     "pointRadius": "点半径（像素）",
     "sourceUnavailable": "源数据表已不可用。",

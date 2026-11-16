@@ -41,7 +41,6 @@ interface GraphBuilderNewStore {
   removeLayer: (id: string, layerId: string) => void;
   setLayerOptions: (id: string, layerId: string, patch: Record<string, unknown>) => void;
   setMean: (id: string, showMean: boolean) => void;
-  setXMode: (id: string, xMode: GraphNewXMode) => void;
   setModes: (id: string, xMode: GraphNewXMode, rawMode: GraphNewRawMode) => void;
 }
 
@@ -165,7 +164,9 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((rawSet, get
     }),
     reset: () => withoutDocumentPersistence(() => set({ items: [], sessions: [] })),
     setColumns: (id, xColumnId, yColumnId) => update(id, (item) => ({
-      xColumnId, yColumnId, camera: item.xColumnId === xColumnId && item.yColumnId === yColumnId ? item.camera : null,
+      xColumnId, yColumnId,
+      xMode: item.xColumnId === xColumnId ? item.xMode : "auto",
+      camera: item.xColumnId === xColumnId && item.yColumnId === yColumnId ? item.camera : null,
     })),
     setOverlay: (id, overlayColumnId) => {
       const item = get().items.find((candidate) => candidate.id === id);
@@ -202,8 +203,7 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((rawSet, get
     },
     addLayer: (id, kind) => update(id, (item) => {
       if (item.layers.some((layer) => layer.kind === kind)) return {};
-      const xMode = kind === "timeSeries" && item.xMode !== "time" && item.xMode !== "duration" ? "time" : item.xMode;
-      return { layers: [...item.layers, createGraphNewLayer(kind)], xMode, camera: xMode === item.xMode ? item.camera : null };
+      return { layers: [...item.layers, createGraphNewLayer(kind)] };
     }),
     removeLayer: (id, layerId) => update(id, (item) => ({ layers: item.layers.some((layer) => layer.id === layerId) ? item.layers.filter((layer) => layer.id !== layerId) : item.layers })),
     setLayerOptions: (id, layerId, patch) => update(id, (item) => {
@@ -217,7 +217,6 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((rawSet, get
       if (showMean) layers.push({ ...createGraphNewLayer("line", `${id}:compat-mean`), options: { ...defaultLineOptions(), errorInterval: "none" } } as GraphNewLayer);
       return { layers };
     }),
-    setXMode: (id, xMode) => update(id, (item) => ({ xMode, camera: item.xMode === xMode ? item.camera : null })),
     setModes: (id, xMode, rawMode) => update(id, (item) => item.xMode === xMode && legacyRenderOptions(item.layers).rawMode === rawMode ? {} : ({ xMode, layers: migratedGraphNewLayers({ ...item, version: 2, rawMode, showMean: legacyRenderOptions(item.layers).showMean }), camera: item.xMode === xMode ? item.camera : null })),
     setCamera: (id, camera) => update(id, (item) => {
       const next = copyCamera(camera);

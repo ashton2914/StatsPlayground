@@ -209,28 +209,6 @@
   font-size: 10px;
 }
 
-.graph-builder-new-axis-setting {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 4px;
-  color: var(--fg-muted);
-}
-
-.graph-builder-new-axis-setting span {
-  white-space: nowrap;
-}
-
-.graph-builder-new-axis-setting select {
-  min-width: 80px;
-  max-width: 110px;
-  border: 1px solid var(--border-input);
-  border-radius: 3px;
-  background: var(--bg-main);
-  color: var(--fg-primary);
-  font-size: 10px;
-}
-
 .graph-builder-new-workspace {
   min-width: 0;
   min-height: 0;
@@ -474,6 +452,14 @@
 
 @media (max-width: 720px) {
   .graph-builder-new-stage { padding: 8px 8px 8px 2px; }
+}
+
+.graph-builder-new-source-notice {
+  margin: 0;
+  padding: 6px 14px;
+  background: var(--gbn-panel);
+  color: var(--gbn-muted);
+  font-size: 12px;
 }
 
 .graph-builder-new-status {
