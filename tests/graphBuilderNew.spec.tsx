@@ -34,6 +34,31 @@ for (const [locale, hint] of [
   });
 }
 
+test("vertical slots stay aligned with the plot after clearing X", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  const ySlot = component.getByTestId("graph-slot-y");
+  const groupYSlot = component.getByTestId("graph-slot-group-y");
+  const stage = component.getByRole("region", { name: "Point plot" });
+  const expectFullHeightSlots = async () => {
+    const plot = (await stage.boundingBox())!;
+    for (const slot of [ySlot, groupYSlot]) {
+      const bounds = (await slot.boundingBox())!;
+      expect(bounds.y).toBeCloseTo(plot.y);
+      expect(bounds.height).toBeCloseTo(plot.height);
+    }
+  };
+
+  await component.getByTestId("graph-field-column-y").dragTo(ySlot);
+  await component.getByTestId("graph-field-column-x").dragTo(component.getByTestId("graph-slot-x"));
+  await expect(stage.getByRole("img", { name: "Point plot frame" })).toBeVisible();
+  await expectFullHeightSlots();
+  await component.getByRole("button", { name: "Clear X", exact: true }).click();
+  await expect(stage.locator("canvas")).toHaveCount(0);
+  await expectFullHeightSlots();
+  await component.getByRole("button", { name: "Clear Y", exact: true }).click();
+  await expectFullHeightSlots();
+});
+
 test("new graph rails and stacks resize, remember preferences and reset", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   const left = component.getByRole("separator", { name: "Resize new graph left rail", exact: true });

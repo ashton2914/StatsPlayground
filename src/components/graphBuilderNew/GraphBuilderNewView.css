@@ -220,6 +220,13 @@
   background: var(--bg-main);
 }
 
+/* Fill the plot row even when an orthogonal writing mode sizes the slot to its label. */
+.graph-builder-new-workspace > [data-testid="graph-slot-y"],
+.graph-builder-new-workspace > [data-testid="graph-slot-group-y"] {
+  box-sizing: border-box;
+  height: 100%;
+}
+
 .graph-builder-new-workspace > [data-testid="graph-slot-y"] {
   grid-column: 1;
   grid-row: 2;
