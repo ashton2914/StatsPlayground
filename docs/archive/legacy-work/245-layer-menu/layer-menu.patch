@@ -1,0 +1,667 @@
+diff --git a/src/components/graphBuilder/GraphBuilderView.tsx b/src/components/graphBuilder/GraphBuilderView.tsx
+index a8ea5c16..f22990ac 100644
+--- a/src/components/graphBuilder/GraphBuilderView.tsx
++++ b/src/components/graphBuilder/GraphBuilderView.tsx
+@@ -19,2 +19 @@
+-import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from "react";
+-import { createPortal } from "react-dom";
++import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+@@ -77,0 +77 @@ import {
++  GraphLayerAddMenu,
+@@ -3213,80 +3212,0 @@ function AddLayerCard({ availableKinds, onAdd, t }: AddLayerCardProps) {
+-  const [open, setOpen] = useState(false);
+-  const btnRef = useRef<HTMLButtonElement | null>(null);
+-  const menuRef = useRef<HTMLDivElement | null>(null);
+-  // Anchored position for the portaled menu. Recomputed when opened and on
+-  // window resize / ancestor scroll so the menu stays glued to the button
+-  // and never gets clipped by the surrounding scroll container.
+-  const [pos, setPos] = useState<{ left: number; top: number; width: number; flipUp: boolean } | null>(null);
+-
+-  const recompute = useCallback(() => {
+-    const btn = btnRef.current;
+-    if (!btn) return;
+-    const r = btn.getBoundingClientRect();
+-    const vh = window.innerHeight;
+-    const vw = window.innerWidth;
+-    // Estimate menu height from item count; clamp to a sane max.
+-    const estItemH = 28;
+-    const estMenuH = Math.min(availableKinds.length * estItemH + 8, 320);
+-    const spaceBelow = vh - r.bottom;
+-    const spaceAbove = r.top;
+-    const flipUp = spaceBelow < estMenuH + 8 && spaceAbove > spaceBelow;
+-    const top = flipUp ? Math.max(4, r.top - estMenuH - 4) : Math.min(vh - 4, r.bottom + 4);
+-    const left = Math.max(4, Math.min(r.left, vw - r.width - 4));
+-    setPos({ left, top, width: r.width, flipUp });
+-  }, [availableKinds.length]);
+-
+-  useLayoutEffect(() => {
+-    if (!open) {
+-      setPos(null);
+-      return;
+-    }
+-    recompute();
+-    const onWin = () => recompute();
+-    window.addEventListener("resize", onWin);
+-    window.addEventListener("scroll", onWin, true); // capture: catch all ancestor scrolls
+-    return () => {
+-      window.removeEventListener("resize", onWin);
+-      window.removeEventListener("scroll", onWin, true);
+-    };
+-  }, [open, recompute]);
+-
+-  // Close on outside click / Escape.
+-  useEffect(() => {
+-    if (!open) return;
+-    const onDown = (e: MouseEvent) => {
+-      const tgt = e.target as Node | null;
+-      if (!tgt) return;
+-      if (btnRef.current?.contains(tgt)) return;
+-      if (menuRef.current?.contains(tgt)) return;
+-      setOpen(false);
+-    };
+-    const onKey = (e: KeyboardEvent) => {
+-      if (e.key === "Escape") setOpen(false);
+-    };
+-    document.addEventListener("mousedown", onDown);
+-    document.addEventListener("keydown", onKey);
+-    return () => {
+-      document.removeEventListener("mousedown", onDown);
+-      document.removeEventListener("keydown", onKey);
+-    };
+-  }, [open]);
+-
+-  // After first paint, refine top if real height differs from estimate (esp.
+-  // when flipping above the button).
+-  useLayoutEffect(() => {
+-    if (!open || !pos || !menuRef.current) return;
+-    const real = menuRef.current.getBoundingClientRect();
+-    const btn = btnRef.current?.getBoundingClientRect();
+-    if (!btn) return;
+-    const vh = window.innerHeight;
+-    if (pos.flipUp) {
+-      const want = Math.max(4, btn.top - real.height - 4);
+-      if (Math.abs(want - pos.top) > 0.5) setPos({ ...pos, top: want });
+-    } else if (pos.top + real.height > vh - 4) {
+-      // Not enough room — flip up.
+-      const want = Math.max(4, btn.top - real.height - 4);
+-      setPos({ ...pos, top: want, flipUp: true });
+-    }
+-  }, [open, pos]);
+-
+-  if (availableKinds.length === 0) return null;
+@@ -3294,36 +3214,9 @@ function AddLayerCard({ availableKinds, onAdd, t }: AddLayerCardProps) {
+-    <div className="gb-layer-add-wrap">
+-      <button
+-        ref={btnRef}
+-        className="gb-layer-add"
+-        onClick={() => setOpen((o) => !o)}
+-        aria-label={t("graph.addLayer")}
+-        title={t("graph.addLayer")}
+-      >
+-        +
+-      </button>
+-      {open && pos && createPortal(
+-        <div
+-          ref={menuRef}
+-          className="gb-layer-add-menu gb-layer-add-menu-portal"
+-          style={{ left: pos.left, top: pos.top, minWidth: pos.width }}
+-        >
+-          {availableKinds.map((k) => {
+-            const def = GRAPH_LAYER_DEFS_WITH_CORRELATION.find((c) => c.kind === k);
+-            return (
+-              <button
+-                key={k}
+-                className="gb-layer-add-item"
+-                onClick={() => {
+-                  onAdd(k);
+-                  setOpen(false);
+-                }}
+-              >
+-                <span className="gb-layer-icon">{def?.icon ?? "▦"}</span>
+-                <span>{t(`graph.type.${k}`)}</span>
+-              </button>
+-            );
+-          })}
+-        </div>,
+-        document.body
+-      )}
+-    </div>
++    <GraphLayerAddMenu
++      ariaLabel={t("graph.addLayer")}
++      items={availableKinds.map((kind) => ({
++        id: kind,
++        label: t(`graph.type.${kind}`),
++        icon: GRAPH_LAYER_DEFS_WITH_CORRELATION.find((definition) => definition.kind === kind)?.icon ?? "▦",
++      }))}
++      onSelect={onAdd}
++    />
+diff --git a/src/components/graphBuilder/graphBuilder.css b/src/components/graphBuilder/graphBuilder.css
+index 58a9a5d6..ec934e6c 100644
+--- a/src/components/graphBuilder/graphBuilder.css
++++ b/src/components/graphBuilder/graphBuilder.css
+@@ -422,72 +421,0 @@
+-/* "+" add-layer card */
+-.gb-layer-add-wrap {
+-  position: relative;
+-}
+-
+-.gb-layer-add {
+-  width: 100%;
+-  border: 1px dashed var(--border-main);
+-  border-radius: 4px;
+-  background: transparent;
+-  cursor: pointer;
+-  padding: 6px 0;
+-  font-size: 16px;
+-  font-weight: 600;
+-  color: var(--fg-secondary);
+-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+-}
+-
+-.gb-layer-add:hover {
+-  background: var(--bg-cell-hover);
+-  color: var(--fg-primary);
+-  border-color: var(--fg-secondary);
+-}
+-
+-.gb-layer-add-menu {
+-  position: absolute;
+-  left: 0;
+-  right: 0;
+-  top: 100%;
+-  margin-top: 4px;
+-  background: var(--bg-panel);
+-  border: 1px solid var(--border-main);
+-  border-radius: 4px;
+-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+-  z-index: 10;
+-  padding: 4px 0;
+-  display: flex;
+-  flex-direction: column;
+-}
+-
+-/* When portaled to <body>, the menu is positioned via inline left/top
+-   (computed from the trigger button's viewport rect) and must use
+-   `position: fixed` so it escapes any scrollable / overflow:hidden
+-   ancestor of the "+ Add layer" button. */
+-.gb-layer-add-menu-portal {
+-  position: fixed;
+-  left: auto;
+-  right: auto;
+-  top: auto;
+-  margin-top: 0;
+-  z-index: 1000;
+-  max-height: 60vh;
+-  overflow-y: auto;
+-}
+-
+-.gb-layer-add-item {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  padding: 5px 10px;
+-  background: transparent;
+-  border: none;
+-  cursor: pointer;
+-  color: var(--fg-primary);
+-  font-size: 12px;
+-  text-align: left;
+-}
+-
+-.gb-layer-add-item:hover {
+-  background: var(--bg-cell-hover);
+-}
+-
+@@ -2127 +2054,0 @@
+-
+diff --git a/src/components/graphBuilder/shared/GraphBuilderChrome.tsx b/src/components/graphBuilder/shared/GraphBuilderChrome.tsx
+index 6df3679f..0cf12b68 100644
+--- a/src/components/graphBuilder/shared/GraphBuilderChrome.tsx
++++ b/src/components/graphBuilder/shared/GraphBuilderChrome.tsx
+@@ -1 +1,11 @@
+-import { useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
++import {
++  useCallback,
++  useEffect,
++  useLayoutEffect,
++  useRef,
++  useState,
++  type DragEvent,
++  type MouseEvent,
++  type ReactNode,
++} from "react";
++import { createPortal } from "react-dom";
+@@ -248,0 +259,146 @@ export function GraphPlaceholderButton({
++export interface GraphLayerMenuItem<T extends string = string> {
++  id: T;
++  label: string;
++  icon: ReactNode;
++  disabled?: boolean;
++  unavailableTitle?: string;
++}
++
++interface GraphLayerAddMenuProps<T extends string> {
++  items: readonly GraphLayerMenuItem<T>[];
++  onSelect: (id: T) => void;
++  ariaLabel: string;
++  disabled?: boolean;
++  testId?: string;
++}
++
++export function GraphLayerAddMenu<T extends string>({
++  items,
++  onSelect,
++  ariaLabel,
++  disabled = false,
++  testId,
++}: GraphLayerAddMenuProps<T>) {
++  const [open, setOpen] = useState(false);
++  const triggerRef = useRef<HTMLButtonElement | null>(null);
++  const menuRef = useRef<HTMLDivElement | null>(null);
++  const [position, setPosition] = useState<{
++    left: number;
++    top: number;
++    width: number;
++    flipUp: boolean;
++  } | null>(null);
++
++  const recomputePosition = useCallback(() => {
++    const trigger = triggerRef.current;
++    if (!trigger) return;
++    const rect = trigger.getBoundingClientRect();
++    const estimatedHeight = Math.min(items.length * 28 + 8, 320);
++    const spaceBelow = window.innerHeight - rect.bottom;
++    const spaceAbove = rect.top;
++    const flipUp = spaceBelow < estimatedHeight + 8 && spaceAbove > spaceBelow;
++    const top = flipUp
++      ? Math.max(4, rect.top - estimatedHeight - 4)
++      : Math.min(window.innerHeight - 4, rect.bottom + 4);
++    const left = Math.max(4, Math.min(rect.left, window.innerWidth - rect.width - 4));
++    setPosition({ left, top, width: rect.width, flipUp });
++  }, [items.length]);
++
++  useLayoutEffect(() => {
++    if (!open) {
++      setPosition(null);
++      return;
++    }
++    recomputePosition();
++    window.addEventListener("resize", recomputePosition);
++    window.addEventListener("scroll", recomputePosition, true);
++    return () => {
++      window.removeEventListener("resize", recomputePosition);
++      window.removeEventListener("scroll", recomputePosition, true);
++    };
++  }, [open, recomputePosition]);
++
++  useEffect(() => {
++    if (!open) return;
++    const closeOnOutsideClick = (event: globalThis.MouseEvent) => {
++      const target = event.target as Node | null;
++      if (!target || triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
++      setOpen(false);
++    };
++    const closeOnEscape = (event: KeyboardEvent) => {
++      if (event.key === "Escape") setOpen(false);
++    };
++    document.addEventListener("mousedown", closeOnOutsideClick);
++    document.addEventListener("keydown", closeOnEscape);
++    return () => {
++      document.removeEventListener("mousedown", closeOnOutsideClick);
++      document.removeEventListener("keydown", closeOnEscape);
++    };
++  }, [open]);
++
++  useEffect(() => {
++    if (disabled) setOpen(false);
++  }, [disabled]);
++
++  useLayoutEffect(() => {
++    if (!open || !position || !menuRef.current) return;
++    const menuRect = menuRef.current.getBoundingClientRect();
++    const triggerRect = triggerRef.current?.getBoundingClientRect();
++    if (!triggerRect) return;
++    if (position.flipUp) {
++      const top = Math.max(4, triggerRect.top - menuRect.height - 4);
++      if (Math.abs(top - position.top) > 0.5) setPosition({ ...position, top });
++    } else if (position.top + menuRect.height > window.innerHeight - 4) {
++      setPosition({
++        ...position,
++        top: Math.max(4, triggerRect.top - menuRect.height - 4),
++        flipUp: true,
++      });
++    }
++  }, [open, position]);
++
++  if (items.length === 0) return null;
++  return (
++    <div className="gb-layer-add-wrap" data-testid={testId}>
++      <button
++        ref={triggerRef}
++        type="button"
++        className="gb-layer-add"
++        disabled={disabled}
++        aria-label={ariaLabel}
++        aria-expanded={open}
++        aria-haspopup="menu"
++        title={ariaLabel}
++        onClick={() => setOpen((current) => !current)}
++      >
++        +
++      </button>
++      {open && position && createPortal(
++        <div
++          ref={menuRef}
++          className="gb-layer-add-menu gb-layer-add-menu-portal"
++          style={{ left: position.left, top: position.top, minWidth: position.width }}
++        >
++          {items.map((item) => (
++            <button
++              key={item.id}
++              type="button"
++              className="gb-layer-add-item"
++              disabled={item.disabled}
++              title={item.unavailableTitle}
++              onClick={() => {
++                onSelect(item.id);
++                setOpen(false);
++              }}
++            >
++              <span className="gb-layer-icon" aria-hidden="true">{item.icon}</span>
++              <span>{item.label}</span>
++            </button>
++          ))}
++        </div>,
++        document.body,
++      )}
++    </div>
++  );
++}
++
+diff --git a/src/components/graphBuilder/shared/graphBuilderChrome.css b/src/components/graphBuilder/shared/graphBuilderChrome.css
+index e7ab9d1c..d3d8ff88 100644
+--- a/src/components/graphBuilder/shared/graphBuilderChrome.css
++++ b/src/components/graphBuilder/shared/graphBuilderChrome.css
+@@ -132,0 +133,79 @@
++
++.gb-layer-add-wrap {
++  position: relative;
++}
++
++.gb-layer-add {
++  width: 100%;
++  padding: 6px 0;
++  border: 1px dashed var(--border-main);
++  border-radius: 4px;
++  background: transparent;
++  color: var(--fg-secondary);
++  cursor: pointer;
++  font-size: 16px;
++  font-weight: 600;
++  transition: background 0.12s, color 0.12s, border-color 0.12s;
++}
++
++.gb-layer-add:hover:not(:disabled) {
++  border-color: var(--fg-secondary);
++  background: var(--bg-cell-hover);
++  color: var(--fg-primary);
++}
++
++.gb-layer-add:disabled {
++  cursor: not-allowed;
++  opacity: 0.58;
++}
++
++.gb-layer-add-menu {
++  position: absolute;
++  top: 100%;
++  right: 0;
++  left: 0;
++  z-index: 10;
++  display: flex;
++  flex-direction: column;
++  margin-top: 4px;
++  padding: 4px 0;
++  overflow: hidden;
++  border: 1px solid var(--border-main);
++  border-radius: 4px;
++  background: var(--bg-panel);
++  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
++}
++
++.gb-layer-add-menu-portal {
++  position: fixed;
++  top: auto;
++  right: auto;
++  left: auto;
++  z-index: 1000;
++  max-height: 60vh;
++  margin-top: 0;
++  overflow-y: auto;
++}
++
++.gb-layer-add-item {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 5px 10px;
++  border: none;
++  background: transparent;
++  color: var(--fg-primary);
++  cursor: pointer;
++  font-size: 12px;
++  text-align: left;
++}
++
++.gb-layer-add-item:hover:not(:disabled) {
++  background: var(--bg-cell-hover);
++}
++
++.gb-layer-add-item:disabled {
++  color: var(--fg-muted);
++  cursor: not-allowed;
++  opacity: 0.58;
++}
+diff --git a/src/components/graphBuilderNew/GraphBuilderNewView.css b/src/components/graphBuilderNew/GraphBuilderNewView.css
+index a8d96813..eef5752a 100644
+--- a/src/components/graphBuilderNew/GraphBuilderNewView.css
++++ b/src/components/graphBuilderNew/GraphBuilderNewView.css
+@@ -131,16 +130,0 @@
+-.graph-builder-new-add-options {
+-  display: grid;
+-  grid-template-columns: repeat(2, minmax(0, 1fr));
+-  gap: 4px;
+-  padding: 7px;
+-}
+-
+-.graph-builder-new-add-options button {
+-  min-height: 25px;
+-  border: 1px solid var(--border-input);
+-  border-radius: 3px;
+-  background: var(--bg-btn-secondary);
+-  color: var(--fg-secondary);
+-  font-size: 10px;
+-}
+-
+diff --git a/src/components/graphBuilderNew/GraphBuilderNewView.tsx b/src/components/graphBuilderNew/GraphBuilderNewView.tsx
+index 006efc40..f29ac15f 100644
+--- a/src/components/graphBuilderNew/GraphBuilderNewView.tsx
++++ b/src/components/graphBuilderNew/GraphBuilderNewView.tsx
+@@ -16,0 +17 @@ import {
++  GraphLayerAddMenu,
+@@ -20,0 +22 @@ import {
++import { GRAPH_LAYER_DEFS } from "@/components/graphBuilder/graphLayerConfig";
+@@ -26,0 +29,16 @@ import "./GraphBuilderNewView.css";
++const GRAPH_NEW_LAYER_MENU = [
++  { id: "points", translationKey: "points", iconKind: "points", supported: true },
++  { id: "bar", translationKey: "bar", iconKind: "bar", supported: false },
++  { id: "line", translationKey: "line", iconKind: "line", supported: true },
++  { id: "timeSeries", translationKey: "timeSeries", iconKind: "timeSeries", supported: true },
++  { id: "smoother", translationKey: "smoother", iconKind: "smoother", supported: false },
++  { id: "fitLine", translationKey: "fitLine", iconKind: "fitline", supported: false },
++  { id: "boxPlot", translationKey: "boxPlot", iconKind: "boxplot", supported: false },
++  { id: "histogram", translationKey: "histogram", iconKind: "histogram", supported: false },
++  { id: "normalCurve", translationKey: "normalCurve", iconKind: "normalCurve", supported: false },
++  { id: "surface", translationKey: "surface", iconKind: "surface", supported: false },
++  { id: "contour", translationKey: "contour", iconKind: "contour3d", supported: false },
++] as const;
++
++type GraphNewLayerMenuId = (typeof GRAPH_NEW_LAYER_MENU)[number]["id"];
++
+@@ -195,0 +214,24 @@ export function GraphBuilderNewView({
++  const addLayer = (kind: GraphNewLayerMenuId) => {
++    if (kind === "points") {
++      setRawMode(hasLine ? "pointsLine" : "scatter");
++      return;
++    }
++    if (kind === "line") {
++      const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
++      const currentXMode = current?.xMode ?? "auto";
++      const currentTemporal = currentXMode === "time" || currentXMode === "duration";
++      setRawMode(
++        hasPoints ? "pointsLine" : "line",
++        hasLine && currentTemporal ? "auto" : currentXMode,
++      );
++      return;
++    }
++    if (kind === "timeSeries") {
++      const currentXMode = useGraphBuilderNewStore.getState().sessions
++        .find(({ id }) => id === session.id)?.xMode ?? "auto";
++      setRawMode(
++        "line",
++        currentXMode === "time" || currentXMode === "duration" ? currentXMode : "time",
++      );
++    }
++  };
+@@ -271,32 +313,19 @@ export function GraphBuilderNewView({
+-              <GraphLayerCard label={t("graphNewUi.addGraphElement")} testId="graph-layer-add">
+-                <div className="graph-builder-new-add-options">
+-                  <button type="button" disabled={controlsDisabled || hasPoints}
+-                    onClick={() => setRawMode(hasLine ? "pointsLine" : "scatter")}>
+-                    {t("graphNewUi.points")}
+-                  </button>
+-                  <button type="button" disabled={controlsDisabled || (hasLine && !temporalX)}
+-                    onClick={() => {
+-                      const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
+-                      const currentXMode = current?.xMode ?? "auto";
+-                      const currentTemporal = currentXMode === "time" || currentXMode === "duration";
+-                      setRawMode(
+-                        hasPoints ? "pointsLine" : "line",
+-                        hasLine && currentTemporal ? "auto" : currentXMode,
+-                      );
+-                    }}>
+-                    {t("graphNewUi.line")}
+-                  </button>
+-                  <button type="button" disabled={controlsDisabled || (hasLine && temporalX)}
+-                    onClick={() => {
+-                      const currentXMode = useGraphBuilderNewStore.getState().sessions
+-                        .find(({ id }) => id === session.id)?.xMode ?? "auto";
+-                      setRawMode(
+-                        "line",
+-                        currentXMode === "time" || currentXMode === "duration" ? currentXMode : "time",
+-                      );
+-                    }}>
+-                    {t("graphNewUi.timeSeries")}
+-                  </button>
+-                  {(["bar", "smoother", "fitLine", "boxPlot", "histogram", "normalCurve", "surface", "contour"] as const).map((kind) => {
+-                    const label = t(`graphNewUi.${kind}`);
+-                    return <GraphPlaceholderButton key={kind} label={label} unavailableTitle={unavailableTitle(label)} />;
++              <GraphLayerAddMenu
++                ariaLabel={t("graph.addLayer")}
++                disabled={controlsDisabled}
++                testId="graph-layer-add"
++                items={GRAPH_NEW_LAYER_MENU
++                  .filter((item) => !(
++                    (item.id === "points" && hasPoints)
++                    || (item.id === "line" && hasLine && !temporalX)
++                    || (item.id === "timeSeries" && hasLine && temporalX)
++                  ))
++                  .map((item) => {
++                    const label = t(`graphNewUi.${item.translationKey}`);
++                    return {
++                      id: item.id,
++                      label,
++                      icon: GRAPH_LAYER_DEFS.find(({ kind }) => kind === item.iconKind)?.icon ?? "▦",
++                      disabled: !item.supported,
++                      unavailableTitle: item.supported ? undefined : unavailableTitle(label),
++                    };
+@@ -304,2 +333,2 @@ export function GraphBuilderNewView({
+-                </div>
+-              </GraphLayerCard>
++                onSelect={addLayer}
++              />
+diff --git a/tests/graphBuilderNew.spec.tsx b/tests/graphBuilderNew.spec.tsx
+index e6599ab9..3f5b9931 100644
+--- a/tests/graphBuilderNew.spec.tsx
++++ b/tests/graphBuilderNew.spec.tsx
+@@ -59 +59 @@ test("Issue 245 axis slots replace and clear one binding", async ({ mount }) =>
+-test("Issue 245 layer card maps point, line, combined, and time-series modes", async ({ mount }) => {
++test("Issue 245 add-layer menu maps supported layers and exposes unavailable layers", async ({ mount, page }) => {
+@@ -61 +61 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-  const addLayer = component.getByTestId("graph-layer-add");
++  const addLayer = component.getByRole("button", { name: "Add layer" });
+@@ -64 +64,12 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-  await addLayer.getByRole("button", { name: "Line", exact: true }).click();
++  await expect(page.getByRole("button", { name: "Bar", exact: true })).toHaveCount(0);
++
++  await addLayer.click();
++  await expect(page.getByRole("button", { name: "Points", exact: true })).toHaveCount(0);
++  await expect(page.getByRole("button", { name: "Bar", exact: true })).toBeDisabled();
++  await expect(page.getByRole("button", { name: "Bar", exact: true }))
++    .toHaveAttribute("title", "Bar is not available yet.");
++  await component.getByText("Measurements", { exact: true }).click();
++  await expect(page.getByRole("button", { name: "Bar", exact: true })).toHaveCount(0);
++
++  await addLayer.click();
++  await page.getByRole("button", { name: "Line", exact: true }).click();
+@@ -65,0 +77,2 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
++  await expect(page.getByRole("button", { name: "Bar", exact: true })).toHaveCount(0);
++
+@@ -68 +81,2 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-  await addLayer.getByRole("button", { name: "Time Series", exact: true }).click();
++  await addLayer.click();
++  await page.getByRole("button", { name: "Time Series", exact: true }).click();
+@@ -71 +85,3 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-  await addLayer.getByRole("button", { name: "Line", exact: true }).click();
++
++  await addLayer.click();
++  await page.getByRole("button", { name: "Line", exact: true }).click();
+@@ -73 +89,2 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-  await addLayer.getByRole("button", { name: "Points", exact: true }).click();
++  await addLayer.click();
++  await page.getByRole("button", { name: "Points", exact: true }).click();
+@@ -77 +94 @@ test("Issue 245 layer card maps point, line, combined, and time-series modes", a
+-test("Issue 245 treats duration plus line as Time Series without coercing duration", async ({ mount }) => {
++test("Issue 245 treats duration plus line as Time Series without coercing duration", async ({ mount, page }) => {
+@@ -80 +97,2 @@ test("Issue 245 treats duration plus line as Time Series without coercing durati
+-  await component.getByTestId("graph-layer-add").getByRole("button", { name: "Line", exact: true }).click();
++  await component.getByRole("button", { name: "Add layer" }).click();
++  await page.getByRole("button", { name: "Line", exact: true }).click();
+@@ -83,2 +101,5 @@ test("Issue 245 treats duration plus line as Time Series without coercing durati
+-  await expect(component.getByTestId("graph-layer-add")
+-    .getByRole("button", { name: "Time Series", exact: true })).toBeDisabled();
++  await component.getByRole("button", { name: "Add layer" }).click();
++  await expect(page.getByRole("button", { name: "Time Series", exact: true })).toHaveCount(0);
++  await expect(page.getByRole("button", { name: "Line", exact: true })).toBeEnabled();
++  await page.keyboard.press("Escape");
++  await expect(page.getByRole("button", { name: "Time Series", exact: true })).toHaveCount(0);
+@@ -90,2 +111 @@ for (const mode of ["error", "missing", "deferredFields", "stale"] as const) {
+-    await expect(component.getByTestId("graph-layer-add")
+-      .getByRole("button", { name: "Line", exact: true })).toBeDisabled();
++    await expect(component.getByRole("button", { name: "Add layer" })).toBeDisabled();
+@@ -126 +146 @@ test("Issue 245 Legend slot binds Overlay and hosts the existing group legend",
+-test("Issue 245 exposes unavailable controls as disabled explained placeholders", async ({ mount }) => {
++test("Issue 245 exposes unavailable controls as disabled explained placeholders", async ({ mount, page }) => {
+@@ -140,0 +161,7 @@ test("Issue 245 exposes unavailable controls as disabled explained placeholders"
++  ]) {
++    const placeholder = component.getByRole("button", { name: label, exact: true });
++    await expect(placeholder).toBeDisabled();
++    await expect(placeholder).toHaveAttribute("title", /not available yet/i);
++  }
++  await component.getByRole("button", { name: "Add layer" }).click();
++  for (const label of [
+@@ -150 +177 @@ test("Issue 245 exposes unavailable controls as disabled explained placeholders"
+-    const placeholder = component.getByRole("button", { name: label, exact: true });
++    const placeholder = page.getByRole("button", { name: label, exact: true });
+@@ -153,0 +181 @@ test("Issue 245 exposes unavailable controls as disabled explained placeholders"
++  await page.keyboard.press("Escape");

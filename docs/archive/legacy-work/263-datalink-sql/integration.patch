@@ -1,0 +1,97 @@
+diff --git a/.gitignore b/.gitignore
+index c6bd232c..3d537790 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -11,0 +12 @@ src-tauri/target*/
++src-tauri/resources/duckdb_extensions/
+@@ -84 +85,2 @@ __marimo__/
+-testdata/
+\ No newline at end of file
++testdata/
++scripts/.duckdb-extension-test/
+\ No newline at end of file
+diff --git a/package.json b/package.json
+index 3a882d70..ef9226e4 100644
+--- a/package.json
++++ b/package.json
+@@ -14,0 +15 @@
++    "prepare:duckdb-extensions": "node scripts/prepareDuckDbExtensions.mjs",
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 901c9acc..e992e081 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -9,0 +10,9 @@ pub mod state;
++#[doc(hidden)]
++pub mod datalink_scanner_probe_api {
++    pub use crate::models::data_link::{ConnectorKind, ResolvedDataLinkBinding, SessionSecret};
++    pub use crate::services::data_link_query_runtime::{
++        build_native_binding_plan, verify_pushdown_evidence, DataLinkQueryRuntime,
++        ScannerExtension, ScannerResourceManifest,
++    };
++}
++
+diff --git a/src-tauri/src/models/data_link.rs b/src-tauri/src/models/data_link.rs
+index f5f4d5d4..f3f3fc33 100644
+--- a/src-tauri/src/models/data_link.rs
++++ b/src-tauri/src/models/data_link.rs
+@@ -0,0 +1,2 @@
++use std::path::PathBuf;
++
+@@ -14,0 +17,23 @@ pub enum ConnectorKind {
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ResolvedDataLinkBinding {
++    pub data_link_id: String,
++    pub connector: ConnectorKind,
++    pub host: Option<String>,
++    pub port: Option<u16>,
++    pub catalog: Option<String>,
++    pub schema: Option<String>,
++    pub object: String,
++    pub relation_alias: String,
++}
++
++pub enum SessionSecret {
++    UsernamePassword {
++        username: String,
++        password: String,
++    },
++    SqliteGrant {
++        file_path: PathBuf,
++        fingerprint: String,
++    },
++}
++
+diff --git a/src-tauri/src/services/mod.rs b/src-tauri/src/services/mod.rs
+index b476349a..e0b63fea 100644
+--- a/src-tauri/src/services/mod.rs
++++ b/src-tauri/src/services/mod.rs
+@@ -1 +0,0 @@
+-pub mod graph_new_cache;
+@@ -4,0 +4 @@ pub mod calculated_column_service;
++pub mod data_link_query_runtime;
+@@ -12,0 +13 @@ pub mod graph_data_service;
++pub mod graph_new_cache;
+@@ -14 +14,0 @@ pub mod graph_new_key;
+-pub mod graph_new_overlay;
+@@ -15,0 +16 @@ pub mod graph_new_lod;
++pub mod graph_new_overlay;
+@@ -26 +26,0 @@ pub mod mcp_settings_service;
+-pub mod normal_capability;
+@@ -27,0 +28 @@ pub(crate) mod natural_row_order;
++pub mod normal_capability;
+@@ -36,0 +38 @@ pub(crate) mod streaming_table_reader;
++pub(crate) mod table_delta_mutation;
+@@ -39 +40,0 @@ pub mod table_mutation_coordinator;
+-pub(crate) mod table_delta_mutation;
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index a599d3ba..addd3cb3 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -9 +9 @@
+-    "beforeBuildCommand": "npm run build",
++    "beforeBuildCommand": "npm run prepare:duckdb-extensions && npm run build",
+@@ -38,0 +39,4 @@
++    ],
++    "resources": [
++      "resources/duckdb_extensions/**/sqlite*.duckdb_extension",
++      "resources/duckdb_extensions/**/postgres*.duckdb_extension"

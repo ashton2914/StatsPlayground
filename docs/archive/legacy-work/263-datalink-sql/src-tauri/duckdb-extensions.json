@@ -1,0 +1,55 @@
+{
+  "duckdbVersion": "1.5.5",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "sqlite": {
+        "url": "https://extensions.duckdb.org/v1.5.5/osx_arm64/sqlite_scanner.duckdb_extension.gz",
+        "sha256": "a3548846bd643cb717265a0a11352af2e830a466ca068f4cae2552af658879f2"
+      },
+      "postgres": {
+        "url": "https://extensions.duckdb.org/v1.5.5/osx_arm64/postgres_scanner.duckdb_extension.gz",
+        "sha256": "f39dd59bf57679d0242e19e180d90b4222e5cdb691ab67c7506658f3548c0e05"
+      }
+    },
+    "aarch64-pc-windows-msvc": {
+      "sqlite": {
+        "url": "https://extensions.duckdb.org/v1.5.5/windows_arm64/sqlite_scanner.duckdb_extension.gz",
+        "sha256": "1e5e89e3fd678e29630ac018a992903cb0b1145b6924cbaf15aafca87d714cc5"
+      },
+      "postgres": {
+        "url": "https://extensions.duckdb.org/v1.5.5/windows_arm64/postgres_scanner.duckdb_extension.gz",
+        "sha256": "2797925e12c66276994caedac7d6dd9a6dc82b23b1631a5cecd604fb121a66bc"
+      }
+    },
+    "x86_64-apple-darwin": {
+      "sqlite": {
+        "url": "https://extensions.duckdb.org/v1.5.5/osx_amd64/sqlite_scanner.duckdb_extension.gz",
+        "sha256": "fb287ea61bff87ad91b700491d44d584fb6e0b5926a4bf186f9d052ff6e976f7"
+      },
+      "postgres": {
+        "url": "https://extensions.duckdb.org/v1.5.5/osx_amd64/postgres_scanner.duckdb_extension.gz",
+        "sha256": "0df780444ce04a75c5a4e7b89896eab5cebe1ca21163fc6c267f3365ffe4a3c1"
+      }
+    },
+    "x86_64-pc-windows-msvc": {
+      "sqlite": {
+        "url": "https://extensions.duckdb.org/v1.5.5/windows_amd64/sqlite_scanner.duckdb_extension.gz",
+        "sha256": "488c99012a2bd842dcc1d525441a7bd5c0427bb83236cbc01497615be167ac18"
+      },
+      "postgres": {
+        "url": "https://extensions.duckdb.org/v1.5.5/windows_amd64/postgres_scanner.duckdb_extension.gz",
+        "sha256": "fc026ca03659889080606f0dacfd4e3976479df52660fafc763642e14bb36be2"
+      }
+    },
+    "x86_64-unknown-linux-gnu": {
+      "sqlite": {
+        "url": "https://extensions.duckdb.org/v1.5.5/linux_amd64/sqlite_scanner.duckdb_extension.gz",
+        "sha256": "693d2bf90779df23ca5ebe0688639b9adfc11c2d55ae3466b33e28be16afaa5e"
+      },
+      "postgres": {
+        "url": "https://extensions.duckdb.org/v1.5.5/linux_amd64/postgres_scanner.duckdb_extension.gz",
+        "sha256": "b1ced4cfc6311313e117c2afb3eac76508718778dde0716421503c7dbfb5605c"
+      }
+    }
+  }
+}

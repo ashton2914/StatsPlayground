@@ -1,0 +1,32 @@
+diff --git a/tests/logicalTableNavigation.spec.tsx b/tests/logicalTableNavigation.spec.tsx
+index a6d6217a..0bab49cb 100644
+--- a/tests/logicalTableNavigation.spec.tsx
++++ b/tests/logicalTableNavigation.spec.tsx
+@@ -726,0 +727,27 @@ test("neighbor prefetch leaves the newly visible foreground window a quiet inter
++
++test("keeps the active cell visible through repeated arrows across a wide table", async ({ mount, page }) => {
++  const errors: Error[] = [];
++  page.on("pageerror", error => errors.push(error));
++  const component = await mount(
++    <LogicalTableNavigationHarness rowCount={325} columnCount={325} width={920} height={420} />,
++  );
++  const cell = (row: number) => component.locator(`td[data-row="${row}"][data-col="0"]`);
++  await cell(0).click();
++  const repeat = async (key: string, count: number) => {
++    try {
++      for (let index = 0; index < count; index++) await page.keyboard.down(key);
++    } finally {
++      await page.keyboard.up(key);
++    }
++  };
++
++  await repeat("ArrowDown", 345);
++  await expect(cell(324)).toHaveClass(/sp-cell-active/);
++  await repeat("ArrowUp", 345);
++  await expect(cell(0)).toHaveClass(/sp-cell-active/);
++  await repeat("ArrowDown", 60);
++  await repeat("ArrowUp", 31);
++  await expect(cell(29)).toHaveClass(/sp-cell-active/);
++  await expect(component.locator(".sp-toast-error")).toHaveCount(0);
++  expect(errors).toEqual([]);
++});
