@@ -147,3 +147,13 @@ test("native UI probe preserves an admission failure in published run metadata",
  const published=calls.filter((call:any)=>call.command==="project_ui_probe_publish");expect(published.length).toBeGreaterThan(0);
  expect(published.every((call:any)=>call.args.runError?.includes("fixture admission unavailable"))).toBe(true);
 });
+
+
+test("startup enters a fresh project even when previous drafts exist",async({mount,page})=>{
+ const app=await mount(<NativeProjectAppHarness retainedDrafts/>);
+ await expect(app.getByText("Draft report",{exact:true})).toBeVisible();
+ await expect(app.getByRole("heading",{name:"Recover an unnamed project"})).toHaveCount(0);
+ const calls=await page.evaluate(()=>(window as any).__nativeApp.calls());
+ expect(calls.filter((call:any)=>call.command==="create_project_draft_v5")).toHaveLength(1);
+ expect(calls.filter((call:any)=>["list_recoverable_project_drafts","recover_project_draft_v5"].includes(call.command))).toEqual([]);
+});

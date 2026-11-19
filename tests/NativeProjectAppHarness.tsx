@@ -10,7 +10,7 @@ import {useProjectStore} from "../src/stores/useProjectStore";
 import {useUpdatePreferencesStore} from "../src/stores/useUpdatePreferencesStore";
 import {nativeProjectLifecycle} from "../src/projectPersistence/nativeLifecycle";
 import type {ProjectOpenSummary} from "../src/types/projectPersistence";
-export function NativeProjectAppHarness({workflowFixture=false,probeFixture=false,probeFocusDelay=false,probeAdmissionFailure=false}:{workflowFixture?:boolean;probeFixture?:boolean;probeFocusDelay?:boolean;probeAdmissionFailure?:boolean}) {
+export function NativeProjectAppHarness({workflowFixture=false,probeFixture=false,probeFocusDelay=false,probeAdmissionFailure=false,retainedDrafts=false}:{retainedDrafts?:boolean;workflowFixture?:boolean;probeFixture?:boolean;probeFocusDelay?:boolean;probeAdmissionFailure?:boolean}) {
  const [ready,setReady]=useState(false);
  useEffect(()=>{
   const calls:Array<{command:string;args:any}>=[];
@@ -34,7 +34,7 @@ export function NativeProjectAppHarness({workflowFixture=false,probeFixture=fals
    if(command==="project_ui_probe_begin") {if(probeAdmissionFailure)throw Error("fixture admission unavailable");if(!nativeFocused)throw Error("native window activation pending");return 1;}
    if(command==="project_ui_probe_finish") return {verification:{passed:true}};
    if(command==="project_ui_probe_publish") return "/virtual/probe-catalog-cold.json";
-   if(command==="list_recoverable_project_drafts") return [];
+   if(command==="list_recoverable_project_drafts") return retainedDrafts?[{projectId:"old-project",displayName:"Previous work",recoveryId:"old-draft"}]:[];
    if(command==="create_project_draft_v5") return open("Draft","");
    if(command==="open_project_v5") return open("Second",args.filePath);
    if(command==="get_project_document") {const session=summaries.get(args.epoch)!;return {summary:session.directory.items[0],schemaVersion:1,body:{id:"report",name:session.directory.items[0].name,schemaVersion:1,markdown:`# ${session.project.name} body`,createdAt:"today",updatedAt:"today"}};}
