@@ -114,3 +114,28 @@ test("confirmed reimport carries the observed table and DataLink revisions", asy
     '{"target":"Local data","options":{"linkName":"Source A","refresh":{"tableId":"table-a","expectedRevision":2,"expectedGeneration":4,"replaceModified":true}}}',
   );
 });
+
+for (const viewport of [{ width: 1100, height: 700 }, { width: 820, height: 540 }, { width: 560, height: 600 }]) {
+  test(`DataLink keeps a readable preview at ${viewport.width}x${viewport.height}`, async ({ mount, page }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const component = await mount(<DataLinkHarness wide />);
+    await component.getByLabel("Password", { exact: true }).fill("temporary-secret");
+    await component.getByRole("button", { name: "Test connection", exact: true }).click();
+    await component.getByRole("button", { name: "Discover objects", exact: true }).click();
+    await component.getByRole("checkbox", { name: "Select orders", exact: true }).check();
+    await component.getByRole("button", { name: "orders public" }).click();
+    for (let i = 0; i < 4; i++) await component.getByRole("button", { name: "Add filter", exact: true }).click();
+    await component.getByRole("button", { name: "Preview selected data", exact: true }).click();
+    const table = component.locator(".datalink-table-wrap");
+    await expect(table.locator("tbody tr")).toHaveCount(100);
+    expect((await table.boundingBox())!.height).toBeGreaterThanOrEqual(180);
+    expect(await table.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await table.scrollIntoViewIfNeeded();
+    await expect(table.locator("tbody tr").first()).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath("preview.png") });
+    const selection = component.getByRole("group", { name: "Columns to import" });
+    expect(await selection.evaluate((element) => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    await component.getByRole("button", { name: "Import selected (1)", exact: true }).scrollIntoViewIfNeeded();
+    await expect(component.getByRole("button", { name: "Import selected (1)", exact: true })).toBeInViewport();
+  });
+}
