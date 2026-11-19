@@ -1,6 +1,7 @@
+import {CommandExecutionError} from "../src/applicationCommands/runtime.ts";
 import {useProjectDataSnapshotStore} from "../src/stores/useProjectDataSnapshotStore.ts";
 import assert from "node:assert/strict";
-import {createProjectLifecycleV5,ProjectLifecycleRecoveryError} from "../src/projectPersistence/lifecycle.ts";
+import {createProjectLifecycleV5,ProjectLifecycleRecoveryError,formatProjectLifecycleError} from "../src/projectPersistence/lifecycle.ts";
 import {useProjectStore} from "../src/stores/useProjectStore.ts";
 import {useReportStore} from "../src/stores/useReportStore.ts";
 import {useProjectCatalogStore} from "../src/stores/useProjectCatalogStore.ts";
@@ -19,6 +20,9 @@ const lifecycle=createProjectLifecycleV5({
  },
 });
 try {
+ const wrappedSaveError=new CommandExecutionError("execution_failed","Command handler failed",false,{cause:"File I/O error: sharing violation (os error 32)"});
+ assert.match(formatProjectLifecycleError(wrappedSaveError),/sharing violation \(os error 32\)/,"save alerts must retain the native failure reason from the command wrapper");
+ assert.equal(formatProjectLifecycleError(new CommandExecutionError("invalid_input","Invalid save request",false,{cause:"internal detail"})),"Invalid save request");
  await lifecycle.switchProject("a");assert.equal(useProjectStore.getState().project?.name,"a");assert.equal(listeners,1);
  useReportStore.getState().addItem({id:"report",name:"Local report",schemaVersion:1,markdown:"keep me",createdAt:"today",updatedAt:"today"});
  await assert.rejects(lifecycle.switchProject("b"),/disk failed/);
