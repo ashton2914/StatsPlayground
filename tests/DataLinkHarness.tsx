@@ -4,7 +4,7 @@ import i18n from "../src/i18n";
 import { PostgresDataLinkDialog, type OpenSavedDataLink } from "../src/components/dataLink/PostgresDataLinkDialog";
 import { dataLinkService } from "../src/services/dataLinkService";
 
-export function DataLinkHarness({ language = "en", saved }: { language?: string; saved?: OpenSavedDataLink }) {
+export function DataLinkHarness({ language = "en", saved, wide = false }: { language?: string; saved?: OpenSavedDataLink; wide?: boolean }) {
   const [ready, setReady] = useState(false);
   const [importedSelection, setImportedSelection] = useState("");
   const [request, setRequest] = useState("");
@@ -33,25 +33,19 @@ export function DataLinkHarness({ language = "en", saved }: { language?: string;
       name: "orders",
       objectType: "table",
     }];
-    dataLinkService.getServerSchema = async () => [{
-      name: "order_id",
+    const columns = Array.from({ length: wide ? 24 : 1 }, (_, index) => ({
+      name: index === 0 ? "order_id" : `Measurement channel ${index} (mAh)`,
       sourceType: "INTEGER",
       nullable: false,
       primaryKey: true,
       precision: null,
       scale: null,
-    }];
+    }));
+    dataLinkService.getServerSchema = async () => columns;
     dataLinkService.previewServerObject = async () => ({
       objectName: "orders",
-      columns: [{
-        name: "order_id",
-        sourceType: "INTEGER",
-        nullable: false,
-        primaryKey: true,
-        precision: null,
-        scale: null,
-      }],
-      rows: [[42]],
+      columns,
+      rows: Array.from({ length: wide ? 100 : 1 }, () => columns.map(() => 42)),
       truncated: false,
     });
 
@@ -68,7 +62,7 @@ export function DataLinkHarness({ language = "en", saved }: { language?: string;
       dataLinkService.importServerSnapshot = previousImport;
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [language]);
+  }, [language, wide]);
 
   if (!ready) return null;
 

@@ -618,7 +618,14 @@
 }
 
 .postgres-datalink-body { overflow: auto; }
-.postgres-browser { min-height: 190px; }
+/* Let the body scroll instead of squeezing the browser below its content. */
+.postgres-browser { flex: 1 0 auto; min-height: 190px; }
+.postgres-connection-panel { flex-shrink: 0; }
+.postgres-browser .datalink-preview > * { flex-shrink: 0; }
+.postgres-browser .datalink-table-wrap {
+  flex: 1 0 200px;
+  min-height: 200px;
+}
 .postgres-datalink-dialog .datalink-actions { flex-wrap: wrap; flex-shrink: 0; }
 
 @media (max-width: 600px) {
@@ -675,8 +682,7 @@
 .postgres-selection {
   min-width: 0;
   flex: 0 0 auto;
-  max-height: 55%;
-  overflow: auto;
+  max-height: none;
   margin: 0 0 12px;
   padding: 8px 10px;
   border: 1px solid var(--border-main);
