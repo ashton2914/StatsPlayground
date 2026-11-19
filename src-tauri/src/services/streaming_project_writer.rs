@@ -1219,7 +1219,6 @@ fn replace_existing_windows(temp_path: &Path, destination_path: &Path) -> Result
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
 
-    const REPLACEFILE_WRITE_THROUGH: u32 = 0x0000_0001;
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
     const ERROR_FILE_NOT_FOUND: i32 = 2;
@@ -1258,7 +1257,8 @@ fn replace_existing_windows(temp_path: &Path, destination_path: &Path) -> Result
             dest_wide.as_ptr(),
             temp_wide.as_ptr(),
             std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
+            // REPLACEFILE_WRITE_THROUGH is unsupported; the staged file is already synced.
+            0,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
@@ -1362,6 +1362,30 @@ mod tests {
         with_save_perf_observer, ArchiveReplacer, ProgressDispatcher, SaveFailurePoint,
         StreamingProjectWriter, HARD_BATCH_BYTES, HEARTBEAT_INTERVAL,
     };
+
+    #[test]
+    fn os_archive_replacement_creates_and_overwrites_same_unicode_path() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("同名项目.spprj");
+        for contents in [b"first save".as_slice(), b"replacement".as_slice()] {
+            let temporary = root.path().join("staged.tmp");
+            std::fs::write(&temporary, contents).unwrap();
+            super::replace_archive_atomically_os(&temporary, &destination).unwrap();
+            assert_eq!(std::fs::read(&destination).unwrap(), contents);
+            assert!(!temporary.exists());
+        }
+    }
+
+    #[test]
+    fn os_archive_replacement_failure_preserves_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("existing.spprj");
+        std::fs::write(&destination, b"original").unwrap();
+        assert!(super::replace_archive_atomically_os(
+            &root.path().join("missing.tmp"), &destination
+        ).is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), b"original");
+    }
 
     #[derive(Default)]
     struct TestReplacerState {
