@@ -6465,6 +6465,12 @@ impl DuckDbEngine {
                 "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, $4, $5, $6)",
                 params![id, target_name, source_description, connector.source_type(), row_count, column_count],
             )?;
+            self.promote_imported_temporal_columns(
+                &id,
+                &columns.iter()
+                    .map(|column| (column.name.clone(), column.source_type.clone()))
+                    .collect::<Vec<_>>(),
+            )?;
             self.rebuild_natural_anchors(&id, 0)?;
             Ok((self.get_dataset_meta(&id)?, rows_done))
         })();
@@ -7879,6 +7885,62 @@ impl DuckDbEngine {
         })
     }
 
+    fn column_conversion_sql(identifier: &str, target_type: &str) -> String {
+        let cast = format!("TRY_CAST({identifier} AS {target_type})");
+        if target_type == "TIMESTAMP" {
+            format!("COALESCE({cast}, try_strptime(CAST({identifier} AS VARCHAR), '%m/%d/%Y %I:%M:%S %p'))")
+        } else {
+            cast
+        }
+    }
+
+    /// Infer only whole, nonempty timestamp columns; mixed or zoned text stays lossless.
+    /// Native PostgreSQL date/time declarations also preserve empty-column types
+    /// and timezone semantics that cannot be inferred from values alone.
+    fn promote_imported_temporal_columns(
+        &self,
+        dataset_id: &str,
+        source_types: &[(String, String)],
+    ) -> Result<(), AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        for (name, sql_type) in self.get_user_columns(dataset_id)? {
+            if sql_type != "VARCHAR" {
+                continue;
+            }
+            let declared = source_types
+                .iter()
+                .find(|(column, _)| column == &name)
+                .map(|(_, source_type)| source_type.to_ascii_lowercase());
+            let native_type = match declared.as_deref() {
+                Some("date") => Some("DATE"),
+                Some("timestamp with time zone" | "timestamptz") => Some("TIMESTAMPTZ"),
+                Some("timestamp without time zone" | "timestamp") => Some("TIMESTAMP"),
+                _ => None,
+            };
+            let target_type = native_type.unwrap_or("TIMESTAMP");
+            let identifier = Self::quote_identifier(&name);
+            let conversion = Self::column_conversion_sql(&identifier, target_type);
+            let (non_null, invalid, with_time): (i64, i64, i64) = self.conn.query_row(
+                &format!("SELECT COUNT({identifier}),
+                    COUNT(*) FILTER (WHERE {identifier} IS NOT NULL AND ({conversion}) IS NULL),
+                    COUNT(*) FILTER (WHERE regexp_full_match({identifier}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(\\.[0-9]{{1,6}})?')
+                        OR try_strptime({identifier}, '%m/%d/%Y %I:%M:%S %p') IS NOT NULL) FROM {table}"),
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            if invalid != 0 || (native_type.is_none() && (non_null == 0 || with_time != non_null)) {
+                continue;
+            }
+            self.conn.execute(&format!(
+                "ALTER TABLE {table} ALTER COLUMN {identifier} SET DATA TYPE {target_type} USING {conversion}"
+            ), [])?;
+            self.conn.execute(
+                "UPDATE _meta_columns SET col_type = ? WHERE dataset_id = ? AND col_name = ?",
+                params![target_type, dataset_id, name],
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn change_column_type_inner(
         &self,
         dataset_id: &str,
@@ -7889,9 +7951,11 @@ impl DuckDbEngine {
         let column_name = Self::quote_identifier(col_name);
         let new_type = self.canonicalize_column_type(new_type)?;
 
+        let conversion = Self::column_conversion_sql(&column_name, &new_type);
+
         // Pre-validate: check if all non-null values can be cast to the new type
         let check_sql = format!(
-            "SELECT COUNT(*) FROM {table_name} WHERE {column_name} IS NOT NULL AND TRY_CAST({column_name} AS {new_type}) IS NULL"
+            "SELECT COUNT(*) FROM {table_name} WHERE {column_name} IS NOT NULL AND ({conversion}) IS NULL"
         );
         let fail_count: i64 = self
             .conn
@@ -7907,7 +7971,7 @@ impl DuckDbEngine {
 
         self.conn.execute(
             &format!(
-                "ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DATA TYPE {new_type} USING {column_name}::{new_type}"
+                "ALTER TABLE {table_name} ALTER COLUMN {column_name} SET DATA TYPE {new_type} USING {conversion}"
             ),
             [],
         )?;
@@ -8495,10 +8559,11 @@ impl DuckDbEngine {
         let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let old_identifier = Self::quote_identifier(old_name);
         let new_identifier = Self::quote_identifier(new_name);
+        let conversion = Self::column_conversion_sql(&old_identifier, &new_type);
         if new_type != old_type {
             let failed_casts: i64 = self.conn.query_row(
                 &format!(
-                    "SELECT COUNT(*) FROM {dataset_table} WHERE {old_identifier} IS NOT NULL AND TRY_CAST({old_identifier} AS {new_type}) IS NULL"
+                    "SELECT COUNT(*) FROM {dataset_table} WHERE {old_identifier} IS NOT NULL AND ({conversion}) IS NULL"
                 ),
                 [],
                 |row| row.get(0),
@@ -8515,7 +8580,7 @@ impl DuckDbEngine {
             if new_type != old_type {
                 engine.conn.execute(
                     &format!(
-                        "ALTER TABLE {dataset_table} ALTER COLUMN {old_identifier} SET DATA TYPE {new_type} USING {old_identifier}::{new_type}"
+                        "ALTER TABLE {dataset_table} ALTER COLUMN {old_identifier} SET DATA TYPE {new_type} USING {conversion}"
                     ),
                     [],
                 )?;
@@ -8594,9 +8659,10 @@ impl DuckDbEngine {
         let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         for column in &changed_columns {
             let identifier = Self::quote_identifier(&column.name);
+            let conversion = Self::column_conversion_sql(&identifier, &new_type);
             let failed_casts: i64 = self.conn.query_row(
                 &format!(
-                    "SELECT COUNT(*) FROM {dataset_table} WHERE {identifier} IS NOT NULL AND TRY_CAST({identifier} AS {new_type}) IS NULL"
+                    "SELECT COUNT(*) FROM {dataset_table} WHERE {identifier} IS NOT NULL AND ({conversion}) IS NULL"
                 ),
                 [],
                 |row| row.get(0),
@@ -8617,9 +8683,10 @@ impl DuckDbEngine {
         crate::services::table_mutation_coordinator::execute_column_mutation_in_transaction(self, dataset_id, expected_generation, selected, |engine| {
             for column in &changed_columns {
                 let identifier = Self::quote_identifier(&column.name);
+                let conversion = Self::column_conversion_sql(&identifier, &new_type);
                 engine.conn.execute(
                     &format!(
-                        "ALTER TABLE {dataset_table} ALTER COLUMN {identifier} SET DATA TYPE {new_type} USING {identifier}::{new_type}"
+                        "ALTER TABLE {dataset_table} ALTER COLUMN {identifier} SET DATA TYPE {new_type} USING {conversion}"
                     ),
                     [],
                 )?;
@@ -9019,9 +9086,10 @@ impl DuckDbEngine {
                     if let (Some(before_name), Some(before_type)) = (before_name, before_type) {
                         if before_type != after_type {
                             let quoted_name = Self::quote_identifier(before_name);
+                            let conversion = Self::column_conversion_sql(&quoted_name, after_type);
                             self.conn.execute(
                                 &format!(
-                                    "ALTER TABLE {dataset_table} ALTER COLUMN {quoted_name} SET DATA TYPE {after_type} USING {quoted_name}::{after_type}"
+                                    "ALTER TABLE {dataset_table} ALTER COLUMN {quoted_name} SET DATA TYPE {after_type} USING {conversion}"
                                 ),
                                 [],
                             )?;
@@ -13973,6 +14041,179 @@ mod tests {
     use crate::services::data_service::DataService;
     use crate::state::AppState;
     use duckdb::types::Decimal;
+
+    #[test]
+    fn datalink_timestamp_manual_conversion_preserves_ampm_nulls_and_history() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table("dates", "Dates", &["DPT".into()], &["VARCHAR".into()])
+            .unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO dataset_dates (_row_id, DPT) VALUES
+            (1, '07/28/2026 4:48:03 PM'), (2, '07/28/2026 12:00:00 AM'),
+            (3, '2026-07-28T16:48:03.123456'), (4, NULL)",
+            )
+            .unwrap();
+        let change = db
+            .alter_columns_type_with_change_set("dates", &["DPT".into()], "TIMESTAMP", Some(0))
+            .unwrap();
+        let values: (String, String, String, i64) = db.conn().query_row(
+            "SELECT CAST(MAX(DPT) FILTER (WHERE _row_id=1) AS VARCHAR),
+                    CAST(MAX(DPT) FILTER (WHERE _row_id=2) AS VARCHAR),
+                    CAST(MAX(DPT) FILTER (WHERE _row_id=3) AS VARCHAR), COUNT(*) FILTER (WHERE DPT IS NULL)
+             FROM dataset_dates", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(
+            values,
+            (
+                "2026-07-28 16:48:03".into(),
+                "2026-07-28 00:00:00".into(),
+                "2026-07-28 16:48:03.123456".into(),
+                1
+            )
+        );
+        db.apply_change_set(&change, true).unwrap();
+        let original: String = db
+            .conn()
+            .query_row("SELECT DPT FROM dataset_dates WHERE _row_id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(original, "07/28/2026 4:48:03 PM");
+        db.apply_change_set(&change, false).unwrap();
+        assert_eq!(db.get_user_columns("dates").unwrap()[0].1, "TIMESTAMP");
+    }
+
+    #[test]
+    fn datalink_timestamp_import_infers_only_complete_valid_columns() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "import_dates",
+            "Imported dates",
+            &["DPT".into(), "mixed".into(), "empty".into(), "zoned".into()],
+            &[
+                "VARCHAR".into(),
+                "VARCHAR".into(),
+                "VARCHAR".into(),
+                "VARCHAR".into(),
+            ],
+        )
+        .unwrap();
+        db.conn().execute_batch("INSERT INTO dataset_import_dates (_row_id, DPT, mixed, zoned) VALUES
+            (1, '07/28/2026 4:48:03 PM', '07/28/2026 4:48:03 PM', '2026-07-28T16:48:03+08:00'),
+            (2, '07/28/2026 12:00:00 AM', 'invalid', '2026-07-28T08:48:03Z'), (3, NULL, NULL, NULL)").unwrap();
+        db.promote_imported_temporal_columns("import_dates", &[])
+            .unwrap();
+        let columns = db.get_user_columns("import_dates").unwrap();
+        assert_eq!(
+            columns,
+            vec![
+                ("DPT".into(), "TIMESTAMP".into()),
+                ("mixed".into(), "VARCHAR".into()),
+                ("empty".into(), "VARCHAR".into()),
+                ("zoned".into(), "VARCHAR".into())
+            ]
+        );
+        let zoned: String = db
+            .conn()
+            .query_row(
+                "SELECT zoned FROM dataset_import_dates WHERE _row_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(zoned, "2026-07-28T16:48:03+08:00");
+    }
+
+    #[test]
+    fn datalink_timestamp_native_types_preserve_dates_offsets_and_empty_schema() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "native_dates",
+            "Native dates",
+            &["day".into(), "instant".into(), "empty".into()],
+            &["VARCHAR".into(), "VARCHAR".into(), "VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn().execute_batch("INSERT INTO dataset_native_dates (_row_id, day, instant) VALUES (1, '2026-07-28', '2026-07-28T16:48:03.123456+08:00')").unwrap();
+        db.promote_imported_temporal_columns(
+            "native_dates",
+            &[
+                ("day".into(), "date".into()),
+                ("instant".into(), "timestamp with time zone".into()),
+                ("empty".into(), "timestamp without time zone".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_user_columns("native_dates").unwrap(),
+            vec![
+                ("day".into(), "DATE".into()),
+                ("instant".into(), "TIMESTAMPTZ".into()),
+                ("empty".into(), "TIMESTAMP".into())
+            ]
+        );
+        let values: (String, i64, i64) = db.conn().query_row("SELECT CAST(day AS VARCHAR), epoch_us(instant), COUNT(empty) OVER () FROM dataset_native_dates", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(values, ("2026-07-28".into(), 1785228483123456, 0));
+    }
+
+    #[test]
+    fn datalink_timestamp_invalid_manual_conversion_is_atomic() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "invalid_dates",
+            "Invalid dates",
+            &["DPT".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn().execute_batch("INSERT INTO dataset_invalid_dates (_row_id, DPT) VALUES (1, '07/28/2026 4:48:03 PM'), (2, 'invalid')").unwrap();
+        assert!(db
+            .alter_columns_type_with_change_set(
+                "invalid_dates",
+                &["DPT".into()],
+                "TIMESTAMP",
+                Some(0)
+            )
+            .is_err());
+        assert_eq!(
+            db.get_user_columns("invalid_dates").unwrap()[0].1,
+            "VARCHAR"
+        );
+        assert_eq!(db.get_dataset_generation("invalid_dates").unwrap(), 0);
+        let original: String = db
+            .conn()
+            .query_row(
+                "SELECT DPT FROM dataset_invalid_dates WHERE _row_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(original, "07/28/2026 4:48:03 PM");
+    }
+
+    #[test]
+    fn datalink_timestamp_inference_preserves_nanosecond_text() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "precise_dates",
+            "Precise dates",
+            &["DPT".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn().execute_batch("INSERT INTO dataset_precise_dates (_row_id, DPT) VALUES (1, '2026-07-28T16:48:03.123456789')").unwrap();
+        db.promote_imported_temporal_columns("precise_dates", &[])
+            .unwrap();
+        assert_eq!(
+            db.get_user_columns("precise_dates").unwrap()[0].1,
+            "VARCHAR"
+        );
+        let value: String = db
+            .conn()
+            .query_row("SELECT DPT FROM dataset_precise_dates", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, "2026-07-28T16:48:03.123456789");
+    }
 
     #[test]
     fn compact_row_mutation_schema_is_initialized() {
