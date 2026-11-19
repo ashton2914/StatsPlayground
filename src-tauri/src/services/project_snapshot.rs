@@ -53,7 +53,7 @@ impl ProjectSnapshotService {
             return Err(AppError::InvalidParam("project_snapshot_alias_destination".into()).into());
         }
         let destination_identity = if destination.exists() {
-            Some(same_file::Handle::from_path(destination)?)
+            Some(super::project_database::open_file_identity(destination)?)
         } else {
             None
         };
@@ -153,7 +153,7 @@ impl ProjectSnapshotService {
             .sync_all()?;
         hook(SnapshotPhase::Publish)?;
         let current_identity = if destination.exists() {
-            Some(same_file::Handle::from_path(destination)?)
+            Some(super::project_database::open_file_identity(destination)?)
         } else {
             None
         };
@@ -182,6 +182,74 @@ impl ProjectSnapshotService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_snapshot_overwrites_existing_database_and_can_save_again() {
+        let root = tempfile::tempdir().unwrap();
+        let source_path = root.path().join("source.spprj");
+        let source = ProjectDatabase::create(&source_path, false).unwrap();
+        source.with_engine(|engine| {
+            engine.conn().execute_batch("CREATE TABLE saved_data AS SELECT 42 AS value")?;
+            Ok(())
+        }).unwrap();
+        let source_id = source.header().unwrap().project_id;
+        source.prepare_close(source.epoch()).unwrap();
+        let source_bytes = std::fs::read(&source_path).unwrap();
+        let destination = root.path().join("同名项目.spprj");
+        let old = ProjectDatabase::create(&destination, false).unwrap();
+        let old_id = old.header().unwrap().project_id;
+        old.shutdown().unwrap();
+
+        for _ in 0..2 {
+            let saved = ProjectSnapshotService::save_as(&source, &destination, false).unwrap();
+            let saved_id = saved.header().unwrap().project_id;
+            assert_ne!(saved_id, source_id);
+            assert_ne!(saved_id, old_id);
+            let value = saved.with_reader(saved.epoch(), |engine| {
+                Ok(engine.conn().query_row("SELECT value FROM saved_data", [], |row| row.get::<_, i64>(0))?)
+            }).unwrap();
+            assert_eq!(value, 42);
+            saved.shutdown().unwrap();
+        }
+        assert_eq!(std::fs::read(&source_path).unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn project_snapshot_first_naming_overwrites_existing_database() {
+        let root = tempfile::tempdir().unwrap();
+        let source = ProjectDatabase::create(&root.path().join("draft.spprj"), true).unwrap();
+        let identity = source.header().unwrap().project_id;
+        source.prepare_close(source.epoch()).unwrap();
+        let destination = root.path().join("existing.spprj");
+        ProjectDatabase::create(&destination, false).unwrap().shutdown().unwrap();
+        let named = ProjectSnapshotService::save_as(&source, &destination, true).unwrap();
+        assert_eq!(named.header().unwrap().project_id, identity);
+        named.shutdown().unwrap();
+    }
+
+    #[test]
+    fn project_snapshot_rejects_destination_identity_changed_before_publish() {
+        let root = tempfile::tempdir().unwrap();
+        let source = ProjectDatabase::create(&root.path().join("source.spprj"), false).unwrap();
+        source.prepare_close(source.epoch()).unwrap();
+        let destination = root.path().join("existing.spprj");
+        std::fs::write(&destination, b"original").unwrap();
+        let replacement = root.path().join("replacement.tmp");
+        std::fs::write(&replacement, b"external replacement").unwrap();
+        let result = ProjectSnapshotService::with_hook(&source, &destination, false, |phase| {
+            if phase == SnapshotPhase::Publish {
+                super::super::streaming_project_writer::replace_archive_atomically_os(&replacement, &destination)?;
+            }
+            Ok(())
+        });
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("a changed destination must not be overwritten"),
+        };
+        assert!(failure.error.to_string().contains("project_snapshot_destination_changed"));
+        assert!(!failure.destination_published);
+        assert_eq!(std::fs::read(destination).unwrap(), b"external replacement");
+    }
+
     #[test]
     fn project_snapshot_cancellation_namespace_follows_project_identity() {
         use crate::models::project_persistence::ProjectWriteContext;
