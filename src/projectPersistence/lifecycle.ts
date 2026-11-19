@@ -1,3 +1,4 @@
+import {CommandExecutionError} from "../applicationCommands/runtime";
 import i18n from "../i18n";
 import {createProjectPersistenceCoordinator,type ProjectPersistenceCoordinator,type ProjectOperation} from "./coordinator";
 import {createProjectDocumentAdapters,applyCommittedProjectEffects} from "./documentAdapters";
@@ -33,7 +34,9 @@ export class ProjectMigrationError extends Error {
 }
 
 export function formatProjectLifecycleError(error:unknown):string {
- const message=error instanceof Error?error.message:String(error);
+ const message=error instanceof CommandExecutionError&&error.code==="execution_failed"&&typeof error.details?.cause==="string"
+  ? `${error.message}: ${error.details.cause}`
+  : error instanceof Error?error.message:String(error);
  return (error instanceof ProjectLifecycleRecoveryError||error instanceof ProjectMigrationError)&&error.destinationPublished
   ? `${i18n.t("workspace.destinationPublished",{defaultValue:"The copy was written to the destination."})} ${message}`:message;
 }

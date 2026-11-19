@@ -333,7 +333,11 @@ impl<'a> NativeProjectService<'a> {
                 "project_snapshot_naming_mode_invalid".into(),
             ));
         }
-        if destination.exists() && same_file::is_same_file(source.path(), destination)? {
+        // The source is still open here; Windows DuckDB locks exclude read-data handles.
+        if destination.exists()
+            && super::project_database::open_file_identity(source.path())?
+                == super::project_database::open_file_identity(destination)?
+        {
             return Err(AppError::InvalidParam(
                 "project_snapshot_alias_destination".into(),
             ));
@@ -1545,6 +1549,58 @@ mod tests {
             .unwrap()
             .shutdown()
             .unwrap();
+    }
+
+    #[test]
+    fn project_v5_lifecycle_save_over_existing_default_filename() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("Untitled Project.spprj");
+        let old = ProjectDatabase::create(&destination, false).unwrap();
+        let old_id = old.header().unwrap().project_id;
+        old.shutdown().unwrap();
+        let state = AppState::new().unwrap();
+        let service = NativeProjectService::new(&state);
+        let draft = service.create_draft_enabled(&root.path().join("drafts")).unwrap();
+        let source = service.database(draft.epoch).unwrap();
+        source.with_engine(|engine| {
+            engine.conn().execute_batch("CREATE TABLE saved_data AS SELECT 42 AS value")?;
+            Ok(())
+        }).unwrap();
+        assert!(!source.is_closed().unwrap(), "Save starts with the source database open");
+
+        let outcome = service.snapshot_enabled(draft.epoch, &destination, true).unwrap();
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        assert!(outcome.destination_published);
+        let active = outcome.active.unwrap();
+        assert_eq!(active.header.project_id, draft.header.project_id);
+        assert_ne!(active.header.project_id, old_id);
+        let saved = service.database(active.epoch).unwrap();
+        let value = saved.with_reader(active.epoch, |engine| {
+            Ok(engine.conn().query_row("SELECT value FROM saved_data", [], |row| row.get::<_, i64>(0))?)
+        }).unwrap();
+        assert_eq!(value, 42);
+        assert!(source.is_closed().unwrap());
+        service.close_enabled(active.epoch).unwrap();
+    }
+
+    #[test]
+    fn project_v5_lifecycle_save_rejects_live_source_alias_without_retiring_it() {
+        let root = tempfile::tempdir().unwrap();
+        let source_path = root.path().join("source.spprj");
+        ProjectDatabase::create(&source_path, false).unwrap().shutdown().unwrap();
+        let alias = root.path().join("alias.spprj");
+        std::fs::hard_link(&source_path, &alias).unwrap();
+        let state = AppState::new().unwrap();
+        let service = NativeProjectService::new(&state);
+        let opened = service.open_enabled(&source_path, false).unwrap();
+        for destination in [&source_path, &alias] {
+            let error = service.snapshot_enabled(opened.epoch, destination, false).unwrap_err();
+            assert!(error.to_string().contains("project_snapshot_alias_destination"), "{error}");
+            let active = service.database(opened.epoch).unwrap();
+            assert!(!active.is_closed().unwrap());
+            assert_eq!(active.header().unwrap().project_id, opened.header.project_id);
+        }
+        service.close_enabled(opened.epoch).unwrap();
     }
 
     #[test]
