@@ -350,9 +350,8 @@
 }
 .graph-new-camera-plot:active { cursor: grabbing; }
 .graph-new-camera-preview { transform-origin: 0 0; opacity: 0; pointer-events: none; }
-.graph-new-canvas-host[data-provisional] > canvas { opacity: 0.25; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
-  background: repeating-linear-gradient(135deg, var(--gbn-preview) 0, var(--gbn-preview) 4px, var(--gbn-preview-line) 4px, var(--gbn-preview-line) 5px);
+  background: var(--gbn-panel);
 }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
 .graph-new-reset {

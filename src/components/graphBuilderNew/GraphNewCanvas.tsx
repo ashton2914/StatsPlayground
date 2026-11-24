@@ -11,7 +11,7 @@ import {
   type GraphNewRenderRequest,
 } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, shouldPreviewCameraTransform, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
 let activeJob: RenderJob | null = null;
@@ -186,17 +186,11 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       if (!presented || !current || !plot || !preview.current) return;
       const { scale } = geometry();
       const transform = cameraTransform(presented, current, plot);
-      preview.current.style.transform = `translate(${transform.x * scale}px, ${transform.y * scale}px) scale(${transform.scale})`;
+      preview.current.style.transform = `translate3d(${transform.x * scale}px, ${transform.y * scale}px, 0) scale(${transform.scale})`;
     };
     const showPreview = () => {
       if (!presented || !current || !plot || !preview.current) return;
-      const transform = cameraTransform(presented, current, plot);
-      const scaleY = (presented.yMax - presented.yMin) / (current.yMax - current.yMin);
-      const uniform = Math.abs(transform.scale - scaleY) <= Math.max(transform.scale, scaleY) * 1e-8;
-      const coversPlot = uniform && transform.x <= 0 && transform.y <= 0
-        && transform.x + plot.width * transform.scale >= plot.width
-        && transform.y + plot.height * transform.scale >= plot.height;
-      if (!coversPlot) {
+      if (!shouldPreviewCameraTransform(presented, current, plot)) {
         if (raf !== null) cancelAnimationFrame(raf);
         raf = null;
         preview.current.style.transform = "none";
@@ -528,7 +522,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
         </button>
         <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
           {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
-            : provisional ? `Axes frozen; previewing zoom while the next frame renders. ${reason ? status : ""}` : status}
+            : provisional ? `Axes frozen; previewing view while the next frame renders. ${reason ? status : ""}` : status}
         </span>
   </>);
 

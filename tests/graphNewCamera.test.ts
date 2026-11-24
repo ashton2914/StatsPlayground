@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, shouldPreviewCameraTransform, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
 
 const domain = { xMin: 0, xMax: 100, yMin: -50, yMax: 50 };
 const plot = { x: 60, y: 10, width: 400, height: 200 };
@@ -22,6 +22,14 @@ const panned = panCamera(domain, domain, plot, 40, 20);
 for (const [key, expected] of Object.entries({ xMin: -10, xMax: 90, yMin: -40, yMax: 60 })) {
   assert.ok(Math.abs(panned[key as keyof typeof panned] - expected) < 1e-12);
 }
+const zoomedOut = zoomCamera(domain, domain, plot, { x: 260, y: 110 }, Math.log(2) / 0.002);
+const zoomedAndPanned = panCamera(zoomed, domain, plot, 240, -90);
+assert.equal(shouldPreviewCameraTransform(domain, domain, plot), false, "no-op camera needs no provisional preview");
+assert.equal(shouldPreviewCameraTransform(domain, panned, plot), true, "panning must preview smoothly while dragging");
+assert.equal(shouldPreviewCameraTransform(domain, zoomed, plot), true, "zooming in previews smoothly");
+assert.equal(shouldPreviewCameraTransform(domain, zoomedAndPanned, plot), true, "zoomed-in pan previews smoothly");
+assert.equal(shouldPreviewCameraTransform(domain, zoomedOut, plot), false, "zooming out retains coherent frame without shrunk preview");
+assert.equal(shouldPreviewCameraTransform(domain, { xMin: 25, xMax: 75, yMin: -50, yMax: 50 }, plot), false, "non-uniform scale does not preview");
 for (const extreme of [
   { xMin: 1e300, xMax: 1.01e300, yMin: -1e300, yMax: -0.99e300 },
   { xMin: 1e-280, xMax: 2e-280, yMin: -2e-280, yMax: -1e-280 },

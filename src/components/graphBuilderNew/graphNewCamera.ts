@@ -78,6 +78,18 @@ export function cameraTransform(presented: CameraDomain, current: CameraDomain, 
   };
 }
 
+export function shouldPreviewCameraTransform(presented: CameraDomain, current: CameraDomain, plot: PlotRect): boolean {
+  const transform = cameraTransform(presented, current, plot);
+  const scaleY = (presented.yMax - presented.yMin) / (current.yMax - current.yMin);
+  const uniform = Number.isFinite(transform.scale) && Number.isFinite(scaleY)
+    && transform.scale > 0 && scaleY > 0
+    && Math.abs(transform.scale - scaleY) <= Math.max(transform.scale, scaleY) * 1e-8;
+  if (!uniform || transform.scale < 1 - 1e-8) return false;
+  return Math.abs(transform.scale - 1) > 1e-8
+    || Math.abs(transform.x) > 1e-6
+    || Math.abs(transform.y) > 1e-6;
+}
+
 export function createCameraScheduler(options: {
   invalidate: () => void;
   settled: (generation: number) => void;
