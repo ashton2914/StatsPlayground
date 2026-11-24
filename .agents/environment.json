@@ -1,0 +1,3 @@
+{
+  "install": "sed -i '/case \\$- in/,/esac/d' ~/.bashrc 2>/dev/null || true && sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev pkg-config libssl-dev && (lock_bak=$(mktemp) && cp package-lock.json \"$lock_bak\" && trap 'mv \"$lock_bak\" package-lock.json' EXIT && sed -i -E 's|https://ms-feed-[0-9]+\\.pkgs\\.visualstudio\\.com/1es-public/_packaging/npm-public/npm/registry/|https://registry.npmjs.org/|g' package-lock.json && npm ci) && npm ci --prefix website && npx playwright install --with-deps chromium && cargo fetch --manifest-path src-tauri/Cargo.toml"
+}
