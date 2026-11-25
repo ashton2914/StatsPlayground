@@ -498,6 +498,12 @@ async function main() {
     writeFileSync(process.argv[3], JSON.stringify(artifact, null, 2) + "\n");
     console.log(`native production-service replay passed: ${replayed.length} frames, 2032293 submitted, unchanged completions; ${recordedCompletionReplay ? "synthetic one-pixel transport" : "unchanged native RGBA"}`);
   }
+  assert.throws(() => graphNewService.render({ ...request, axisBounds: { yMin: Number.NaN } }, handlers), /graph_new_invalid_request/);
+  assert.throws(() => graphNewService.render({ ...request, axisBounds: { xMax: Number.POSITIVE_INFINITY } }, handlers), /graph_new_invalid_request/);
+  const axisSettingsReq = { ...cameraRequest, invertX: true, invertY: true, hideChrome: true, axisBounds: { yMin: 0, yMax: 100 } };
+  const axisSettingsCtrl = graphNewService.render(axisSettingsReq, handlers);
+  resolveRender(cameraCompletion);
+  await axisSettingsCtrl.completion;
   console.log("graphNewService contract passed");
 }
 void main();

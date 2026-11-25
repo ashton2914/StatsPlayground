@@ -105,6 +105,30 @@ pub struct GraphNewPlotRect {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewAxisBounds {
+    #[serde(default)]
+    pub x_min: Option<f64>,
+    #[serde(default)]
+    pub x_max: Option<f64>,
+    #[serde(default)]
+    pub y_min: Option<f64>,
+    #[serde(default)]
+    pub y_max: Option<f64>,
+}
+
+impl GraphNewAxisBounds {
+    pub fn validate(&self) -> Result<(), AppError> {
+        for bound in [self.x_min, self.x_max, self.y_min, self.y_max].into_iter().flatten() {
+            if !bound.is_finite() {
+                return Err(AppError::InvalidParam("graph_new_invalid_request".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GraphNewRenderRequest {
@@ -112,6 +136,14 @@ pub struct GraphNewRenderRequest {
     pub dark_theme: bool,
     #[serde(default)]
     pub plot_only: bool,
+    #[serde(default)]
+    pub hide_chrome: bool,
+    #[serde(default)]
+    pub invert_x: bool,
+    #[serde(default)]
+    pub invert_y: bool,
+    #[serde(default)]
+    pub axis_bounds: Option<GraphNewAxisBounds>,
     pub request_id: String,
     pub session_id: String,
     pub dataset_id: String,
@@ -150,6 +182,7 @@ impl GraphNewRenderRequest {
     if self.point_radius.is_some_and(|radius| radius > 8) { return Err(AppError::InvalidParam("graph_new_invalid_request".into())); }
     if let Some(domain) = self.camera_domain { domain.validate()?; }
     if let Some(domain) = self.reference_domain { domain.validate()?; }
+    if let Some(bounds) = self.axis_bounds { bounds.validate()?; }
     if let Some(layers) = &self.layers { crate::services::graph_new_layers::validate_layers(layers)?; }
     if self.layer_configuration_id.as_ref().is_some_and(|s| s.len() > 65536) { return Err(AppError::InvalidParam("graph_new_invalid_layers".into())); }
         let valid_ids = [&self.request_id, &self.session_id, &self.dataset_id, &self.x_column_id, &self.y_column_id]

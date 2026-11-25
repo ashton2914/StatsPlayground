@@ -300,6 +300,7 @@ impl<'a> GraphNewService<'a> {
             }
 
             if request.layers.is_some() { full_domain = default_layer_camera(full_domain, built.pyramid.x_axis.kind, request.width, request.height); }
+            full_domain = resolve_effective_full_domain(full_domain, request.axis_bounds.as_ref(), built.pyramid.x_axis.kind);
             if let Some(camera) = request.camera_domain {
                 validate_camera_limits(camera, full_domain, request.layers.is_some())?;
             }
@@ -460,12 +461,32 @@ impl<'a> GraphNewService<'a> {
                 Some(std::sync::Arc::new(super::graph_new_pixels::PixelRaster { width:frame[0],height:frame[1],rgba,
                     visible:enabled_visible_rows.unwrap_or(0),occupied:selected_marks,work:super::graph_new_raw::QueryWork::default() }))
             } else { raster };
+            let raster = if request.invert_x || request.invert_y {
+                raster.map(|src| {
+                    let mut rgba = src.rgba.clone();
+                    let plot = super::graph_new_renderer::scene_plot(request.width, request.height, request.device_pixel_ratio, request.plot_only);
+                    flip_pixel_raster(&mut rgba, [src.width, src.height], plot, request.invert_x, request.invert_y);
+                    std::sync::Arc::new(super::graph_new_pixels::PixelRaster {
+                        width: src.width,
+                        height: src.height,
+                        rgba,
+                        visible: src.visible,
+                        occupied: src.occupied,
+                        work: src.work,
+                    })
+                })
+            } else {
+                raster
+            };
             let scene = GraphNewScene { width: request.width, height: request.height,
                 device_pixel_ratio: request.device_pixel_ratio, domain, points,
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
                     dark_theme: request.dark_theme,
                     plot_only: request.plot_only,
+                    hide_chrome: request.hide_chrome,
+                    invert_x: request.invert_x,
+                    invert_y: request.invert_y,
                     grid_reference: request.reference_domain.map(|camera| super::graph_new_lod::GraphDomain {
                         x_min: camera.x_min, x_max: camera.x_max, y_min: camera.y_min, y_max: camera.y_max,
                     }),
@@ -1348,6 +1369,61 @@ fn resolve_columns(
         bindings.insert(binding.column_id.clone(), binding);
     }
     Ok(bindings)
+}
+
+pub(crate) fn resolve_effective_full_domain(
+    data_full: super::graph_new_lod::GraphDomain,
+    bounds: Option<&crate::models::graph_new::GraphNewAxisBounds>,
+    x_kind: GraphNewXMode,
+) -> super::graph_new_lod::GraphDomain {
+    let Some(bounds) = bounds else { return data_full; };
+    let apply_axis = |min: f64, max: f64, custom_min: Option<f64>, custom_max: Option<f64>| -> (f64, f64) {
+        let next_min = custom_min.filter(|v| v.is_finite()).unwrap_or(min);
+        let next_max = custom_max.filter(|v| v.is_finite()).unwrap_or(max);
+        if next_min.is_finite() && next_max.is_finite() && next_min < next_max && (next_max - next_min).is_finite() {
+            (next_min, next_max)
+        } else {
+            (min, max)
+        }
+    };
+    let (x_min, x_max) = if matches!(x_kind, GraphNewXMode::Category | GraphNewXMode::Time) {
+        (data_full.x_min, data_full.x_max)
+    } else {
+        apply_axis(data_full.x_min, data_full.x_max, bounds.x_min, bounds.x_max)
+    };
+    let (y_min, y_max) = apply_axis(data_full.y_min, data_full.y_max, bounds.y_min, bounds.y_max);
+    super::graph_new_lod::GraphDomain { x_min, x_max, y_min, y_max }
+}
+
+pub(crate) fn flip_pixel_raster(rgba: &mut [u8], frame: [u32; 2], plot: [u32; 4], invert_x: bool, invert_y: bool) {
+    let [fw, fh] = frame;
+    let [px, py, pw, ph] = plot;
+    if (!invert_x && !invert_y) || pw == 0 || ph == 0 || px + pw > fw || py + ph > fh {
+        return;
+    }
+    let stride = fw as usize * 4;
+    if invert_y {
+        for row in 0..(ph as usize / 2) {
+            let top = (py as usize + row) * stride + px as usize * 4;
+            let bot = (py as usize + ph as usize - 1 - row) * stride + px as usize * 4;
+            let len = pw as usize * 4;
+            for i in 0..len {
+                rgba.swap(top + i, bot + i);
+            }
+        }
+    }
+    if invert_x {
+        for row in 0..ph as usize {
+            let row_start = (py as usize + row) * stride + px as usize * 4;
+            for col in 0..(pw as usize / 2) {
+                let left = row_start + col * 4;
+                let right = row_start + (pw as usize - 1 - col) * 4;
+                for c in 0..4 {
+                    rgba.swap(left + c, right + c);
+                }
+            }
+        }
+    }
 }
 
 fn validate_camera_limits(camera: crate::models::graph_new::GraphNewCameraDomain, full: super::graph_new_lod::GraphDomain, independent_layers: bool) -> Result<(), AppError> {
@@ -2438,7 +2514,7 @@ mod tests {
     #[test]
     fn graph_new_render_ownership_fences_switch_cancel_close_and_old_requests() {
         let runtime = super::GraphNewRuntime::default();
-        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None,
+        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { dark_theme: false, plot_only: false, hide_chrome: false, invert_x: false, invert_y: false, axis_bounds: None, point_radius: None,
             request_id: format!("request-{generation}"), session_id: session.into(),
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
@@ -2541,7 +2617,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "render-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, hide_chrome: false, invert_x: false, invert_y: false, axis_bounds: None, point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2586,7 +2662,7 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "error-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, hide_chrome: false, invert_x: false, invert_y: false, axis_bounds: None, point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -2628,7 +2704,7 @@ mod tests {
         use crate::error::AppError;
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "concurrent-fixture");
-        let request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "first".into(), session_id: "session".into(),
+        let request = GraphNewRenderRequest { dark_theme: false, plot_only: false, hide_chrome: false, invert_x: false, invert_y: false, axis_bounds: None, point_radius: None, request_id: "first".into(), session_id: "session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
@@ -3944,6 +4020,52 @@ mod tests {
         assert!(!completion.mean_visible);
         assert!(!completion.mean_available);
         assert_eq!(completion.mean_groups, None);
+    }
+
+    #[test]
+    fn resolve_effective_full_domain_applies_valid_bounds_and_relaxes_camera_limits() {
+        use crate::models::graph_new::{GraphNewAxisBounds, GraphNewCameraDomain, GraphNewXMode};
+        use crate::services::graph_new_lod::GraphDomain;
+        let data_full = GraphDomain { x_min: 45.0, x_max: 55.0, y_min: 45.0, y_max: 55.0 };
+        let bounds = GraphNewAxisBounds {
+            x_min: Some(0.0),
+            x_max: Some(1000.0),
+            y_min: Some(0.0),
+            y_max: Some(1000.0),
+        };
+        let eff = super::resolve_effective_full_domain(data_full, Some(&bounds), GraphNewXMode::Numeric);
+        assert_eq!(eff, GraphDomain { x_min: 0.0, x_max: 1000.0, y_min: 0.0, y_max: 1000.0 });
+        super::validate_camera_limits(
+            GraphNewCameraDomain { x_min: 0.0, x_max: 1000.0, y_min: 0.0, y_max: 1000.0 },
+            eff,
+            true,
+        ).expect("camera within effective_full must be valid");
+
+        // Category and Time X ignore X bounds but keep Y bounds.
+        let cat_eff = super::resolve_effective_full_domain(data_full, Some(&bounds), GraphNewXMode::Category);
+        assert_eq!(cat_eff, GraphDomain { x_min: 45.0, x_max: 55.0, y_min: 0.0, y_max: 1000.0 });
+        let time_eff = super::resolve_effective_full_domain(data_full, Some(&bounds), GraphNewXMode::Time);
+        assert_eq!(time_eff, GraphDomain { x_min: 45.0, x_max: 55.0, y_min: 0.0, y_max: 1000.0 });
+
+        // Invalid inverted bounds (min >= max) fall back to data_full on that axis.
+        let bad_bounds = GraphNewAxisBounds {
+            x_min: Some(100.0),
+            x_max: Some(50.0),
+            y_min: Some(10.0),
+            y_max: None,
+        };
+        let safe_eff = super::resolve_effective_full_domain(data_full, Some(&bad_bounds), GraphNewXMode::Numeric);
+        assert_eq!(safe_eff, GraphDomain { x_min: 45.0, x_max: 55.0, y_min: 10.0, y_max: 55.0 });
+
+        // Pixel raster flip mirrors pixels inside plot_rect only.
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        // Plot rect [1, 1, 2, 2] in 4x4 frame; mark top-left of plot (1, 1) red.
+        let idx = (1 * 4 + 1) * 4;
+        rgba[idx..idx + 4].copy_from_slice(&[255, 0, 0, 255]);
+        super::flip_pixel_raster(&mut rgba, [4, 4], [1, 1, 2, 2], true, true);
+        let dst = (2 * 4 + 2) * 4;
+        assert_eq!(&rgba[dst..dst + 4], &[255, 0, 0, 255]);
+        assert_eq!(&rgba[idx..idx + 4], &[0, 0, 0, 0]);
     }
 
 }
