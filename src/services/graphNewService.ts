@@ -57,6 +57,7 @@ export interface GraphNewProbeController {
 
 export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   darkTheme?: boolean;
+  plotOnly?: boolean;
   sessionId: string;
   datasetId: string;
   xColumnId: string;
@@ -65,6 +66,7 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   height: number;
   devicePixelRatio: number;
   cameraDomain?: CameraDomain | null;
+  referenceDomain?: CameraDomain | null;
   layers?: GraphNewLayer[];
   layerConfigurationId?: string;
   showMean?: boolean;
@@ -154,6 +156,7 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
   if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
   if (request.cameraDomain != null && !isCameraDomain(request.cameraDomain)) throw new Error("graph_new_invalid_request");
+  if (request.referenceDomain != null && !isCameraDomain(request.referenceDomain)) throw new Error("graph_new_invalid_request");
   if (request.overlayColumnId != null && (typeof request.overlayColumnId !== "string"
     || !request.overlayColumnId.trim()
     || request.overlayColumnId.trim() !== request.overlayColumnId
@@ -471,6 +474,18 @@ export const graphNewService = {
       await invoke<void>("cancel_graph_new", { sessionId: request.sessionId, requestId: request.requestId, rendererGeneration: request.rendererGeneration,
         ...(preserveCache ? { preserveCache: true } : {}) })
         .catch(() => { throw new Error("graph_new_render_failed"); });
+    } };
+  },
+  renderOverscan(request: GraphNewRenderRequest, handlers: GraphNewProbeHandlers): GraphNewRenderController {
+    const overscanRequest: GraphNewRenderRequest = { ...request, plotOnly: true };
+    validateRenderRequest(overscanRequest);
+    lastRender = overscanRequest;
+    const controller = startRequest<GraphNewRenderCompletion>("render_graph_new", overscanRequest, handlers, true, (completion) => validateCompletion(completion, overscanRequest));
+    return { ...controller, cancel: async (preserveCache = true) => {
+      controller.cancel();
+      await invoke<void>("cancel_graph_new", { sessionId: overscanRequest.sessionId, requestId: overscanRequest.requestId, rendererGeneration: overscanRequest.rendererGeneration,
+        ...(preserveCache ? { preserveCache: true } : {}) })
+        .catch(() => {});
     } };
   },
   async close(sessionId: string): Promise<void> {

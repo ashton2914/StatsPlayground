@@ -17,7 +17,7 @@ interface GraphBuilderNewHarnessProps {
   legacyXMode?: GraphBuilderNewDocument["xMode"];
   locale?: "en" | "zh-CN";
   axisFixture?: "nanoTime" | "microTime" | "microDuration" | "unicode" | "compactNumeric";
-  mode?: "summaryDomain" | "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "renderTransient" | "renderReplacementError" | "renderReplacementContractError" | "renderReplacementTransportError" | "renderCachePressure" | "renderGpuValidation" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields" | "overlay" | "overlayMean" | "overlayMany";
+  mode?: "summaryDomain" | "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "overscan" | "slow" | "renderError" | "renderTransient" | "renderReplacementError" | "renderReplacementContractError" | "renderReplacementTransportError" | "renderCachePressure" | "renderGpuValidation" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields" | "overlay" | "overlayMean" | "overlayMany";
 }
 
 const SESSION_ID = "graph-builder-new-session";
@@ -102,13 +102,53 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
     const previousStoreState = useGraphBuilderNewStore.getState();
     const previousProjectState = useProjectStore.getState();
     const previousRender = graphNewService.render;
+    const previousRenderOverscan = graphNewService.renderOverscan;
     const previousClose = graphNewService.close;
     const previousInternals = (window as any).__TAURI_INTERNALS__;
     let active = 0;
     let transientFailureDelivered = false;
     const closedSessions = new Set<string>();
-    if (["summaryDomain", "render", "slow", "renderError", "renderTransient", "renderReplacementError", "renderReplacementContractError", "renderReplacementTransportError", "renderCachePressure", "renderGpuValidation", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields", "overlay", "overlayMean", "overlayMany"].includes(mode)) {
+    if (["summaryDomain", "render", "overscan", "slow", "renderError", "renderTransient", "renderReplacementError", "renderReplacementContractError", "renderReplacementTransportError", "renderCachePressure", "renderGpuValidation", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields", "overlay", "overlayMean", "overlayMany"].includes(mode)) {
       (window as any).__TAURI_INTERNALS__ = {};
+      if (mode === "overscan") {
+        graphNewService.renderOverscan = (request, handlers) => {
+          let cancelled = false;
+          let presented = false;
+          const frameWidth = Math.ceil(request.width * request.devicePixelRatio);
+          const frameHeight = Math.ceil(request.height * request.devicePixelRatio);
+          const header = { ...request, width: frameWidth, height: frameHeight, frameId: 1, format: "rgba8" as const,
+            byteLength: frameWidth * frameHeight * 4, readbackCompletedAtUnixMicros: 1 };
+          const completion = new Promise<any>((resolve, reject) => setTimeout(() => {
+            if (cancelled || closedSessions.has(request.sessionId)) { handlers.onError("graph_new_cancelled"); reject(new Error("graph_new_cancelled")); return; }
+            const pixels = new Uint8Array(header.byteLength).fill(240);
+            handlers.onFrame({ header, payload: pixels.buffer });
+            const cameraDomain = request.cameraDomain ?? { xMin: -50, xMax: 150, yMin: -50, yMax: 150 };
+            resolve({
+              requestId: request.requestId,
+              xAxis: { kind: "numeric", utc: false, ticks: [{ value: cameraDomain.xMin, position: 0, label: String(cameraDomain.xMin) }, { value: cameraDomain.xMax, position: 1, label: String(cameraDomain.xMax) }], origin: null },
+              yAxis: { kind: "numeric", utc: false, ticks: [{ value: cameraDomain.yMin, position: 0, label: String(cameraDomain.yMin) }, { value: cameraDomain.yMax, position: 1, label: String(cameraDomain.yMax) }], origin: null },
+              overlayGroups: [], overlayActive: false, hiddenOverlayGroups: 0,
+              processedRows: 3, finiteRows: 3, excludedNonFiniteRows: 0, selectedMarks: 3,
+              exactVisible: true, visibleRows: 3,
+              rawIndexEntriesInspected: 0, rawBlocksInspected: 0, rawPointsInspected: 0,
+              buildMs: 0, renderMs: 2, readbackMs: 1,
+              width: frameWidth, height: frameHeight, cameraDomain,
+              plotRect: { x: 0, y: 0, width: frameWidth, height: frameHeight },
+              sourceProjectionQueryCount: 0, renderGenerationCheckCount: 1,
+            });
+          }, 20));
+          return {
+            completion,
+            canPresent: () => !cancelled && !presented && !closedSessions.has(request.sessionId),
+            markPresented: () => { presented = true; },
+            cancel: async () => { cancelled = true; },
+            snapshot: () => ({ maximumQueueDepth: 1, droppedSupersededFrames: 0, rejectedFrames: 0, presentedFrames: Number(presented), pendingFrameId: null }),
+            diagnostic: () => null,
+          };
+        };
+      } else {
+        (graphNewService as { renderOverscan?: typeof graphNewService.renderOverscan }).renderOverscan = undefined;
+      }
       graphNewService.close = async (sessionId) => {
         setClosedIds((value) => [...value, sessionId]);
         if (deferClose) await new Promise<void>((resolve) => pendingCloses.current.push(resolve));
@@ -313,6 +353,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
     return () => {
       dataService.getColumnDescriptors = previousGetColumnDescriptors;
       graphNewService.render = previousRender;
+      graphNewService.renderOverscan = previousRenderOverscan;
       graphNewService.close = previousClose;
       if (previousInternals === undefined) delete (window as any).__TAURI_INTERNALS__;
       else (window as any).__TAURI_INTERNALS__ = previousInternals;

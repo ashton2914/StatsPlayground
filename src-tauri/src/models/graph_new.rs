@@ -110,6 +110,8 @@ pub struct GraphNewPlotRect {
 pub struct GraphNewRenderRequest {
     #[serde(default)]
     pub dark_theme: bool,
+    #[serde(default)]
+    pub plot_only: bool,
     pub request_id: String,
     pub session_id: String,
     pub dataset_id: String,
@@ -123,6 +125,8 @@ pub struct GraphNewRenderRequest {
     pub camera_generation: u64,
     #[serde(default)]
     pub camera_domain: Option<GraphNewCameraDomain>,
+    #[serde(default)]
+    pub reference_domain: Option<GraphNewCameraDomain>,
     #[serde(default)]
     pub show_mean: bool,
     #[serde(default)]
@@ -145,6 +149,7 @@ impl GraphNewRenderRequest {
     pub fn validate(&self) -> Result<(), AppError> {
     if self.point_radius.is_some_and(|radius| radius > 8) { return Err(AppError::InvalidParam("graph_new_invalid_request".into())); }
     if let Some(domain) = self.camera_domain { domain.validate()?; }
+    if let Some(domain) = self.reference_domain { domain.validate()?; }
     if let Some(layers) = &self.layers { crate::services::graph_new_layers::validate_layers(layers)?; }
     if self.layer_configuration_id.as_ref().is_some_and(|s| s.len() > 65536) { return Err(AppError::InvalidParam("graph_new_invalid_layers".into())); }
         let valid_ids = [&self.request_id, &self.session_id, &self.dataset_id, &self.x_column_id, &self.y_column_id]

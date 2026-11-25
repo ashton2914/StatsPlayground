@@ -317,7 +317,7 @@ impl<'a> GraphNewService<'a> {
                 let frame = [(request.width as f64 * request.device_pixel_ratio).ceil() as u32,
                     (request.height as f64 * request.device_pixel_ratio).ceil() as u32];
                 Some(std::sync::Arc::new(source.raster(domain, frame,
-                    super::graph_new_renderer::pixel_plot(request.width, request.height, request.device_pixel_ratio),
+                    super::graph_new_renderer::scene_plot(request.width, request.height, request.device_pixel_ratio, request.plot_only),
                     request.point_radius.unwrap_or(1), &built.pyramid.overlay, enabled_groups,
                     &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?))
             } else { None };
@@ -434,7 +434,7 @@ impl<'a> GraphNewService<'a> {
             };
             let mut axis_data = built.pyramid.x_axis.clone();
             if axis_data.kind == GraphNewXMode::Category && layer_geometry.as_ref().and_then(|p|p.extent()).is_some_and(|e|e[1]>=axis_data.categories.len() as f64) {axis_data.categories.push("(Missing)".into());}
-            let x_axis = axis_ticks(&axis_data, domain, request.width)?;
+            let x_axis = axis_ticks(&axis_data, domain, request.width, request.reference_domain)?;
             let y_axis = GraphNewAxis {
                 kind: GraphNewXMode::Numeric,
                 utc: false,
@@ -452,7 +452,7 @@ impl<'a> GraphNewService<'a> {
                 let frame = [(request.width as f64 * request.device_pixel_ratio).ceil() as u32,
                     (request.height as f64 * request.device_pixel_ratio).ceil() as u32];
                 let (line, _) = super::graph_new_line_pixels::rasterize(&layers.line_sources, &layers.line_raster, domain, frame,
-                    super::graph_new_renderer::pixel_plot(request.width, request.height, request.device_pixel_ratio),
+                    super::graph_new_renderer::scene_plot(request.width, request.height, request.device_pixel_ratio, request.plot_only),
                     request.device_pixel_ratio, &built.pyramid.overlay, enabled_groups, &layer_control)?;
                 let mut rgba = line.fill.clone();
                 if !layers.raw_points.is_empty() { if let Some(scatter) = &raster { super::graph_new_line_pixels::composite(&mut rgba, &scatter.rgba); } }
@@ -465,6 +465,10 @@ impl<'a> GraphNewService<'a> {
                 overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
                     dark_theme: request.dark_theme,
+                    plot_only: request.plot_only,
+                    grid_reference: request.reference_domain.map(|camera| super::graph_new_lod::GraphDomain {
+                        x_min: camera.x_min, x_max: camera.x_max, y_min: camera.y_min, y_max: camera.y_max,
+                    }),
                     raster: if layer_geometry.as_ref().is_some_and(|p| p.raw_points.is_empty() && p.line_sources.is_empty()) { None } else { raster }, point_radius: request.point_radius,
                     layer_geometry: layer_geometry.clone(),
                     raw_line: raw_line.clone(), show_points: layer_geometry.as_ref().is_some_and(|p| !p.line_sources.is_empty()) || request.layers.as_ref().map_or(request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line, |layers| layers.iter().any(|layer| matches!(layer, super::graph_new_layers::GraphNewLayer::Points { options, .. } if options.summary_stat == "none"))),
@@ -1094,12 +1098,47 @@ fn default_layer_camera(mut domain: super::graph_new_lod::GraphDomain, kind: Gra
     domain
 }
 
-fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain, width: u32) -> Result<GraphNewAxis, AppError> {
+fn nice_category_step(span: f64, max_labels: f64) -> usize {
+    let raw = (span / max_labels).max(1.0);
+    if !raw.is_finite() {
+        return 1;
+    }
+    let exponent = raw.log10().floor();
+    let magnitude = 10.0_f64.powf(exponent).max(1.0);
+    let norm = raw / magnitude;
+    let factor = if norm <= 1.0 {
+        1.0
+    } else if norm <= 2.0 {
+        2.0
+    } else if norm <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    (factor * magnitude).ceil().max(1.0) as usize
+}
+
+fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain, width: u32, reference_domain: Option<crate::models::graph_new::GraphNewCameraDomain>) -> Result<GraphNewAxis, AppError> {
     let ticks = if axis.kind == GraphNewXMode::Category {
         let start = domain.x_min.ceil().max(0.0) as usize;
         let end = (domain.x_max.floor().max(0.0) as usize + 1).min(axis.categories.len());
-        let step = (end.saturating_sub(start) as f64 / ((width.saturating_sub(80) / 140).max(1).min(6)) as f64).ceil().max(1.0) as usize;
-        (start..end).step_by(step).map(|index| GraphNewAxisTick { value: index as f64,
+        let overscan_span = (domain.x_max - domain.x_min).max(1.0);
+        let ref_span = reference_domain
+            .map(|r| (r.x_max - r.x_min).max(1.0))
+            .unwrap_or(overscan_span);
+        let effective_width = if reference_domain.is_some() && overscan_span > ref_span {
+            ((width as f64) * (ref_span / overscan_span)).round().max(96.0) as u32
+        } else {
+            width
+        };
+        let max_labels = ((effective_width.saturating_sub(80) / 140).max(1).min(6)) as f64;
+        let mut step = nice_category_step(ref_span, max_labels);
+        // Ensure tick count never exceeds the 12-tick wire contract even for overscan domains.
+        while end > start && ((end - 1) / step).saturating_sub(start.div_ceil(step)) + 1 > 12 {
+            step = step.saturating_mul(2);
+        }
+        let first = start.div_ceil(step).saturating_mul(step);
+        (first..end).step_by(step).map(|index| GraphNewAxisTick { value: index as f64,
             position: super::graph_new_ticks::normalized(index as f64, domain.x_min, domain.x_max), label: Some(axis.categories[index].clone()) }).collect()
     } else {
         super::graph_new_ticks::numeric_ticks(domain.x_min, domain.x_max)?.into_iter()
@@ -2399,12 +2438,12 @@ mod tests {
     #[test]
     fn graph_new_render_ownership_fences_switch_cancel_close_and_old_requests() {
         let runtime = super::GraphNewRuntime::default();
-        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { dark_theme: false, point_radius: None,
+        let make = |session: &str, generation: u64| crate::models::graph_new::GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None,
             request_id: format!("request-{generation}"), session_id: session.into(),
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
             width: 320, height: 200, device_pixel_ratio: 2.0,
-            renderer_generation: generation, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
+            renderer_generation: generation, camera_generation: 0, camera_domain: None, reference_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             x_mode: Default::default(),
             raw_mode: Default::default(),
             overlay_column_id: None,
@@ -2502,11 +2541,11 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "render-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "r1".into(), session_id: "s1".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, reference_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let render = |scene: &super::super::graph_new_renderer::GraphNewScene| {
             assert!(state.db.try_lock().is_ok(), "render must not hold DB lock");
@@ -2547,11 +2586,11 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "error-fixture");
         let service = GraphNewService::new(&state);
-        let mut request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
+        let mut request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "error-1".into(), session_id: "error-session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, reference_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let error = service.render_with(&request, |_| Err(AppError::FileIO("/private/secret.db".into())),
             &mut |_, _| panic!("failed rendering must not send")).expect_err("failure");
@@ -2589,11 +2628,11 @@ mod tests {
         use crate::error::AppError;
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "concurrent-fixture");
-        let request = GraphNewRenderRequest { dark_theme: false, point_radius: None, request_id: "first".into(), session_id: "session".into(),
+        let request = GraphNewRenderRequest { dark_theme: false, plot_only: false, point_radius: None, request_id: "first".into(), session_id: "session".into(),
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, reference_domain: None, show_mean: false, layers: None, layer_configuration_id: None,
             overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let (ready_send, ready_receive) = std::sync::mpsc::channel();
         let (release_send, release_receive) = std::sync::mpsc::channel();

@@ -767,6 +767,47 @@ test("camera transforms immediately, coalesces wheel and supports keyboard reset
   await testInfo.attach("camera-timing", { body: JSON.stringify({ ...timing, settleMs }), contentType: "application/json" });
 });
 
+test("Issue 319 overscan buffer covers panned plot edges during pointer drag", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overscan" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+  const plot = component.getByTestId("camera-plot");
+  const preview = component.getByTestId("camera-preview");
+  const xTicks = component.getByTestId("x-axis-ticks").locator("span");
+  const yTicks = component.getByTestId("y-axis-ticks").locator("span");
+  const box = (await plot.boundingBox())!;
+  await expect.poll(async () => preview.evaluate((canvas) => (canvas as HTMLCanvasElement).width)).toBeGreaterThan(Math.ceil(box.width * 1.5));
+  const beforeX = await xTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.left))}`));
+  const beforeY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 80, startY - 40, { steps: 4 });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const matrix = await preview.evaluate((element) => getComputedStyle(element).transform);
+  const match = /^matrix\(([^,]+),\s*0,\s*0,\s*([^,]+),\s*([^,]+),\s*([^)]+)\)$/.exec(matrix);
+  expect(match).not.toBeNull();
+  const scaleX = Number(match![1]);
+  const tx = Number(match![3]);
+  const ty = Number(match![4]);
+  expect(scaleX).toBeCloseTo(2, 3);
+  expect(tx).toBeLessThanOrEqual(0);
+  expect(tx + box.width * scaleX).toBeGreaterThanOrEqual(box.width);
+  expect(ty).toBeLessThanOrEqual(0);
+  expect(ty + box.height * scaleX).toBeGreaterThanOrEqual(box.height);
+  const duringX = await xTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.left))}`));
+  const duringY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
+  expect(duringX).not.toEqual(beforeX);
+  expect(duringY).not.toEqual(beforeY);
+  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-x").count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-y").count()).toBeGreaterThan(0);
+  await page.mouse.up();
+  await expect(metrics).toContainText('"presented":2');
+});
+
 test("Issue 261 keeps readable axes and a coherent frame while zooming out", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" axisFixture="compactNumeric" />);
   await component.getByTestId("legacy-x-field").selectOption("column-x");
@@ -844,8 +885,8 @@ test("camera pointer capture cancels cleanly and unmount clears settle", async (
   const bounds = (await plot.boundingBox())!;
   await page.mouse.move(bounds.x + 30, bounds.y + 30); await page.mouse.down();
   await page.mouse.move(bounds.x + 80, bounds.y + 50, { steps: 8 });
-  await expect(component.getByTestId("camera-preview")).toHaveCSS("transform", "none");
-  await expect(component.locator(".graph-new-canvas-host")).not.toHaveAttribute("data-provisional", "true");
+  await expect(component.getByTestId("camera-preview")).not.toHaveCSS("transform", "none");
+  await expect(component.locator(".graph-new-canvas-host")).toHaveAttribute("data-provisional", "true");
   await page.waitForTimeout(100);
   await expect(metrics).toContainText('"renders":1');
   await plot.dispatchEvent("pointercancel", { pointerId: 1 });
@@ -856,6 +897,45 @@ test("camera pointer capture cancels cleanly and unmount clears settle", async (
   await page.waitForTimeout(200);
   await expect(metrics).toContainText('"renders":2');
   await expect(metrics).toContainText('"maximumActive":1');
+});
+
+test("Issue 319 smoothly previews pan transform while dragging before mouse release", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="slow" axisFixture="compactNumeric" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+
+  const plot = component.getByTestId("camera-plot");
+  const preview = component.getByTestId("camera-preview");
+  const host = component.locator(".graph-new-canvas-host");
+  const bounds = (await plot.boundingBox())!;
+
+  await page.mouse.move(bounds.x + 40, bounds.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 100, bounds.y + 70, { steps: 6 });
+
+  await expect(host).toHaveAttribute("data-provisional", "true");
+  await expect(preview).not.toHaveCSS("transform", "none");
+  const firstMatrix = await preview.evaluate((el) => new DOMMatrixReadOnly(getComputedStyle(el).transform));
+  expect(firstMatrix.e).toBeCloseTo(60, 0);
+  expect(firstMatrix.f).toBeCloseTo(30, 0);
+  expect(firstMatrix.a).toBeCloseTo(1, 3);
+  await expect(metrics).toContainText('"renders":1');
+
+  await page.mouse.move(bounds.x + 140, bounds.y + 60, { steps: 4 });
+  await expect.poll(async () => {
+    const matrix = await preview.evaluate((el) => new DOMMatrixReadOnly(getComputedStyle(el).transform));
+    return { x: Math.round(matrix.e), y: Math.round(matrix.f) };
+  }).toEqual({ x: 100, y: 20 });
+  await expect(metrics).toContainText('"renders":1');
+  await expect(component.getByTestId("x-axis-ticks")).toBeVisible();
+  await expect(component.getByTestId("y-axis-ticks")).toBeVisible();
+
+  await page.mouse.up();
+  await expect(metrics).toContainText('"presented":2');
+  await expect(host).not.toHaveAttribute("data-provisional", "true");
+  await expect(preview).toHaveCSS("transform", "none");
 });
 
 test.describe("large high-DPR canvas", () => {
