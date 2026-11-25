@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, projectAxisTicks, shouldPreviewCameraTransform, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
+import { buildAxisBounds, cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, projectAxisTicks, shouldPreviewCameraTransform, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
 
 const domain = { xMin: 0, xMax: 100, yMin: -50, yMax: 50 };
 const plot = { x: 60, y: 10, width: 400, height: 200 };
@@ -104,4 +104,24 @@ assert.equal(settled.length, 2);
 scheduler.change(); scheduler.dispose(); advance(200);
 assert.equal(settled.length, 2, "cancel/unmount clears pending work");
 assert.ok(invalidations >= 32);
+
+// Axis bounds & inverted camera math
+assert.equal(buildAxisBounds(undefined, undefined, "numeric"), undefined);
+assert.deepEqual(buildAxisBounds(undefined, { min: 0 }, "numeric"), { yMin: 0 });
+assert.equal(buildAxisBounds({ min: 100, max: 50 }, undefined, "numeric"), undefined, "invalid min >= max omitted");
+assert.deepEqual(buildAxisBounds({ min: 0, max: 10 }, { min: 5, max: 15 }, "category"), { yMin: 5, yMax: 15 }, "category X omits X bounds");
+assert.deepEqual(buildAxisBounds({ min: 0, max: 10 }, { min: 5, max: 15 }, "time"), { yMin: 5, yMax: 15 }, "time X omits X bounds");
+assert.deepEqual(buildAxisBounds({ min: 0, max: 10 }, { min: 5, max: 15 }, "duration"), { xMin: 0, xMax: 10, yMin: 5, yMax: 15 }, "duration X keeps X bounds");
+
+const invPanned = panCamera(domain, domain, plot, 40, 20, false, { invertX: true, invertY: true });
+assert.ok(Math.abs(invPanned.xMin - 10) < 1e-12 && Math.abs(invPanned.xMax - 110) < 1e-12, "invertX pan right shifts domain up");
+assert.ok(Math.abs(invPanned.yMin - -60) < 1e-12 && Math.abs(invPanned.yMax - 40) < 1e-12, "invertY pan down shifts domain down");
+
+const invZoomed = zoomCamera(domain, domain, plot, { x: 160, y: 60 }, -Math.log(2) / 0.002, false, { invertX: true, invertY: true });
+assert.deepEqual(invZoomed, { xMin: 37.5, xMax: 87.5, yMin: -37.5, yMax: 12.5 });
+const invTransform = cameraTransform(domain, invZoomed, plot, { invertX: true, invertY: true });
+assert.equal(invTransform.scale, 2);
+assert.equal(100 * invTransform.scale + invTransform.x, 100, "inverted pointer stays fixed in X");
+assert.equal(50 * invTransform.scale + invTransform.y, 50, "inverted pointer stays fixed in Y");
+
 console.log("graphNewCamera math, limits, debounce and invalidation passed");
