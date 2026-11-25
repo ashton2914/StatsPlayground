@@ -802,8 +802,8 @@ test("Issue 319 overscan buffer covers panned plot edges during pointer drag", a
   const duringY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
   expect(duringX).not.toEqual(beforeX);
   expect(duringY).not.toEqual(beforeY);
-  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-x").count()).toBeGreaterThan(0);
-  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-y").count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("graph-new-axis-svg").locator('[data-tick="x-major"]').count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("graph-new-axis-svg").locator('[data-tick="y-major"]').count()).toBeGreaterThan(0);
   await page.mouse.up();
   await expect(metrics).toContainText('"presented":2');
 });

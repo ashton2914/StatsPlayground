@@ -184,6 +184,9 @@ export function computeAxisLayout(params: {
     const custom = computeCustomIntervalTicks(currentMin, currentMax, customInterval);
     rawMajorTicks = custom.ticks;
     majorGridNorms = custom.ticks.map((tick) => tick.position);
+  } else if (currentMin === refMin && currentMax === refMax) {
+    rawMajorTicks = axisMeta.ticks;
+    majorGridNorms = axisMeta.ticks.map((tick) => tick.position);
   } else {
     rawMajorTicks = projectAxisTicks(axisMeta, currentMin, currentMax, refMin, refMax, categoryLabels);
     majorGridNorms = projectGridPositions(axisMeta, currentMin, currentMax, refMin, refMax);
