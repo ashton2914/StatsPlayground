@@ -100,6 +100,36 @@ const extremeIntervalLayout = computeAxisLayout({
 assert.ok(extremeIntervalLayout.majorTicks.length >= 2 && extremeIntervalLayout.majorTicks.length <= 64,
   `extreme tickInterval must cap gracefully instead of dropping all ticks, got ${extremeIntervalLayout.majorTicks.length}`);
 
+// 3c. Zooming/panning tighter than custom tickInterval (e.g. tickInterval=0.2 on [3.85, 4.15] or [4.02, 4.18])
+// must subdivide cleanly so major ticks and minor ticks never disappear or leave half the axis empty.
+const zoomedSingleTickLayout = computeAxisLayout({
+  axis: "y",
+  axisMeta: numericAxis,
+  currentMin: 3.85,
+  currentMax: 4.15,
+  refMin: 3,
+  refMax: 5,
+  config: { tickInterval: 0.2, minorTickCount: 3, showMajorGrid: true, showMinorGrid: true },
+  formatTick: formatGraphNewTick,
+});
+assert.ok(zoomedSingleTickLayout.majorTicks.length >= 2, `expected >= 2 major ticks on [3.85, 4.15], got ${zoomedSingleTickLayout.majorTicks.length}`);
+assert.ok(zoomedSingleTickLayout.minorPositions.some((p) => p < 0.2), "minor ticks must cover lower edge of plot");
+assert.ok(zoomedSingleTickLayout.minorPositions.some((p) => p > 0.8), "minor ticks must cover upper edge of plot");
+
+const betweenMultiplesLayout = computeAxisLayout({
+  axis: "y",
+  axisMeta: numericAxis,
+  currentMin: 4.02,
+  currentMax: 4.18,
+  refMin: 3,
+  refMax: 5,
+  config: { tickInterval: 0.2, minorTickCount: 3, showMajorGrid: true, showMinorGrid: true },
+  formatTick: formatGraphNewTick,
+});
+assert.ok(betweenMultiplesLayout.majorTicks.length >= 2, `expected >= 2 major ticks on [4.02, 4.18], got ${betweenMultiplesLayout.majorTicks.length}`);
+assert.ok(betweenMultiplesLayout.minorPositions.length > 0, "minor ticks must remain visible between custom interval multiples");
+assert.ok(betweenMultiplesLayout.majorGridPositions.length >= 2, "major gridlines must remain visible");
+
 // 4. Inverse flips screenPosition for ticks, minor ticks, gridlines, and reference lines.
 const invLayout = computeAxisLayout({
   axis: "y",

@@ -67,6 +67,13 @@ function formatFixedDecimals(value: number, decimals: number): string {
   return /^-(?:0(?:\.0+)?)$/.test(fixed) ? fixed.slice(1) : fixed;
 }
 
+function niceStepAtLeast(minStep: number): number {
+  const pow = Math.pow(10, Math.floor(Math.log10(minStep)));
+  const normalizedStep = minStep / pow;
+  const niceMultiplier = normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10;
+  return niceMultiplier * pow;
+}
+
 function computeCustomIntervalTicks(
   currentMin: number,
   currentMax: number,
@@ -78,11 +85,11 @@ function computeCustomIntervalTicks(
   }
   let step = rawInterval;
   if (span / step > MAX_CUSTOM_MAJOR_TICKS - 1) {
-    const minStep = span / (MAX_CUSTOM_MAJOR_TICKS - 1);
-    const pow = Math.pow(10, Math.floor(Math.log10(minStep)));
-    const normalizedStep = minStep / pow;
-    const niceMultiplier = normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10;
-    step = niceMultiplier * pow;
+    step = niceStepAtLeast(span / (MAX_CUSTOM_MAJOR_TICKS - 1));
+  } else if (span / step < 2) {
+    // Subdivide cleanly when zoomed in tighter than the configured tickInterval
+    // so at least 2 world-anchored major ticks remain visible at every zoom/pan position.
+    step = niceStepAtLeast(span / 5);
   }
   const start = Math.ceil(currentMin / step - 1e-9);
   const end = Math.floor(currentMax / step + 1e-9);
@@ -110,21 +117,25 @@ function computeMinorPositions(
   currentMax: number,
   minorTickCount: number,
   invert: boolean,
+  explicitStep?: number,
 ): number[] {
-  if (minorTickCount <= 0 || majorValues.length === 0) return [];
-  const step = majorValues.length >= 2
-    ? majorValues[1] - majorValues[0]
-    : (currentMax - currentMin) / 4;
+  if (minorTickCount <= 0) return [];
+  const step = explicitStep !== undefined && Number.isFinite(explicitStep) && explicitStep > 0
+    ? explicitStep
+    : majorValues.length >= 2
+      ? majorValues[1] - majorValues[0]
+      : (currentMax - currentMin) / 4;
   if (!Number.isFinite(step) || step <= 0) return [];
   const segments = minorTickCount + 1;
   const subStep = step / segments;
   if (!Number.isFinite(subStep) || subStep <= 0) return [];
-  const baseValues = [
-    majorValues[0] - step,
-    ...majorValues,
-  ];
+  const anchor = majorValues.length > 0 ? majorValues[0] : Math.floor(currentMin / step) * step;
+  const firstIdx = Math.floor((currentMin - anchor) / step) - 1;
+  const lastIdx = Math.ceil((currentMax - anchor) / step);
+  if (!Number.isFinite(firstIdx) || !Number.isFinite(lastIdx) || lastIdx - firstIdx > 128) return [];
   const positions: number[] = [];
-  for (const majorVal of baseValues) {
+  for (let idx = firstIdx; idx <= lastIdx; idx++) {
+    const majorVal = anchor + idx * step;
     for (let k = 1; k <= minorTickCount; k++) {
       const value = majorVal + k * subStep;
       const norm = normalizedAxisValue(value, currentMin, currentMax);
@@ -181,11 +192,18 @@ export function computeAxisLayout(params: {
 
   let rawMajorTicks: ProjectedAxisTick[];
   let majorGridNorms: number[];
+  let activeMajorStep: number | undefined;
 
   if (customInterval !== undefined) {
     const custom = computeCustomIntervalTicks(currentMin, currentMax, customInterval);
-    rawMajorTicks = custom.ticks;
-    majorGridNorms = custom.ticks.map((tick) => tick.position);
+    if (custom.ticks.length >= 2) {
+      rawMajorTicks = custom.ticks;
+      majorGridNorms = custom.ticks.map((tick) => tick.position);
+      activeMajorStep = custom.step;
+    } else {
+      rawMajorTicks = projectAxisTicks(axisMeta, currentMin, currentMax, refMin, refMax, categoryLabels);
+      majorGridNorms = projectGridPositions(axisMeta, currentMin, currentMax, refMin, refMax);
+    }
   } else if (currentMin === refMin && currentMax === refMax) {
     rawMajorTicks = axisMeta.ticks;
     majorGridNorms = axisMeta.ticks.map((tick) => tick.position);
@@ -223,6 +241,7 @@ export function computeAxisLayout(params: {
     currentMax,
     minorTickCount,
     invert,
+    activeMajorStep,
   );
 
   const showMajorGrid = config?.showMajorGrid === true;
