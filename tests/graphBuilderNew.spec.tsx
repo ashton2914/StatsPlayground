@@ -1586,4 +1586,9 @@ test("Issue 322 renders X/Y axes and allows axis interaction immediately before 
   await expect(component.getByTestId("graph-new-grid-svg").locator('[data-grid="y-major"]')).toHaveCount(5);
   await component.getByRole("button", { name: "Done" }).click();
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  // Even after the initial full-domain frame completes and triggers camera restore,
+  // Y ticks must stay locked on savedCamera [10, 90] and never flash back to [0, 100].
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
 });

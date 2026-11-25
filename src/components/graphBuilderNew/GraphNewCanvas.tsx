@@ -558,7 +558,18 @@ export function GraphNewCanvas({
           }
           presentedAxes = { x: completion.xAxis, y: completion.yAxis, categoryLabels };
           const { scale, left, top } = geometry();
-          if (presented) publishChrome(presented);
+          let pendingRestoreCamera: CameraDomain | null = null;
+          if (cameraDomain === null && retained.restorePending) {
+            const modeCamera = retained.restoreCamera;
+            const saved = modeCamera ?? persistence.current.savedCamera;
+            const overlapsNewData = !modeCamera || !full || (
+              modeCamera.xMax > full.xMin && modeCamera.xMin < full.xMax
+              && modeCamera.yMax > full.yMin && modeCamera.yMin < full.yMax);
+            if (saved && full && overlapsNewData && isRestorableCamera(saved, full, layers !== undefined)) {
+              pendingRestoreCamera = saved;
+            }
+          }
+          if (presented) publishChrome(pendingRestoreCamera ?? presented);
           setRawAvailable(completion.rawLineAvailable !== false);
           setOverlayState({ active: completion.overlayActive, groups: completion.overlayGroups });
           plotElement.style.left = `${left + plot.x * scale}px`;
@@ -732,10 +743,10 @@ export function GraphNewCanvas({
         && yAxisConfig.min < yAxisConfig.max;
       const validSaved = savedCamera && isCameraDomain(savedCamera) ? savedCamera : null;
 
-      const xMin = customXValid ? xAxisConfig!.min! : validSaved ? validSaved.xMin : 0;
-      const xMax = customXValid ? xAxisConfig!.max! : validSaved ? validSaved.xMax : 1;
-      const yMin = customYValid ? yAxisConfig!.min! : validSaved ? validSaved.yMin : 0;
-      const yMax = customYValid ? yAxisConfig!.max! : validSaved ? validSaved.yMax : 1;
+      const xMin = validSaved ? validSaved.xMin : customXValid ? xAxisConfig!.min! : 0;
+      const xMax = validSaved ? validSaved.xMax : customXValid ? xAxisConfig!.max! : 1;
+      const yMin = validSaved ? validSaved.yMin : customYValid ? yAxisConfig!.min! : 0;
+      const yMax = validSaved ? validSaved.yMax : customYValid ? yAxisConfig!.max! : 1;
       provisionalUnknownX = !customXValid && !validSaved;
       provisionalUnknownY = !customYValid && !validSaved;
 
