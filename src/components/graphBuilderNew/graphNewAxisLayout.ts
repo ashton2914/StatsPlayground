@@ -74,6 +74,46 @@ function niceStepAtLeast(minStep: number): number {
   return niceMultiplier * pow;
 }
 
+function niceAutoStep(span: number, targetIntervals: number): number | null {
+  if (!Number.isFinite(span) || span <= 0 || targetIntervals <= 0) return null;
+  const raw = span / targetIntervals;
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  if (!Number.isFinite(pow) || pow <= 0) return null;
+  const norm = raw / pow;
+  const factor = norm <= 1.25 ? 1 : norm <= 2.25 ? 2 : norm <= 3.5 ? 2.5 : norm <= 7.5 ? 5 : 10;
+  const step = factor * pow;
+  return Number.isFinite(step) && step > 0 ? step : null;
+}
+
+function computeAutoNumericTicks(
+  currentMin: number,
+  currentMax: number,
+  targetIntervals: number,
+): { ticks: ProjectedAxisTick[]; step: number } | null {
+  const span = currentMax - currentMin;
+  const step = niceAutoStep(span, targetIntervals);
+  if (step === null) return null;
+  const start = Math.ceil(currentMin / step - 1e-9);
+  const end = Math.floor(currentMax / step + 1e-9);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > 32) {
+    return null;
+  }
+  const ticks: ProjectedAxisTick[] = [];
+  for (let index = start; index <= end; index++) {
+    const rawValue = index * step;
+    const value = Math.abs(rawValue) <= step * 1e-12 ? 0 : rawValue;
+    const position = normalizedAxisValue(value, currentMin, currentMax);
+    if (position < -1e-9 || position > 1 + 1e-9) continue;
+    ticks.push({
+      value,
+      position: Math.max(0, Math.min(1, position)),
+      label: formatCompactNumericTick(value, step),
+    });
+  }
+  return ticks.length >= 2 ? { ticks, step } : null;
+}
+
 function computeCustomIntervalTicks(
   currentMin: number,
   currentMax: number,
@@ -149,6 +189,7 @@ export function computeAxisLayout(params: {
   currentMax: number;
   refMin: number;
   refMax: number;
+  axisLengthPx?: number;
   config?: YAxisConfig;
   refLines?: RefLineX[] | RefLineY[];
   autoSpecLines?: boolean;
@@ -163,6 +204,7 @@ export function computeAxisLayout(params: {
     currentMax,
     refMin,
     refMax,
+    axisLengthPx,
     config,
     refLines,
     autoSpecLines,
@@ -195,6 +237,23 @@ export function computeAxisLayout(params: {
     rawMajorTicks = custom.ticks;
     majorGridNorms = custom.ticks.map((tick) => tick.position);
     activeMajorStep = custom.step;
+  } else if (isNumeric && typeof axisLengthPx === "number" && axisLengthPx > 0) {
+    const pxPerTick = axis === "y" ? 75 : 100;
+    const targetIntervals = Math.max(4, Math.min(12, Math.floor(axisLengthPx / pxPerTick)));
+    const dense = targetIntervals > Math.max(4, axisMeta.ticks.length)
+      ? computeAutoNumericTicks(currentMin, currentMax, targetIntervals)
+      : null;
+    if (dense) {
+      rawMajorTicks = dense.ticks;
+      majorGridNorms = dense.ticks.map((tick) => tick.position);
+      activeMajorStep = dense.step;
+    } else if (currentMin === refMin && currentMax === refMax) {
+      rawMajorTicks = axisMeta.ticks;
+      majorGridNorms = axisMeta.ticks.map((tick) => tick.position);
+    } else {
+      rawMajorTicks = projectAxisTicks(axisMeta, currentMin, currentMax, refMin, refMax, categoryLabels);
+      majorGridNorms = projectGridPositions(axisMeta, currentMin, currentMax, refMin, refMax);
+    }
   } else if (currentMin === refMin && currentMax === refMax) {
     rawMajorTicks = axisMeta.ticks;
     majorGridNorms = axisMeta.ticks.map((tick) => tick.position);

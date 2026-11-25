@@ -222,3 +222,21 @@ assert.ok(timeLayout.majorTicks[0].label.includes("1970-01-01"), `time label sho
 assert.equal(timeLayout.refLines.length, 0);
 
 console.log("graphNewAxisLayout.test.ts passed");
+
+// 6. Auto numeric ticks scale density cleanly on tall/wide viewports (e.g. 700px Y axis on [3.1, 10.6] -> ~7-10 ticks).
+const denseAutoLayout = computeAxisLayout({
+  axis: "y",
+  axisMeta: {
+    kind: "numeric",
+    utc: false,
+    ticks: [4, 6, 8, 10].map((v) => ({ value: v, position: (v - 3.1) / 7.5, label: String(v) })),
+  },
+  currentMin: 3.1,
+  currentMax: 10.6,
+  refMin: 3.1,
+  refMax: 10.6,
+  axisLengthPx: 700,
+  formatTick: formatGraphNewTick,
+});
+assert.ok(denseAutoLayout.majorTicks.length >= 7 && denseAutoLayout.majorTicks.length <= 12,
+  `expected denser auto ticks on 700px Y axis, got ${denseAutoLayout.majorTicks.length}: ${denseAutoLayout.majorTicks.map((t) => t.label).join(",")}`);
