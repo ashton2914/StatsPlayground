@@ -3133,7 +3133,13 @@ pub(crate) fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppE
             ))
         }
     };
-    if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
+    let optional_fields: &[&str] = match version {
+        3 => &["xAxisConfig", "yAxisConfig", "refLinesX", "refLinesY", "autoSpecLinesX", "autoSpecLinesY"],
+        _ => &[],
+    };
+    if fields.iter().any(|field| !object.contains_key(*field))
+        || object.keys().any(|key| !fields.contains(&key.as_str()) && !optional_fields.contains(&key.as_str()))
+    {
         return Err(AppError::InvalidParam("graphBuildersNew document has missing or unknown fields; runtime fields must not be persisted".into()));
     }
     for field in ["id", "name", "datasetId", "xColumnId", "yColumnId"] {
@@ -3192,6 +3198,27 @@ pub(crate) fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppE
         let layers: Vec<super::graph_new_layers::GraphNewLayer> = serde_json::from_value(value["layers"].clone())
             .map_err(|_| AppError::InvalidParam("graph_new_invalid_layers".into()))?;
         super::graph_new_layers::validate_layers(&layers)?;
+        for key in ["xAxisConfig", "yAxisConfig"] {
+            if let Some(cfg) = object.get(key) {
+                if !cfg.is_object() {
+                    return Err(AppError::InvalidParam(format!("Invalid graphBuildersNew {key}")));
+                }
+            }
+        }
+        for key in ["refLinesX", "refLinesY"] {
+            if let Some(lines) = object.get(key) {
+                if !lines.is_array() {
+                    return Err(AppError::InvalidParam(format!("Invalid graphBuildersNew {key}")));
+                }
+            }
+        }
+        for key in ["autoSpecLinesX", "autoSpecLinesY"] {
+            if let Some(flag) = object.get(key) {
+                if !flag.is_boolean() {
+                    return Err(AppError::InvalidParam(format!("Invalid graphBuildersNew {key}")));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -13548,5 +13575,37 @@ mod tests {
             2
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn validate_graph_builder_new_value_accepts_v3_axis_settings_and_rejects_unknown_fields() {
+        let valid = serde_json::json!({
+            "version": 3,
+            "id": "gn-1",
+            "name": "Graph 1",
+            "datasetId": "ds-1",
+            "xColumnId": "col-x",
+            "yColumnId": "col-y",
+            "overlayColumnId": null,
+            "hiddenOverlayGroupIds": [],
+            "xMode": "numeric",
+            "camera": null,
+            "layers": [],
+            "xAxisConfig": { "min": 0, "max": 100, "inverse": true },
+            "yAxisConfig": { "showMajorGrid": true, "decimals": 2 },
+            "refLinesX": [{ "id": "rx1", "x": 10, "label": "X10", "style": "dashed", "color": "#E60000", "width": 1 }],
+            "refLinesY": [{ "id": "ry1", "y": 50, "label": "Y50", "style": "solid", "color": "#00C853", "width": 2 }],
+            "autoSpecLinesX": true,
+            "autoSpecLinesY": true
+        });
+        validate_graph_builder_new_value(&valid).expect("v3 with axis settings must validate");
+
+        let mut unknown = valid.clone();
+        unknown.as_object_mut().unwrap().insert("transportId".into(), serde_json::json!("runtime-only"));
+        assert!(validate_graph_builder_new_value(&unknown).is_err(), "runtime fields must still be rejected");
+
+        let mut bad_type = valid.clone();
+        bad_type.as_object_mut().unwrap().insert("yAxisConfig".into(), serde_json::json!("not-an-object"));
+        assert!(validate_graph_builder_new_value(&bad_type).is_err(), "malformed axis config must be rejected");
     }
 }

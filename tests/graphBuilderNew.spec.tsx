@@ -241,7 +241,6 @@ test("Issue 245 exposes unavailable controls as disabled explained placeholders"
     "Style options",
     "Group by X",
     "Group by Y",
-    "Axis settings",
   ]) {
     const placeholder = component.getByRole("button", { name: label, exact: true });
     await expect(placeholder).toBeDisabled();
@@ -802,8 +801,8 @@ test("Issue 319 overscan buffer covers panned plot edges during pointer drag", a
   const duringY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
   expect(duringX).not.toEqual(beforeX);
   expect(duringY).not.toEqual(beforeY);
-  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-x").count()).toBeGreaterThan(0);
-  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-y").count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("graph-new-axis-svg").locator('[data-tick="x-major"]').count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("graph-new-axis-svg").locator('[data-tick="y-major"]').count()).toBeGreaterThan(0);
   await page.mouse.up();
   await expect(metrics).toContainText('"presented":2');
 });
@@ -1488,4 +1487,108 @@ test("reports transport capability and closes through the document lifecycle", a
   await expect(component.getByText("Tauri host not detected; raw-frame transport unavailable")).toBeVisible();
   await component.getByRole("button", { name: "Close graph document" }).click();
   await expect(component.getByText("This Graph Builder-new session is closed.")).toBeVisible();
+});
+
+test("Issue 322 opens X/Y AxisSettingsDialog via double-click and Style inspector and applies Axis, Grid, and Reference Line settings", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  await component.getByTestId("graph-field-column-x").dragTo(component.getByTestId("graph-slot-x"));
+  await component.getByTestId("graph-field-column-y").dragTo(component.getByTestId("graph-slot-y"));
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+
+  // Default: major/minor gridlines OFF, axis lines ON, no ref lines.
+  await expect(component.getByTestId("graph-new-grid-svg").locator("line")).toHaveCount(0);
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="y"]')).toHaveCount(1);
+  await expect(component.getByTestId("graph-new-reflines-svg").locator("line")).toHaveCount(0);
+
+  // Open Y Axis Settings via double-clicking Y axis hit band.
+  await component.getByTestId("y-axis-hit-band").dblclick();
+  await expect(component.locator(".sp-dialog-title")).toHaveText("Y Axis Settings");
+
+  // Style/tick edits must NOT trigger extra GPU render requests (renders stays 1).
+  await component.getByLabel("Tick interval").fill("25");
+  await component.locator(".gb-axis-row").filter({ hasText: "Decimals" }).locator("input").fill("2");
+  await component.locator(".gb-axis-row").filter({ hasText: "Minor ticks" }).locator("input").fill("4");
+  await component.getByLabel("Inside").check();
+
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("100.00");
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-tick="y-minor"]')).toHaveCount(16);
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="y"]')).toHaveAttribute("data-tick-position", "inside");
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+
+  // Tick Grid tab: enable Major & Minor gridlines (0 extra GPU renders).
+  await component.getByRole("button", { name: "Tick Grid", exact: true }).click();
+  await component.getByLabel("Major gridlines").check();
+  await component.getByLabel("Minor gridlines").check();
+  await expect(component.getByTestId("graph-new-grid-svg").locator('[data-grid="y-major"]')).toHaveCount(5);
+  await expect(component.getByTestId("graph-new-grid-svg").locator('[data-grid="y-minor"]')).toHaveCount(16);
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+
+  // Reference Lines tab: enable Auto-show spec limits + add custom reference line (0 extra GPU renders).
+  await component.getByRole("button", { name: "Reference Lines", exact: true }).click();
+  await component.getByLabel("Auto-show spec limits").check();
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="y"]')).toHaveCount(3);
+  await component.getByRole("button", { name: "+ Add reference line" }).click();
+  await component.locator(".gb-refline-label-input").fill("Limit");
+  await component.locator(".gb-refline-num").fill("60");
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="y"]')).toHaveCount(4);
+  await expect(component.getByTestId("graph-new-reflines-svg")).toContainText("Limit");
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+
+  // Axis tab: Range min/max + Reverse axis direction trigger GPU render with axisBounds & invertY.
+  await component.getByRole("button", { name: "Axis", exact: true }).click();
+  await component.getByLabel("Min").fill("10");
+  await component.getByLabel("Max").fill("90");
+  await expect(component.getByTestId("render-request")).toContainText('"axisBounds":{"yMin":10,"yMax":90}');
+  await component.getByLabel("Reverse axis direction").check();
+  await expect(component.getByTestId("render-request")).toContainText('"invertY":true');
+
+  // Close with Escape, then open X Axis Settings from Style inspector button.
+  await page.keyboard.press("Escape");
+  await expect(component.locator(".sp-dialog-title")).toHaveCount(0);
+
+  // Zoom in while custom Range [10, 90] is active, then Reset view returns to custom Range (cameraDomain: null with axisBounds).
+  const plot = component.getByTestId("camera-plot");
+  const plotBox = (await plot.boundingBox())!;
+  await plot.dispatchEvent("wheel", { deltaY: -120, clientX: plotBox.x + plotBox.width / 2, clientY: plotBox.y + plotBox.height / 2 });
+  await expect(component.getByTestId("render-request")).not.toContainText('"cameraDomain":null');
+  await component.getByRole("button", { name: "Reset view", exact: true }).click();
+  await expect(component.getByTestId("render-request")).toContainText('"cameraDomain":null');
+  await expect(component.getByTestId("render-request")).toContainText('"axisBounds":{"yMin":10,"yMax":90}');
+
+  // Open X Axis Settings: column-x has { lsl: 10, target: null, usl: 90 } — Auto-show spec limits must draw only 2 lines (not a phantom Target at 0).
+  await component.getByTestId("open-x-axis-settings").click();
+  await expect(component.locator(".sp-dialog-title")).toHaveText("X Axis Settings");
+  await component.getByRole("button", { name: "Reference Lines", exact: true }).click();
+  await component.getByLabel("Auto-show spec limits").check();
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="x"]')).toHaveCount(2);
+  await component.getByRole("button", { name: "Done" }).click();
+  await expect(component.locator(".sp-dialog-title")).toHaveCount(0);
+
+  // Switching X to categorical column ignores numeric X ref lines/spec limits without corrupting category labels.
+  await component.getByTestId("graph-field-column-label").dragTo(component.getByTestId("graph-slot-x"));
+  await expect(component.getByTestId("render-request")).toContainText('"xMode":"category"');
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="x"]')).toHaveCount(0);
+});
+
+test("Issue 322 renders X/Y axes and allows axis interaction immediately before the first data frame settles", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const component = await mount(<GraphBuilderNewHarness mode="slow" savedCamera={{ xMin: 0, xMax: 100, yMin: 10, yMax: 90 }} />);
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":0');
+  // Axes, ticks, and interactive double-click bands are already rendered while the first slow frame is pending.
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="x"]')).toHaveCount(1);
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="y"]')).toHaveCount(1);
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
+  await component.getByTestId("y-axis-hit-band").dblclick();
+  await expect(component.locator(".sp-dialog-title")).toHaveText("Y Axis Settings");
+  await component.getByRole("button", { name: "Tick Grid", exact: true }).click();
+  await component.getByLabel("Major gridlines").check();
+  await expect(component.getByTestId("graph-new-grid-svg").locator('[data-grid="y-major"]')).toHaveCount(5);
+  await component.getByRole("button", { name: "Done" }).click();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  // Even after the initial full-domain frame completes and triggers camera restore,
+  // Y ticks must stay locked on savedCamera [10, 90] and never flash back to [0, 100].
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
 });

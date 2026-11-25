@@ -28,14 +28,23 @@ import type { TabulateItem } from "../types/tabulate";
 import type { WorkflowDefinition } from "../types/workflow";
 import type { TableTransformDefinition } from "../types/tableTransform";
 
+const GRAPH_NEW_PERSISTED_KEYS = [
+  "version", "id", "name", "datasetId", "layers", "overlayColumnId", "hiddenOverlayGroupIds",
+  "xColumnId", "yColumnId", "xMode", "camera",
+  "xAxisConfig", "yAxisConfig", "refLinesX", "refLinesY", "autoSpecLinesX", "autoSpecLinesY",
+] as const;
+
 function pick(item: PersistedNamedDocument, keys: readonly string[]): Record<string, unknown> {
   const source = item as unknown as Record<string, unknown>;
-  return Object.fromEntries(keys.filter((key) => key in source).map((key) => [key, source[key]]));
+  return Object.fromEntries(keys.filter((key) => key in source && source[key] !== undefined).map((key) => [key, source[key]]));
+}
+export function graphNewDocumentBody(item: PersistedGraphBuilderNewDocument): Record<string, unknown> {
+  return pick(item as PersistedNamedDocument, GRAPH_NEW_PERSISTED_KEYS);
 }
 function bodyFor(kind: PersistedDocumentKind, item: PersistedNamedDocument): Record<string, unknown> {
   switch (kind) {
     case "report": return pick(item, ["schemaVersion", "id", "name", "markdown", "createdAt", "updatedAt"]);
-    case "graphNew": return pick(item, ["version", "id", "name", "datasetId", "layers", "overlayColumnId", "hiddenOverlayGroupIds", "xColumnId", "yColumnId", "xMode", "camera"]);
+    case "graphNew": return pick(item, GRAPH_NEW_PERSISTED_KEYS);
     case "graph": return pick(item, ["id", "name", "sourceDatasetId", "mode", "modeStates", "sampling", "groupThemeSlots", "createdAt"]);
     case "analysis": return pick(item, ["documentType", "schemaVersion", "id", "name", "analysisKind", "source", "configRevision", "definition", "presentation", "createdAt", "updatedAt"]);
     case "tabulate": return pick(item, ["id", "name", "sourceDatasetId", "rowFields", "columnFields", "statistics", "includeRowTotals", "includeColumnTotals", "createdAt"]);

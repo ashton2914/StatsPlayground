@@ -1,4 +1,5 @@
 import type { GraphPointOptions, GraphLineOptions } from "@/components/graphBuilder/shared/graphLayerOptionContracts";
+import type { RefLineX, RefLineY, YAxisConfig } from "@/graphCore/types";
 export type GraphNewXMode = "auto" | "numeric" | "time" | "duration" | "category";
 export type GraphNewRawMode = "scatter" | "line" | "pointsLine";
 
@@ -43,7 +44,16 @@ export type PersistedGraphBuilderNewDocument =
   | GraphBuilderNewDocument;
 
 export type GraphNewLayer = { id: string; kind: "points"; options: GraphPointOptions } | { id: string; kind: "line" | "timeSeries"; legacySourceRuns?: boolean; options: GraphLineOptions };
-export interface GraphBuilderNewDocument extends Omit<GraphBuilderNewDocumentV2, "version" | "showMean" | "rawMode"> { version: 3; layers: GraphNewLayer[]; }
+export interface GraphBuilderNewDocument extends Omit<GraphBuilderNewDocumentV2, "version" | "showMean" | "rawMode"> {
+  version: 3;
+  layers: GraphNewLayer[];
+  xAxisConfig?: YAxisConfig;
+  yAxisConfig?: YAxisConfig;
+  refLinesX?: RefLineX[];
+  refLinesY?: RefLineY[];
+  autoSpecLinesX?: boolean;
+  autoSpecLinesY?: boolean;
+}
 export interface GraphBuilderNewSession {
   id: string;
   transportId: string;
@@ -61,4 +71,10 @@ export interface GraphBuilderNewSession {
   showMean?: boolean;
   xMode?: GraphNewXMode;
   rawMode?: GraphNewRawMode;
+  xAxisConfig?: YAxisConfig;
+  yAxisConfig?: YAxisConfig;
+  refLinesX?: RefLineX[];
+  refLinesY?: RefLineY[];
+  autoSpecLinesX?: boolean;
+  autoSpecLinesY?: boolean;
 }

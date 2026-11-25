@@ -347,34 +347,56 @@
   visibility: hidden;
   touch-action: none;
   cursor: grab;
+  z-index: 1;
 }
 .graph-new-camera-plot:active { cursor: grabbing; }
-.graph-new-live-grid {
+.graph-new-svg-layer {
   position: absolute;
   inset: 0;
-  z-index: 0;
-  opacity: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
+  overflow: visible;
+  z-index: 2;
 }
-.graph-new-live-grid-x {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--gbn-border);
+.graph-new-refline-label {
+  font-size: 10px;
+  font-weight: 500;
+  user-select: none;
 }
-.graph-new-live-grid-y {
+.graph-new-axis-hit-band {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: var(--gbn-border);
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 3;
+}
+.graph-new-axis-hit-band:hover {
+  background: color-mix(in srgb, var(--gbn-control-tint) 45%, transparent);
+}
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn {
+  width: calc(100% - 20px);
+  box-sizing: border-box;
+  margin: 6px 10px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--gbn-border);
+  border-radius: 5px;
+  background: var(--gbn-panel);
+  color: var(--gbn-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn:hover:not(:disabled) {
+  background: var(--gbn-control-tint);
+}
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .graph-new-camera-preview { position: relative; z-index: 1; transform-origin: 0 0; opacity: 0; pointer-events: none; object-fit: fill; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
   background: var(--gbn-panel);
 }
-.graph-new-canvas-host[data-provisional] .graph-new-live-grid { opacity: 1; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
 .graph-new-reset {
   position: absolute;

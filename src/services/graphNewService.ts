@@ -55,9 +55,20 @@ export interface GraphNewProbeController {
   diagnostic: () => string | null;
 }
 
+export interface GraphNewAxisBounds {
+  xMin?: number;
+  xMax?: number;
+  yMin?: number;
+  yMax?: number;
+}
+
 export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   darkTheme?: boolean;
   plotOnly?: boolean;
+  hideChrome?: boolean;
+  invertX?: boolean;
+  invertY?: boolean;
+  axisBounds?: GraphNewAxisBounds | null;
   sessionId: string;
   datasetId: string;
   xColumnId: string;
@@ -157,6 +168,14 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
   if (request.cameraDomain != null && !isCameraDomain(request.cameraDomain)) throw new Error("graph_new_invalid_request");
   if (request.referenceDomain != null && !isCameraDomain(request.referenceDomain)) throw new Error("graph_new_invalid_request");
+  if (request.axisBounds != null) {
+    const { xMin, xMax, yMin, yMax } = request.axisBounds;
+    for (const bound of [xMin, xMax, yMin, yMax]) {
+      if (bound !== undefined && (typeof bound !== "number" || !Number.isFinite(bound))) {
+        throw new Error("graph_new_invalid_request");
+      }
+    }
+  }
   if (request.overlayColumnId != null && (typeof request.overlayColumnId !== "string"
     || !request.overlayColumnId.trim()
     || request.overlayColumnId.trim() !== request.overlayColumnId

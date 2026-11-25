@@ -38,6 +38,9 @@ pub(crate) struct GraphNewScene {
 pub(crate) struct ScenePresentation {
     pub(crate) dark_theme: bool,
     pub(crate) plot_only: bool,
+    pub(crate) hide_chrome: bool,
+    pub(crate) invert_x: bool,
+    pub(crate) invert_y: bool,
     pub(crate) grid_reference: Option<GraphDomain>,
     pub(crate) raster: Option<Arc<super::graph_new_pixels::PixelRaster>>,
     pub(crate) point_radius: Option<u32>,
@@ -48,7 +51,7 @@ pub(crate) struct ScenePresentation {
 }
 
 impl Default for ScenePresentation {
-    fn default() -> Self { Self { dark_theme: false, plot_only: false, grid_reference: None, raster: None, point_radius: None, raw_line: None, show_points: true, x_axis: None, layer_geometry: None } }
+    fn default() -> Self { Self { dark_theme: false, plot_only: false, hide_chrome: false, invert_x: false, invert_y: false, grid_reference: None, raster: None, point_radius: None, raw_line: None, show_points: true, x_axis: None, layer_geometry: None } }
 }
 
 impl GraphNewScene {
@@ -623,52 +626,54 @@ impl ScenePipeline {
         let plot = scene.plot();
         let ratio = scene.device_pixel_ratio as f32;
         let mut marks = Vec::with_capacity(1024);
-        let (grid, ink) = if scene.presentation.dark_theme { (DARK_GRID, DARK_INK) } else { (GRID, INK) };
-        let x_positions: Vec<f64> = match (&scene.presentation.x_axis, scene.presentation.grid_reference) {
-            (Some(axis), _) if axis.kind == crate::models::graph_new::GraphNewXMode::Category => {
-                if axis.ticks.len() >= 2 {
-                    let base = axis.ticks[0].value;
-                    let step = axis.ticks[1].value - base;
-                    extended_positions_from_step(scene.domain.x_min, scene.domain.x_max, base, step)
-                        .unwrap_or_else(|| axis.ticks.iter().map(|tick| tick.position).collect())
-                } else {
-                    numeric_ticks(scene.domain.x_min, scene.domain.x_max)?
-                        .into_iter()
-                        .map(|tick| tick.position)
-                        .collect()
+        if !scene.presentation.hide_chrome {
+            let (grid, ink) = if scene.presentation.dark_theme { (DARK_GRID, DARK_INK) } else { (GRID, INK) };
+            let x_positions: Vec<f64> = match (&scene.presentation.x_axis, scene.presentation.grid_reference) {
+                (Some(axis), _) if axis.kind == crate::models::graph_new::GraphNewXMode::Category => {
+                    if axis.ticks.len() >= 2 {
+                        let base = axis.ticks[0].value;
+                        let step = axis.ticks[1].value - base;
+                        extended_positions_from_step(scene.domain.x_min, scene.domain.x_max, base, step)
+                            .unwrap_or_else(|| axis.ticks.iter().map(|tick| tick.position).collect())
+                    } else {
+                        numeric_ticks(scene.domain.x_min, scene.domain.x_max)?
+                            .into_iter()
+                            .map(|tick| tick.position)
+                            .collect()
+                    }
                 }
+                (_, Some(reference)) => {
+                    extended_grid_positions(scene.domain.x_min, scene.domain.x_max, reference.x_min, reference.x_max)?
+                }
+                (Some(axis), None) => axis.ticks.iter().map(|tick| tick.position).collect(),
+                (None, None) => numeric_ticks(scene.domain.x_min, scene.domain.x_max)?.into_iter().map(|tick| tick.position).collect(),
+            };
+            for position in x_positions {
+                let horizontal = plot[0] + position as f32 * plot[2];
+                marks.push(rect([horizontal, plot[1]], [ratio, plot[3]], grid));
             }
-            (_, Some(reference)) => {
-                extended_grid_positions(scene.domain.x_min, scene.domain.x_max, reference.x_min, reference.x_max)?
+            let y_positions: Vec<f64> = match scene.presentation.grid_reference {
+                Some(reference) => {
+                    extended_grid_positions(scene.domain.y_min, scene.domain.y_max, reference.y_min, reference.y_max)?
+                }
+                None => numeric_ticks(scene.domain.y_min, scene.domain.y_max)?.into_iter().map(|tick| tick.position).collect(),
+            };
+            for position in y_positions {
+                let vertical = plot[1] + (1.0 - position as f32) * plot[3];
+                marks.push(rect([plot[0], vertical], [plot[2], ratio], grid));
             }
-            (Some(axis), None) => axis.ticks.iter().map(|tick| tick.position).collect(),
-            (None, None) => numeric_ticks(scene.domain.x_min, scene.domain.x_max)?.into_iter().map(|tick| tick.position).collect(),
-        };
-        for position in x_positions {
-            let horizontal = plot[0] + position as f32 * plot[2];
-            marks.push(rect([horizontal, plot[1]], [ratio, plot[3]], grid));
-        }
-        let y_positions: Vec<f64> = match scene.presentation.grid_reference {
-            Some(reference) => {
-                extended_grid_positions(scene.domain.y_min, scene.domain.y_max, reference.y_min, reference.y_max)?
+            if !scene.presentation.plot_only {
+                marks.push(rect(
+                    [plot[0] - ratio, plot[1]],
+                    [ratio, plot[3] + ratio],
+                    ink,
+                ));
+                marks.push(rect(
+                    [plot[0] - ratio, plot[1] + plot[3]],
+                    [plot[2] + ratio, ratio],
+                    ink,
+                ));
             }
-            None => numeric_ticks(scene.domain.y_min, scene.domain.y_max)?.into_iter().map(|tick| tick.position).collect(),
-        };
-        for position in y_positions {
-            let vertical = plot[1] + (1.0 - position as f32) * plot[3];
-            marks.push(rect([plot[0], vertical], [plot[2], ratio], grid));
-        }
-        if !scene.presentation.plot_only {
-            marks.push(rect(
-                [plot[0] - ratio, plot[1]],
-                [ratio, plot[3] + ratio],
-                ink,
-            ));
-            marks.push(rect(
-                [plot[0] - ratio, plot[1] + plot[3]],
-                [plot[2] + ratio, ratio],
-                ink,
-            ));
         }
         self.decorations = marks.len() as u32;
         self.total = if scene.presentation.show_points {
@@ -810,14 +815,20 @@ impl ScenePipeline {
                 self.raw_count = visible * 2;
             }
         }
+        let shader_plot = [
+            if scene.presentation.invert_x { plot[0] + plot[2] } else { plot[0] },
+            if scene.presentation.invert_y { plot[1] + plot[3] } else { plot[1] },
+            if scene.presentation.invert_x { -plot[2] } else { plot[2] },
+            if scene.presentation.invert_y { -plot[3] } else { plot[3] },
+        ];
         queue.write_buffer(
             &self.uniform,
             0,
             bytemuck::cast_slice(&[
-                plot[0],
-                plot[1],
-                plot[2],
-                plot[3],
+                shader_plot[0],
+                shader_plot[1],
+                shader_plot[2],
+                shader_plot[3],
                 width as f32,
                 height as f32,
                 ratio,
@@ -1049,7 +1060,7 @@ fn layer_marks(scene: &GraphNewScene, prepared: &super::graph_new_layers::Prepar
         for (&i,v) in indices.iter().zip(values) {offsets[i]=(v-mean)/max*bandwidth*layer_points[i].limit/2.;}
     }
     let mut points=Vec::with_capacity(layer_points.len());
-    for (i,p) in layer_points.iter().enumerate() {if !scene.enabled_groups.is_enabled(p.point.group_code) {continue;}let xy=project([p.point.x,p.point.y]);let px=f64::from(plot[0])+xy[0]*f64::from(plot[2])+offsets[i];let py=f64::from(plot[1])+(1.-xy[1])*f64::from(plot[3]);
+    for (i,p) in layer_points.iter().enumerate() {if !scene.enabled_groups.is_enabled(p.point.group_code) {continue;}let xy=project([p.point.x,p.point.y]);let ux=if scene.presentation.invert_x {1.-xy[0]}else{xy[0]};let uy=if scene.presentation.invert_y {1.-xy[1]}else{xy[1]};let px=f64::from(plot[0])+ux*f64::from(plot[2])+offsets[i];let py=f64::from(plot[1])+(1.-uy)*f64::from(plot[3]);
         if px < f64::from(plot[0])-8. || px > f64::from(plot[0]+plot[2])+8. || py < f64::from(plot[1])-8. || py>f64::from(plot[1]+plot[3])+8. {continue;}
         let radius=scene.presentation.point_radius.map_or_else(||if layer_points.len()>50_000 {ratio}else{3.*ratio},|r|r as f32);points.push(Mark{position:[px as f32-radius,py as f32-radius],size:[radius*2.;2],color:scene.point_color(p.point.group_code),kind_glyph:[4.,0.]}); }
     let mut lines=Vec::with_capacity(prepared.lines.len()+prepared.intervals.len()*3);
@@ -1423,6 +1434,9 @@ mod tests {
             presentation: ScenePresentation {
                 dark_theme: false,
                 plot_only: false,
+                hide_chrome: false,
+                invert_x: false,
+                invert_y: false,
                 grid_reference: None,
                 layer_geometry: None,
                 raw_line: Some(Arc::new(vec![
@@ -1998,5 +2012,31 @@ mod tests {
         assert_eq!(pixel(&frame, 240, 120, 80), [31, 111, 235, 255], "midpoint maps to center of full-bleed texture");
         let ink_pixels = frame.rgba.chunks_exact(4).filter(|px| *px == [71, 85, 105, 255]).count();
         assert_eq!(ink_pixels, 0, "plot-only overscan frame omits axis border ink");
+    }
+
+    #[test]
+    fn gpu_hide_chrome_and_invert_axes_mirror_points_without_grid_or_borders() {
+        let mut input = scene();
+        input.domain = GraphDomain { x_min: 0.0, x_max: 10.0, y_min: 0.0, y_max: 10.0 };
+        input.presentation.hide_chrome = true;
+        input.points.push(SourcePoint::new(1, 2.5, 2.5));
+        let normal = GraphNewRenderer::render(&input).expect("normal frame");
+        let plot = input.plot_rect();
+        let grid_pixels = normal.rgba.chunks_exact(4).filter(|px| *px == [226, 232, 240, 255]).count();
+        let ink_pixels = normal.rgba.chunks_exact(4).filter(|px| *px == [71, 85, 105, 255]).count();
+        assert_eq!(grid_pixels, 0, "hide_chrome omits static gridlines");
+        assert_eq!(ink_pixels, 0, "hide_chrome omits static axis border ink");
+        let normal_x = (plot.x + (0.25 * plot.width as f64).round() as u32) as usize;
+        let normal_y = (plot.y + (0.75 * plot.height as f64).round() as u32) as usize;
+        assert_eq!(pixel(&normal, 240, normal_x, normal_y), [31, 111, 235, 255]);
+
+        let mut inverted = input.clone();
+        inverted.presentation.invert_x = true;
+        inverted.presentation.invert_y = true;
+        let mirrored = GraphNewRenderer::render(&inverted).expect("inverted frame");
+        let mirrored_x = (plot.x + (0.75 * plot.width as f64).round() as u32) as usize;
+        let mirrored_y = (plot.y + (0.25 * plot.height as f64).round() as u32) as usize;
+        assert_eq!(pixel(&mirrored, 240, mirrored_x, mirrored_y), [31, 111, 235, 255]);
+        assert_ne!(pixel(&mirrored, 240, normal_x, normal_y), [31, 111, 235, 255]);
     }
 }

@@ -1,5 +1,36 @@
+import type { YAxisConfig } from "@/graphCore/types";
+import type { GraphNewAxisBounds } from "@/services/graphNewService";
+import type { GraphNewXMode } from "@/types/graphBuilderNew";
+
 export interface CameraDomain { xMin: number; xMax: number; yMin: number; yMax: number }
 export interface PlotRect { x: number; y: number; width: number; height: number }
+export interface CameraAxisInversion { invertX?: boolean; invertY?: boolean }
+
+export function buildAxisBounds(
+  xConfig?: YAxisConfig,
+  yConfig?: YAxisConfig,
+  xKind?: GraphNewXMode,
+): GraphNewAxisBounds | undefined {
+  const out: GraphNewAxisBounds = {};
+  const allowX = xKind !== "category" && xKind !== "time";
+  if (allowX && xConfig) {
+    const xMin = typeof xConfig.min === "number" && Number.isFinite(xConfig.min) ? xConfig.min : undefined;
+    const xMax = typeof xConfig.max === "number" && Number.isFinite(xConfig.max) ? xConfig.max : undefined;
+    if (!(xMin !== undefined && xMax !== undefined && xMin >= xMax)) {
+      if (xMin !== undefined) out.xMin = xMin;
+      if (xMax !== undefined) out.xMax = xMax;
+    }
+  }
+  if (yConfig) {
+    const yMin = typeof yConfig.min === "number" && Number.isFinite(yConfig.min) ? yConfig.min : undefined;
+    const yMax = typeof yConfig.max === "number" && Number.isFinite(yConfig.max) ? yConfig.max : undefined;
+    if (!(yMin !== undefined && yMax !== undefined && yMin >= yMax)) {
+      if (yMin !== undefined) out.yMin = yMin;
+      if (yMax !== undefined) out.yMax = yMax;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 export function normalizedAxisValue(value: number, minimum: number, maximum: number): number {
   if (minimum === maximum) return value === minimum ? 0.5 : value < minimum ? -1 : 2;
@@ -48,33 +79,64 @@ function moveAxis(min: number, max: number, baseMin: number, baseMax: number, an
   return [baseMin + bounded * baseSpan, baseMin + (bounded + nextSpan) * baseSpan];
 }
 
-export function panCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, dx: number, dy: number, independentLayers = false): CameraDomain {
+export function panCamera(
+  domain: CameraDomain,
+  full: CameraDomain,
+  plot: PlotRect,
+  dx: number,
+  dy: number,
+  independentLayers = false,
+  inversion: CameraAxisInversion = {},
+): CameraDomain {
   if (![dx, dy].every(Number.isFinite)) return domain;
-  const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, 0, 1, clamp(-dx / plot.width, -1e6, 1e6));
-  const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, 0, 1, clamp(dy / plot.height, -1e6, 1e6));
+  const xShift = (inversion.invertX ? dx : -dx) / plot.width;
+  const yShift = (inversion.invertY ? -dy : dy) / plot.height;
+  const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, 0, 1, clamp(xShift, -1e6, 1e6));
+  const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, 0, 1, clamp(yShift, -1e6, 1e6));
   const next = { xMin, xMax, yMin, yMax };
   return (independentLayers ? isRestorableCamera(next, full, true) : isUniformCamera(next, full)) ? next : domain;
 }
 
-export function zoomCamera(domain: CameraDomain, full: CameraDomain, plot: PlotRect, pointer: { x: number; y: number }, delta: number, independentLayers = false): CameraDomain {
+export function zoomCamera(
+  domain: CameraDomain,
+  full: CameraDomain,
+  plot: PlotRect,
+  pointer: { x: number; y: number },
+  delta: number,
+  independentLayers = false,
+  inversion: CameraAxisInversion = {},
+): CameraDomain {
   if (!Number.isFinite(delta)) return domain;
   const xRatio = (domain.xMax - domain.xMin) / (full.xMax - full.xMin);
   const yRatio = (domain.yMax - domain.yMin) / (full.yMax - full.yMin);
   const precision = (min: number, max: number) => 32 * Number.EPSILON * Math.max(Math.abs(min), Math.abs(max)) / (max - min);
   const minimum = Math.min(1, Math.max(1e-6, precision(full.xMin, full.xMax), precision(full.yMin, full.yMax)));
   const factor = clamp(Math.exp(clamp(delta * 0.002, -4, 4)), minimum / Math.min(xRatio, yRatio), 4 / Math.max(xRatio, yRatio));
-  const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, clamp((pointer.x - plot.x) / plot.width, 0, 1), factor, 0);
-  const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, clamp(1 - (pointer.y - plot.y) / plot.height, 0, 1), factor, 0);
+  const rawAnchorX = clamp((pointer.x - plot.x) / plot.width, 0, 1);
+  const rawAnchorY = clamp(1 - (pointer.y - plot.y) / plot.height, 0, 1);
+  const anchorX = inversion.invertX ? 1 - rawAnchorX : rawAnchorX;
+  const anchorY = inversion.invertY ? 1 - rawAnchorY : rawAnchorY;
+  const [xMin, xMax] = moveAxis(domain.xMin, domain.xMax, full.xMin, full.xMax, anchorX, factor, 0);
+  const [yMin, yMax] = moveAxis(domain.yMin, domain.yMax, full.yMin, full.yMax, anchorY, factor, 0);
   const next = { xMin, xMax, yMin, yMax };
   return (independentLayers ? isRestorableCamera(next, full, true) : isUniformCamera(next, full)) ? next : domain;
 }
 
-export function cameraTransform(presented: CameraDomain, current: CameraDomain, plot: PlotRect) {
+export function cameraTransform(
+  presented: CameraDomain,
+  current: CameraDomain,
+  plot: PlotRect,
+  inversion: CameraAxisInversion = {},
+) {
   const scale = (presented.xMax - presented.xMin) / (current.xMax - current.xMin);
   return {
     scale,
-    x: (presented.xMin - current.xMin) / (current.xMax - current.xMin) * plot.width,
-    y: (current.yMax - presented.yMax) / (current.yMax - current.yMin) * plot.height,
+    x: (inversion.invertX
+      ? (current.xMax - presented.xMax)
+      : (presented.xMin - current.xMin)) / (current.xMax - current.xMin) * plot.width,
+    y: (inversion.invertY
+      ? (presented.yMin - current.yMin)
+      : (current.yMax - presented.yMax)) / (current.yMax - current.yMin) * plot.height,
   };
 }
 
@@ -83,12 +145,13 @@ export function shouldPreviewCameraTransform(
   current: CameraDomain,
   plot: PlotRect,
   previewDomain: CameraDomain = presented,
+  inversion: CameraAxisInversion = {},
 ): boolean {
-  const delta = cameraTransform(presented, current, plot);
+  const delta = cameraTransform(presented, current, plot, inversion);
   const changed = Number.isFinite(delta.scale) && Number.isFinite(delta.x) && Number.isFinite(delta.y)
     && (Math.abs(delta.scale - 1) > 1e-8 || Math.abs(delta.x) > 1e-6 || Math.abs(delta.y) > 1e-6);
   if (!changed) return false;
-  const transform = cameraTransform(previewDomain, current, plot);
+  const transform = cameraTransform(previewDomain, current, plot, inversion);
   const scaleY = (previewDomain.yMax - previewDomain.yMin) / (current.yMax - current.yMin);
   const uniform = Number.isFinite(transform.scale) && Number.isFinite(scaleY)
     && transform.scale > 0 && scaleY > 0

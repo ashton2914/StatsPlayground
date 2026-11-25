@@ -1,8 +1,9 @@
 import { useThemeStore } from "@/stores/useThemeStore";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
+import type { AutoSpec, RefLineX, RefLineY, YAxisConfig } from "@/graphCore/types";
 import {
   graphNewService,
   type GraphNewAxis,
@@ -11,7 +12,8 @@ import {
   type GraphNewRenderRequest,
 } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, projectAxisTicks, projectGridPositions, shouldPreviewCameraTransform, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
+import { computeAxisLayout, strokeDashArrayForStyle } from "./graphNewAxisLayout";
+import { buildAxisBounds, cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, shouldPreviewCameraTransform, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
 let activeJob: RenderJob | null = null;
@@ -44,6 +46,16 @@ type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xC
   savedCamera?: CameraDomain | null;
   readOnly?: boolean;
   onCameraChange?: (camera: CameraDomain | null) => void;
+  xAxisConfig?: YAxisConfig;
+  yAxisConfig?: YAxisConfig;
+  refLinesX?: RefLineX[];
+  refLinesY?: RefLineY[];
+  autoSpecLinesX?: boolean;
+  autoSpecLinesY?: boolean;
+  resolvedAutoSpecX?: AutoSpec;
+  resolvedAutoSpecY?: AutoSpec;
+  onXAxisDblClick?: () => void;
+  onYAxisDblClick?: () => void;
 };
 
 export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks"][number]): string {
@@ -79,23 +91,67 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, layers, showMean, pointRadius, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({
+  controlsHost,
+  transportId: sessionId,
+  datasetId,
+  datasetGeneration,
+  xColumnId,
+  yColumnId,
+  overlayColumnId = null,
+  layers,
+  showMean,
+  pointRadius,
+  hiddenOverlayGroupIds = [],
+  onMeanAvailabilityChange,
+  onOverlayStateChange,
+  xMode = "auto",
+  rawMode = "scatter",
+  savedCamera = null,
+  readOnly = false,
+  onCameraChange,
+  xAxisConfig,
+  yAxisConfig,
+  refLinesX,
+  refLinesY,
+  autoSpecLinesX,
+  autoSpecLinesY,
+  resolvedAutoSpecX,
+  resolvedAutoSpecY,
+  onXAxisDblClick,
+  onYAxisDblClick,
+}: Props) {
   const { t } = useTranslation();
   const darkTheme = useThemeStore(state => state.effectiveTheme === "dark");
+  const invertX = Boolean(xAxisConfig?.inverse);
+  const invertY = Boolean(yAxisConfig?.inverse);
+  const axisBounds = useMemo(
+    () => buildAxisBounds(xAxisConfig, yAxisConfig, xMode),
+    [xAxisConfig?.min, xAxisConfig?.max, yAxisConfig?.min, yAxisConfig?.max, xMode],
+  );
+  const axisBoundsKey = JSON.stringify(axisBounds ?? null);
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
   const [rawAvailable, setRawAvailable] = useState(true);
-  const [axisLabels, setAxisLabels] = useState<{
-    x: { label: string; left: number; top: number; width: number }[];
-    y: { label: string; left: number; top: number; width: number }[];
-  }>({ x: [], y: [] });
-  const [liveGrid, setLiveGrid] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
+  const [chromeSnapshot, setChromeSnapshot] = useState<{
+    plotLeft: number;
+    plotTop: number;
+    plotWidth: number;
+    plotHeight: number;
+    hostWidth: number;
+    hostHeight: number;
+    xAxis: GraphNewAxis;
+    yAxis: GraphNewAxis;
+    categoryLabels: Map<number, string>;
+    presentedDomain: CameraDomain;
+    liveDomain: CameraDomain;
+  } | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const plotHost = useRef<HTMLDivElement>(null);
   const preview = useRef<HTMLCanvasElement>(null);
   const resetView = useRef<() => void>(() => {});
-  const cameraState = useRef<{ identity: string; sourceIdentity: string; restoreCamera: CameraDomain | null; full: CameraDomain | null; desired: CameraDomain | null; presented: CameraDomain | null; resetPending: boolean; restorePending: boolean; gesturePending: boolean } | null>(null);
+  const cameraState = useRef<{ identity: string; sourceIdentity: string; axisBoundsKey: string; restoreCamera: CameraDomain | null; full: CameraDomain | null; desired: CameraDomain | null; presented: CameraDomain | null; resetPending: boolean; restorePending: boolean; gesturePending: boolean } | null>(null);
   const persistence = useRef({ savedCamera, readOnly, onCameraChange });
   persistence.current = { savedCamera, readOnly, onCameraChange };
   const [cameraRestoreRejected, setCameraRestoreRejected] = useState(false);
@@ -119,24 +175,31 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     const element = host.current;
     if (!element) return;
     let timer: ReturnType<typeof setTimeout>;
+    let initialized = false;
+    const apply = () => {
+      const bounds = element.getBoundingClientRect();
+      const hostWidth = Math.max(96, Math.floor(bounds.width));
+      const hostHeight = Math.max(64, Math.floor(bounds.height));
+      const logicalScale = Math.min(1, 7680 / hostWidth, 4320 / hostHeight);
+      const width = Math.max(96, Math.floor(hostWidth * logicalScale));
+      const height = Math.max(64, Math.floor(hostHeight * logicalScale));
+      const ratio = Math.floor(Math.min(8, Math.max(0.5, window.devicePixelRatio || 1), 3840 / width, 2160 / height) * 1_000_000) / 1_000_000;
+      const next = {
+        width,
+        height,
+        devicePixelRatio: ratio,
+      };
+      setSize((previous) => previous?.width === next.width && previous.height === next.height
+        && previous.devicePixelRatio === next.devicePixelRatio ? previous : next);
+    };
     const measure = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => {
-        const bounds = element.getBoundingClientRect();
-        const hostWidth = Math.max(96, Math.floor(bounds.width));
-        const hostHeight = Math.max(64, Math.floor(bounds.height));
-        const logicalScale = Math.min(1, 7680 / hostWidth, 4320 / hostHeight);
-        const width = Math.max(96, Math.floor(hostWidth * logicalScale));
-        const height = Math.max(64, Math.floor(hostHeight * logicalScale));
-        const ratio = Math.floor(Math.min(8, Math.max(0.5, window.devicePixelRatio || 1), 3840 / width, 2160 / height) * 1_000_000) / 1_000_000;
-        const next = {
-          width,
-          height,
-          devicePixelRatio: ratio,
-        };
-        setSize((previous) => previous?.width === next.width && previous.height === next.height
-          && previous.devicePixelRatio === next.devicePixelRatio ? previous : next);
-      }, 100);
+      if (!initialized) {
+        initialized = true;
+        apply();
+        return;
+      }
+      timer = setTimeout(apply, 100);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
@@ -152,13 +215,29 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     if (!element || !plotElement) return;
     const sourceIdentity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode]);
     const sourcePolicy = layers === undefined ? rawMode === "line" : layers.some(layer => layer.kind !== "points" || layer.options.summaryStat !== "none");
-    const identity = JSON.stringify([sourceIdentity, sourcePolicy, layers]);
+    const identity = JSON.stringify([sourceIdentity, sourcePolicy, layers, axisBoundsKey]);
     if (cameraState.current?.identity !== identity) {
       const previous = cameraState.current;
-      const restoreCamera = previous?.sourceIdentity === sourceIdentity ? previous.desired ?? previous.restoreCamera : null;
-      cameraState.current = { identity, sourceIdentity, restoreCamera, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
+      const boundsChanged = previous !== null && previous.sourceIdentity === sourceIdentity && previous.axisBoundsKey !== axisBoundsKey;
+      const restoreCamera = !boundsChanged && previous?.sourceIdentity === sourceIdentity ? previous.desired ?? previous.restoreCamera : null;
+      cameraState.current = {
+        identity,
+        sourceIdentity,
+        axisBoundsKey,
+        restoreCamera,
+        full: null,
+        desired: null,
+        presented: null,
+        resetPending: boundsChanged,
+        restorePending: !boundsChanged,
+        gesturePending: false,
+      };
+      if (boundsChanged && !persistence.current.readOnly) {
+        persistence.current.onCameraChange?.(null);
+      }
       setCameraRestoreRejected(false);
     }
+    const inversion = { invertX, invertY };
     const retained = cameraState.current;
     let disposed = false;
     let currentJob: RenderJob | null = null;
@@ -189,73 +268,42 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       const scale = Math.min(bounds.width / frameWidth, bounds.height / frameHeight);
       return { bounds, scale, left: (bounds.width - frameWidth * scale) / 2, top: (bounds.height - frameHeight * scale) / 2 };
     };
-    const layoutAxisLabels = (xAxis: GraphNewAxis, yAxis: GraphNewAxis) => {
-      const context = canvas.current?.getContext("2d");
-      if (!context || !plot || frameWidth === 0 || frameHeight === 0) return { x: [], y: [] };
+    const publishChrome = (target: CameraDomain) => {
+      if (!presented || !presentedAxes || !plot || frameWidth === 0 || frameHeight === 0) return;
       const { scale, left, top } = geometry();
-      context.font = `11px ${getComputedStyle(element).fontFamily}`;
-      let previousEnd = -Infinity;
-      const x = xAxis.ticks.flatMap((tick) => {
-        const label = formatGraphNewTick(xAxis, tick);
-        const width = Math.min(xAxis.kind === "category" ? 170 : Infinity,
-          Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
-        const position = Math.max(0, Math.min(element.clientWidth - width, left + (plot!.x + tick.position * plot!.width) * scale - width / 2));
-        if (!label || position < previousEnd + 8) return [];
-        previousEnd = position + width;
-        return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
-      });
-      previousEnd = -Infinity;
-      const y = yAxis.ticks.map((tick) => {
-        const label = formatGraphNewTick(yAxis, tick);
-        const width = Math.min(Math.ceil(context.measureText(label).width) + 8, Math.max(0, left + plot!.x * scale - 4));
-        return {
-          label,
-          left: Math.max(0, left + plot!.x * scale - width - 4),
-          top: top + (plot!.y + (1 - tick.position) * plot!.height) * scale - 7,
-          width,
-        };
-      }).sort((a, b) => a.top - b.top).flatMap((tick) => {
-        if (!tick.label || tick.width === 0 || tick.top < previousEnd + 4) return [];
-        previousEnd = tick.top + 14;
-        return [tick];
-      });
-      return { x, y };
-    };
-    const updateLiveAxesAndGrid = (target: CameraDomain) => {
-      if (!presented || !presentedAxes) return;
-      const liveX: GraphNewAxis = {
-        ...presentedAxes.x,
-        ticks: projectAxisTicks(presentedAxes.x, target.xMin, target.xMax, presented.xMin, presented.xMax, presentedAxes.categoryLabels),
-      };
-      const liveY: GraphNewAxis = {
-        ...presentedAxes.y,
-        ticks: projectAxisTicks(presentedAxes.y, target.yMin, target.yMax, presented.yMin, presented.yMax),
-      };
-      setAxisLabels(layoutAxisLabels(liveX, liveY));
-      setLiveGrid({
-        x: projectGridPositions(presentedAxes.x, target.xMin, target.xMax, presented.xMin, presented.xMax),
-        y: projectGridPositions(presentedAxes.y, target.yMin, target.yMax, presented.yMin, presented.yMax),
+      setChromeSnapshot({
+        plotLeft: left + plot.x * scale,
+        plotTop: top + plot.y * scale,
+        plotWidth: plot.width * scale,
+        plotHeight: plot.height * scale,
+        hostWidth: element.clientWidth,
+        hostHeight: element.clientHeight,
+        xAxis: presentedAxes.x,
+        yAxis: presentedAxes.y,
+        categoryLabels: presentedAxes.categoryLabels,
+        presentedDomain: presented,
+        liveDomain: target,
       });
     };
     const drawPreview = () => {
       raf = null;
       const source = previewDomain ?? presented;
       if (!presented || !source || !current || !plot || !preview.current) return;
-      if (shouldPreviewCameraTransform(presented, current, plot, source)) {
+      if (shouldPreviewCameraTransform(presented, current, plot, source, inversion)) {
         const { scale } = geometry();
-        const transform = cameraTransform(source, current, plot);
+        const transform = cameraTransform(source, current, plot, inversion);
         preview.current.style.transform = `translate3d(${transform.x * scale}px, ${transform.y * scale}px, 0) scale(${transform.scale})`;
       }
-      updateLiveAxesAndGrid(current);
+      publishChrome(current);
     };
     const showPreview = () => {
       const source = previewDomain ?? presented;
       if (!presented || !source || !current || !plot || !preview.current) return;
-      if (!shouldPreviewCameraTransform(presented, current, plot, source)) {
+      if (!shouldPreviewCameraTransform(presented, current, plot, source, inversion)) {
         preview.current.style.transform = "none";
         element.removeAttribute("data-provisional");
         setProvisional(false);
-        const delta = cameraTransform(presented, current, plot);
+        const delta = cameraTransform(presented, current, plot, inversion);
         const changed = Number.isFinite(delta.scale) && Number.isFinite(delta.x) && Number.isFinite(delta.y)
           && (Math.abs(delta.scale - 1) > 1e-8 || Math.abs(delta.x) > 1e-6 || Math.abs(delta.y) > 1e-6);
         if (changed) {
@@ -263,8 +311,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
         } else {
           if (raf !== null) cancelAnimationFrame(raf);
           raf = null;
-          if (presentedAxes) setAxisLabels(layoutAxisLabels(presentedAxes.x, presentedAxes.y));
-          setLiveGrid({ x: [], y: [] });
+          publishChrome(presented);
         }
         return;
       }
@@ -308,7 +355,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     const move = (event: PointerEvent) => {
       if (persistence.current.readOnly || !pointer || pointer.id !== event.pointerId || !current || !full || !plot) return;
       const next = physicalPointer(event);
-      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y, layers !== undefined);
+      current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y, layers !== undefined, inversion);
       retained.desired = current;
       retained.gesturePending = true;
       pointer = { id: event.pointerId, ...next };
@@ -325,7 +372,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       if (persistence.current.readOnly || !current || !full || !plot) return;
       event.preventDefault();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1);
-      current = zoomCamera(current, full, plot, physicalPointer(event), delta, layers !== undefined);
+      current = zoomCamera(current, full, plot, physicalPointer(event), delta, layers !== undefined, inversion);
       retained.desired = current;
       retained.gesturePending = true;
       retained.resetPending = resetPending = false;
@@ -378,6 +425,10 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
             ...viewport,
             ...(darkTheme ? { darkTheme } : {}),
             plotOnly: true,
+            hideChrome: true,
+            ...(invertX ? { invertX } : {}),
+            ...(invertY ? { invertY } : {}),
+            ...(axisBounds ? { axisBounds } : {}),
             requestId: `${sessionId}:${generation}`,
             rendererGeneration: generation,
             cameraGeneration,
@@ -447,6 +498,10 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
         const request: GraphNewRenderRequest = {
           sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, layers, layerConfigurationId: layers === undefined ? undefined : JSON.stringify(layers), showMean, pointRadius, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
           ...(darkTheme ? { darkTheme } : {}),
+          hideChrome: true,
+          ...(invertX ? { invertX } : {}),
+          ...(invertY ? { invertY } : {}),
+          ...(axisBounds ? { axisBounds } : {}),
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -503,7 +558,18 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
           }
           presentedAxes = { x: completion.xAxis, y: completion.yAxis, categoryLabels };
           const { scale, left, top } = geometry();
-          setAxisLabels(layoutAxisLabels(completion.xAxis, completion.yAxis));
+          let pendingRestoreCamera: CameraDomain | null = null;
+          if (cameraDomain === null && retained.restorePending) {
+            const modeCamera = retained.restoreCamera;
+            const saved = modeCamera ?? persistence.current.savedCamera;
+            const overlapsNewData = !modeCamera || !full || (
+              modeCamera.xMax > full.xMin && modeCamera.xMin < full.xMax
+              && modeCamera.yMax > full.yMin && modeCamera.yMin < full.yMax);
+            if (saved && full && overlapsNewData && isRestorableCamera(saved, full, layers !== undefined)) {
+              pendingRestoreCamera = saved;
+            }
+          }
+          if (presented) publishChrome(pendingRestoreCamera ?? presented);
           setRawAvailable(completion.rawLineAvailable !== false);
           setOverlayState({ active: completion.overlayActive, groups: completion.overlayGroups });
           plotElement.style.left = `${left + plot.x * scale}px`;
@@ -652,7 +718,163 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, darkTheme, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, darkTheme, invertX, invertY, axisBoundsKey, t]);
+
+  const chromeRender = useMemo(() => {
+    let activeSnapshot = chromeSnapshot;
+    let provisionalUnknownX = false;
+    let provisionalUnknownY = false;
+
+    if (!activeSnapshot && size) {
+      const hostWidth = host.current?.clientWidth || size.width;
+      const hostHeight = host.current?.clientHeight || size.height;
+      const plotLeft = Math.min(64, Math.max(0, hostWidth - 32));
+      const plotTop = 16;
+      const plotWidth = Math.max(16, hostWidth - plotLeft - 16);
+      const plotHeight = Math.max(16, hostHeight - plotTop - 32);
+
+      const allowCustomX = xMode !== "category" && xMode !== "time";
+      const customXValid = allowCustomX
+        && typeof xAxisConfig?.min === "number" && Number.isFinite(xAxisConfig.min)
+        && typeof xAxisConfig?.max === "number" && Number.isFinite(xAxisConfig.max)
+        && xAxisConfig.min < xAxisConfig.max;
+      const customYValid = typeof yAxisConfig?.min === "number" && Number.isFinite(yAxisConfig.min)
+        && typeof yAxisConfig?.max === "number" && Number.isFinite(yAxisConfig.max)
+        && yAxisConfig.min < yAxisConfig.max;
+      const validSaved = savedCamera && isCameraDomain(savedCamera) ? savedCamera : null;
+
+      const xMin = validSaved ? validSaved.xMin : customXValid ? xAxisConfig!.min! : 0;
+      const xMax = validSaved ? validSaved.xMax : customXValid ? xAxisConfig!.max! : 1;
+      const yMin = validSaved ? validSaved.yMin : customYValid ? yAxisConfig!.min! : 0;
+      const yMax = validSaved ? validSaved.yMax : customYValid ? yAxisConfig!.max! : 1;
+      provisionalUnknownX = !customXValid && !validSaved;
+      provisionalUnknownY = !customYValid && !validSaved;
+
+      const buildProvisionalTicks = (min: number, max: number, known: boolean) =>
+        known
+          ? [0, 0.25, 0.5, 0.75, 1].map((pos) => {
+            const value = min + pos * (max - min);
+            return { value, position: pos, label: String(Number(value.toPrecision(6))) };
+          })
+          : [];
+
+      const provisionalKind: GraphNewAxis["kind"] = xMode === "auto" ? "numeric" : xMode;
+      const provisionalDomain: CameraDomain = { xMin, xMax, yMin, yMax };
+      activeSnapshot = {
+        plotLeft,
+        plotTop,
+        plotWidth,
+        plotHeight,
+        hostWidth,
+        hostHeight,
+        xAxis: {
+          kind: provisionalKind,
+          utc: provisionalKind === "time",
+          ticks: provisionalKind === "numeric" ? buildProvisionalTicks(xMin, xMax, !provisionalUnknownX) : [],
+        },
+        yAxis: {
+          kind: "numeric",
+          utc: false,
+          ticks: buildProvisionalTicks(yMin, yMax, !provisionalUnknownY),
+        },
+        categoryLabels: new Map(),
+        presentedDomain: provisionalDomain,
+        liveDomain: provisionalDomain,
+      };
+    }
+
+    if (!activeSnapshot) return null;
+    const {
+      plotLeft, plotTop, plotWidth, plotHeight, hostWidth, hostHeight,
+      xAxis, yAxis, categoryLabels, presentedDomain, liveDomain,
+    } = activeSnapshot;
+    const xLayout = computeAxisLayout({
+      axis: "x",
+      axisMeta: xAxis,
+      currentMin: liveDomain.xMin,
+      currentMax: liveDomain.xMax,
+      refMin: presentedDomain.xMin,
+      refMax: presentedDomain.xMax,
+      axisLengthPx: plotWidth,
+      config: provisionalUnknownX ? { ...xAxisConfig, tickInterval: undefined } : xAxisConfig,
+      refLines: provisionalUnknownX ? [] : refLinesX,
+      autoSpecLines: provisionalUnknownX ? false : autoSpecLinesX,
+      resolvedAutoSpec: resolvedAutoSpecX,
+      categoryLabels,
+      formatTick: formatGraphNewTick,
+    });
+    const yLayout = computeAxisLayout({
+      axis: "y",
+      axisMeta: yAxis,
+      currentMin: liveDomain.yMin,
+      currentMax: liveDomain.yMax,
+      refMin: presentedDomain.yMin,
+      refMax: presentedDomain.yMax,
+      axisLengthPx: plotHeight,
+      config: provisionalUnknownY ? { ...yAxisConfig, tickInterval: undefined } : yAxisConfig,
+      refLines: provisionalUnknownY ? [] : refLinesY,
+      autoSpecLines: provisionalUnknownY ? false : autoSpecLinesY,
+      resolvedAutoSpec: resolvedAutoSpecY,
+      formatTick: formatGraphNewTick,
+    });
+    if (provisionalUnknownX && xLayout.showMajorGrid && xLayout.majorGridPositions.length === 0) {
+      xLayout.majorGridPositions = [0, 0.25, 0.5, 0.75, 1];
+    }
+    if (provisionalUnknownY && yLayout.showMajorGrid && yLayout.majorGridPositions.length === 0) {
+      yLayout.majorGridPositions = [0, 0.25, 0.5, 0.75, 1];
+    }
+    const context = canvas.current?.getContext("2d");
+    const fontFamily = host.current ? getComputedStyle(host.current).fontFamily : "sans-serif";
+    if (context) context.font = `11px ${fontFamily}`;
+    const measure = (text: string) => context ? Math.ceil(context.measureText(text).width) : text.length * 7;
+
+    let previousEnd = -Infinity;
+    const xLabels = [...xLayout.majorTicks]
+      .sort((a, b) => a.screenPosition - b.screenPosition)
+      .flatMap((tick) => {
+        const width = Math.min(xAxis.kind === "category" ? 170 : Infinity, measure(tick.label) + 8, hostWidth);
+        const position = Math.max(0, Math.min(hostWidth - width, plotLeft + tick.screenPosition * plotWidth - width / 2));
+        if (!tick.label || position < previousEnd + 8) return [];
+        previousEnd = position + width;
+        return [{ label: tick.label, left: position, top: plotTop + plotHeight + 5, width }];
+      });
+
+    previousEnd = -Infinity;
+    const yLabels = yLayout.majorTicks
+      .map((tick) => {
+        const width = Math.min(measure(tick.label) + 8, Math.max(0, plotLeft - 4));
+        return {
+          label: tick.label,
+          left: Math.max(0, plotLeft - width - 6),
+          top: plotTop + (1 - tick.screenPosition) * plotHeight - 7,
+          width,
+        };
+      })
+      .sort((a, b) => a.top - b.top)
+      .flatMap((tick) => {
+        if (!tick.label || tick.width === 0 || tick.top < previousEnd + 4) return [];
+        previousEnd = tick.top + 14;
+        return [tick];
+      });
+
+    return { plotLeft, plotTop, plotWidth, plotHeight, hostWidth, hostHeight, xLayout, yLayout, xLabels, yLabels };
+  }, [
+    chromeSnapshot,
+    size,
+    xMode,
+    savedCamera,
+    xAxisConfig,
+    yAxisConfig,
+    refLinesX,
+    refLinesY,
+    autoSpecLinesX,
+    autoSpecLinesY,
+    resolvedAutoSpecX,
+    resolvedAutoSpecY,
+  ]);
+
+  const axisInk = darkTheme ? "#aaaaaa" : "#475569";
+  const clipId = `gbn-plot-clip-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   const controls = (<>
         <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
@@ -679,20 +901,217 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       </div>}
       <div className="graph-new-canvas-host" ref={host}>
         <canvas ref={canvas} role="img" aria-label="Point plot frame" style={{ visibility: hasFrame ? "visible" : "hidden" }} />
+        <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
+          <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
+        </div>
+        {chromeRender && (
+          <>
+            <svg className="graph-new-svg-layer" data-testid="graph-new-grid-svg" aria-hidden="true">
+              <defs>
+                <clipPath id={clipId}>
+                  <rect x={chromeRender.plotLeft} y={chromeRender.plotTop} width={chromeRender.plotWidth} height={chromeRender.plotHeight} />
+                </clipPath>
+              </defs>
+              <g clipPath={`url(#${clipId})`}>
+                {chromeRender.xLayout.minorGridPositions.map((pos, idx) => (
+                  <line
+                    key={`x-minor-grid-${idx}`}
+                    data-grid="x-minor"
+                    x1={chromeRender.plotLeft + pos * chromeRender.plotWidth}
+                    y1={chromeRender.plotTop}
+                    x2={chromeRender.plotLeft + pos * chromeRender.plotWidth}
+                    y2={chromeRender.plotTop + chromeRender.plotHeight}
+                    stroke={chromeRender.xLayout.minorGridStyle.color}
+                    strokeOpacity={0.5}
+                    strokeWidth={Math.max(0.4, chromeRender.xLayout.minorGridStyle.width * 0.6)}
+                    strokeDasharray={strokeDashArrayForStyle(chromeRender.xLayout.minorGridStyle.style)}
+                  />
+                ))}
+                {chromeRender.yLayout.minorGridPositions.map((pos, idx) => (
+                  <line
+                    key={`y-minor-grid-${idx}`}
+                    data-grid="y-minor"
+                    x1={chromeRender.plotLeft}
+                    y1={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
+                    x2={chromeRender.plotLeft + chromeRender.plotWidth}
+                    y2={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
+                    stroke={chromeRender.yLayout.minorGridStyle.color}
+                    strokeOpacity={0.5}
+                    strokeWidth={Math.max(0.4, chromeRender.yLayout.minorGridStyle.width * 0.6)}
+                    strokeDasharray={strokeDashArrayForStyle(chromeRender.yLayout.minorGridStyle.style)}
+                  />
+                ))}
+                {chromeRender.xLayout.majorGridPositions.map((pos, idx) => (
+                  <line
+                    key={`x-major-grid-${idx}`}
+                    data-grid="x-major"
+                    x1={chromeRender.plotLeft + pos * chromeRender.plotWidth}
+                    y1={chromeRender.plotTop}
+                    x2={chromeRender.plotLeft + pos * chromeRender.plotWidth}
+                    y2={chromeRender.plotTop + chromeRender.plotHeight}
+                    stroke={chromeRender.xLayout.majorGridStyle.color}
+                    strokeOpacity={0.65}
+                    strokeWidth={Math.max(0.5, chromeRender.xLayout.majorGridStyle.width * 0.75)}
+                    strokeDasharray={strokeDashArrayForStyle(chromeRender.xLayout.majorGridStyle.style)}
+                  />
+                ))}
+                {chromeRender.yLayout.majorGridPositions.map((pos, idx) => (
+                  <line
+                    key={`y-major-grid-${idx}`}
+                    data-grid="y-major"
+                    x1={chromeRender.plotLeft}
+                    y1={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
+                    x2={chromeRender.plotLeft + chromeRender.plotWidth}
+                    y2={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
+                    stroke={chromeRender.yLayout.majorGridStyle.color}
+                    strokeOpacity={0.65}
+                    strokeWidth={Math.max(0.5, chromeRender.yLayout.majorGridStyle.width * 0.75)}
+                    strokeDasharray={strokeDashArrayForStyle(chromeRender.yLayout.majorGridStyle.style)}
+                  />
+                ))}
+              </g>
+            </svg>
+            <svg className="graph-new-svg-layer" data-testid="graph-new-reflines-svg" aria-hidden="true">
+              <g clipPath={`url(#${clipId})`}>
+                {chromeRender.yLayout.refLines.map((line) => {
+                  const y = chromeRender.plotTop + (1 - line.screenPosition) * chromeRender.plotHeight;
+                  return (
+                    <g key={`ref-y-${line.id}`} data-refline-axis="y">
+                      <line
+                        x1={chromeRender.plotLeft}
+                        y1={y}
+                        x2={chromeRender.plotLeft + chromeRender.plotWidth}
+                        y2={y}
+                        stroke={line.color}
+                        strokeWidth={line.width}
+                        strokeDasharray={strokeDashArrayForStyle(line.style)}
+                      />
+                      {line.label.trim() !== "" && (
+                        <text
+                          className="graph-new-refline-label"
+                          x={chromeRender.plotLeft + chromeRender.plotWidth - 4}
+                          y={Math.max(chromeRender.plotTop + 11, y - 3)}
+                          textAnchor="end"
+                          fill={line.color}
+                        >
+                          {line.label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+                {chromeRender.xLayout.refLines.map((line) => {
+                  const x = chromeRender.plotLeft + line.screenPosition * chromeRender.plotWidth;
+                  return (
+                    <g key={`ref-x-${line.id}`} data-refline-axis="x">
+                      <line
+                        x1={x}
+                        y1={chromeRender.plotTop}
+                        x2={x}
+                        y2={chromeRender.plotTop + chromeRender.plotHeight}
+                        stroke={line.color}
+                        strokeWidth={line.width}
+                        strokeDasharray={strokeDashArrayForStyle(line.style)}
+                      />
+                      {line.label.trim() !== "" && (
+                        <text
+                          className="graph-new-refline-label"
+                          x={Math.min(chromeRender.plotLeft + chromeRender.plotWidth - 4, x + 4)}
+                          y={chromeRender.plotTop + 12}
+                          textAnchor="start"
+                          fill={line.color}
+                        >
+                          {line.label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </g>
+            </svg>
+            <svg className="graph-new-svg-layer" data-testid="graph-new-axis-svg" aria-hidden="true">
+              {chromeRender.yLayout.showAxisLine && (
+                <g data-axis-line="y" data-tick-position={chromeRender.yLayout.tickPosition}>
+                  <line
+                    x1={chromeRender.plotLeft}
+                    y1={chromeRender.plotTop}
+                    x2={chromeRender.plotLeft}
+                    y2={chromeRender.plotTop + chromeRender.plotHeight}
+                    stroke={axisInk}
+                    strokeWidth={1}
+                  />
+                  {chromeRender.yLayout.majorTicks.map((tick, idx) => {
+                    const y = chromeRender.plotTop + (1 - tick.screenPosition) * chromeRender.plotHeight;
+                    const dx = chromeRender.yLayout.tickPosition === "inside" ? 5 : -5;
+                    return <line key={`y-maj-t-${idx}`} data-tick="y-major" x1={chromeRender.plotLeft} y1={y} x2={chromeRender.plotLeft + dx} y2={y} stroke={axisInk} strokeWidth={1} />;
+                  })}
+                  {chromeRender.yLayout.minorPositions.map((pos, idx) => {
+                    const y = chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight;
+                    const dx = chromeRender.yLayout.tickPosition === "inside" ? 3 : -3;
+                    return <line key={`y-min-t-${idx}`} data-tick="y-minor" x1={chromeRender.plotLeft} y1={y} x2={chromeRender.plotLeft + dx} y2={y} stroke={axisInk} strokeWidth={1} />;
+                  })}
+                </g>
+              )}
+              {chromeRender.xLayout.showAxisLine && (
+                <g data-axis-line="x" data-tick-position={chromeRender.xLayout.tickPosition}>
+                  <line
+                    x1={chromeRender.plotLeft}
+                    y1={chromeRender.plotTop + chromeRender.plotHeight}
+                    x2={chromeRender.plotLeft + chromeRender.plotWidth}
+                    y2={chromeRender.plotTop + chromeRender.plotHeight}
+                    stroke={axisInk}
+                    strokeWidth={1}
+                  />
+                  {chromeRender.xLayout.majorTicks.map((tick, idx) => {
+                    const x = chromeRender.plotLeft + tick.screenPosition * chromeRender.plotWidth;
+                    const dy = chromeRender.xLayout.tickPosition === "inside" ? -5 : 5;
+                    return <line key={`x-maj-t-${idx}`} data-tick="x-major" x1={x} y1={chromeRender.plotTop + chromeRender.plotHeight} x2={x} y2={chromeRender.plotTop + chromeRender.plotHeight + dy} stroke={axisInk} strokeWidth={1} />;
+                  })}
+                  {chromeRender.xLayout.minorPositions.map((pos, idx) => {
+                    const x = chromeRender.plotLeft + pos * chromeRender.plotWidth;
+                    const dy = chromeRender.xLayout.tickPosition === "inside" ? -3 : 3;
+                    return <line key={`x-min-t-${idx}`} data-tick="x-minor" x1={x} y1={chromeRender.plotTop + chromeRender.plotHeight} x2={x} y2={chromeRender.plotTop + chromeRender.plotHeight + dy} stroke={axisInk} strokeWidth={1} />;
+                  })}
+                </g>
+              )}
+            </svg>
+            {onXAxisDblClick && (
+              <div
+                className="graph-new-axis-hit-band"
+                data-testid="x-axis-hit-band"
+                title={t("graph.xAxisSettings.dblClickHint", { defaultValue: "Double-click for X Axis Settings" })}
+                style={{
+                  left: chromeRender.plotLeft,
+                  top: chromeRender.plotTop + chromeRender.plotHeight,
+                  width: chromeRender.plotWidth,
+                  height: Math.max(24, chromeRender.hostHeight - (chromeRender.plotTop + chromeRender.plotHeight)),
+                }}
+                onDoubleClick={onXAxisDblClick}
+              />
+            )}
+            {onYAxisDblClick && (
+              <div
+                className="graph-new-axis-hit-band"
+                data-testid="y-axis-hit-band"
+                title={t("graph.yAxisSettings.dblClickHint", { defaultValue: "Double-click for Y Axis Settings" })}
+                style={{
+                  left: 0,
+                  top: chromeRender.plotTop,
+                  width: Math.max(40, chromeRender.plotLeft),
+                  height: chromeRender.plotHeight,
+                }}
+                onDoubleClick={onYAxisDblClick}
+              />
+            )}
+          </>
+        )}
         <div className="graph-new-axis-ticks graph-new-x-axis-ticks" data-testid="x-axis-ticks">
-          {axisLabels.x.map((tick) => <span key={`${tick.left}:${tick.label}`} title={tick.label}
+          {(chromeRender?.xLabels ?? []).map((tick) => <span key={`${tick.left}:${tick.label}`} title={tick.label}
             style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
         </div>
         <div className="graph-new-axis-ticks graph-new-y-axis-ticks" data-testid="y-axis-ticks">
-          {axisLabels.y.map((tick) => <span key={`${tick.top}:${tick.label}`} title={tick.label}
+          {(chromeRender?.yLabels ?? []).map((tick) => <span key={`${tick.top}:${tick.label}`} title={tick.label}
             style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
-        </div>
-        <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
-          <div className="graph-new-live-grid" data-testid="live-grid" aria-hidden="true">
-            {liveGrid.x.map((pos, index) => <span key={`x-${index}`} className="graph-new-live-grid-x" style={{ left: `${pos * 100}%` }} />)}
-            {liveGrid.y.map((pos, index) => <span key={`y-${index}`} className="graph-new-live-grid-y" style={{ top: `${(1 - pos) * 100}%` }} />)}
-          </div>
-          <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
 
       </div>
