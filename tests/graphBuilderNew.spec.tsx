@@ -1570,3 +1570,20 @@ test("Issue 322 opens X/Y AxisSettingsDialog via double-click and Style inspecto
   await expect(component.getByTestId("render-request")).toContainText('"xMode":"category"');
   await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="x"]')).toHaveCount(0);
 });
+
+test("Issue 322 renders X/Y axes and allows axis interaction immediately before the first data frame settles", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const component = await mount(<GraphBuilderNewHarness mode="slow" savedCamera={{ xMin: 0, xMax: 100, yMin: 10, yMax: 90 }} />);
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":0');
+  // Axes, ticks, and interactive double-click bands are already rendered while the first slow frame is pending.
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="x"]')).toHaveCount(1);
+  await expect(component.getByTestId("graph-new-axis-svg").locator('[data-axis-line="y"]')).toHaveCount(1);
+  await expect(component.getByTestId("y-axis-ticks").locator("span").first()).toHaveText("90");
+  await component.getByTestId("y-axis-hit-band").dblclick();
+  await expect(component.locator(".sp-dialog-title")).toHaveText("Y Axis Settings");
+  await component.getByRole("button", { name: "Tick Grid", exact: true }).click();
+  await component.getByLabel("Major gridlines").check();
+  await expect(component.getByTestId("graph-new-grid-svg").locator('[data-grid="y-major"]')).toHaveCount(5);
+  await component.getByRole("button", { name: "Done" }).click();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+});

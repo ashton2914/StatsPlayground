@@ -175,24 +175,31 @@ export function GraphNewCanvas({
     const element = host.current;
     if (!element) return;
     let timer: ReturnType<typeof setTimeout>;
+    let initialized = false;
+    const apply = () => {
+      const bounds = element.getBoundingClientRect();
+      const hostWidth = Math.max(96, Math.floor(bounds.width));
+      const hostHeight = Math.max(64, Math.floor(bounds.height));
+      const logicalScale = Math.min(1, 7680 / hostWidth, 4320 / hostHeight);
+      const width = Math.max(96, Math.floor(hostWidth * logicalScale));
+      const height = Math.max(64, Math.floor(hostHeight * logicalScale));
+      const ratio = Math.floor(Math.min(8, Math.max(0.5, window.devicePixelRatio || 1), 3840 / width, 2160 / height) * 1_000_000) / 1_000_000;
+      const next = {
+        width,
+        height,
+        devicePixelRatio: ratio,
+      };
+      setSize((previous) => previous?.width === next.width && previous.height === next.height
+        && previous.devicePixelRatio === next.devicePixelRatio ? previous : next);
+    };
     const measure = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => {
-        const bounds = element.getBoundingClientRect();
-        const hostWidth = Math.max(96, Math.floor(bounds.width));
-        const hostHeight = Math.max(64, Math.floor(bounds.height));
-        const logicalScale = Math.min(1, 7680 / hostWidth, 4320 / hostHeight);
-        const width = Math.max(96, Math.floor(hostWidth * logicalScale));
-        const height = Math.max(64, Math.floor(hostHeight * logicalScale));
-        const ratio = Math.floor(Math.min(8, Math.max(0.5, window.devicePixelRatio || 1), 3840 / width, 2160 / height) * 1_000_000) / 1_000_000;
-        const next = {
-          width,
-          height,
-          devicePixelRatio: ratio,
-        };
-        setSize((previous) => previous?.width === next.width && previous.height === next.height
-          && previous.devicePixelRatio === next.devicePixelRatio ? previous : next);
-      }, 100);
+      if (!initialized) {
+        initialized = true;
+        apply();
+        return;
+      }
+      timer = setTimeout(apply, 100);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
@@ -703,11 +710,73 @@ export function GraphNewCanvas({
   }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, pointRadius, xMode, rawMode, layers, darkTheme, invertX, invertY, axisBoundsKey, t]);
 
   const chromeRender = useMemo(() => {
-    if (!chromeSnapshot) return null;
+    let activeSnapshot = chromeSnapshot;
+    let provisionalUnknownX = false;
+    let provisionalUnknownY = false;
+
+    if (!activeSnapshot && size) {
+      const hostWidth = host.current?.clientWidth || size.width;
+      const hostHeight = host.current?.clientHeight || size.height;
+      const plotLeft = Math.min(64, Math.max(0, hostWidth - 32));
+      const plotTop = 16;
+      const plotWidth = Math.max(16, hostWidth - plotLeft - 16);
+      const plotHeight = Math.max(16, hostHeight - plotTop - 32);
+
+      const allowCustomX = xMode !== "category" && xMode !== "time";
+      const customXValid = allowCustomX
+        && typeof xAxisConfig?.min === "number" && Number.isFinite(xAxisConfig.min)
+        && typeof xAxisConfig?.max === "number" && Number.isFinite(xAxisConfig.max)
+        && xAxisConfig.min < xAxisConfig.max;
+      const customYValid = typeof yAxisConfig?.min === "number" && Number.isFinite(yAxisConfig.min)
+        && typeof yAxisConfig?.max === "number" && Number.isFinite(yAxisConfig.max)
+        && yAxisConfig.min < yAxisConfig.max;
+      const validSaved = savedCamera && isCameraDomain(savedCamera) ? savedCamera : null;
+
+      const xMin = customXValid ? xAxisConfig!.min! : validSaved ? validSaved.xMin : 0;
+      const xMax = customXValid ? xAxisConfig!.max! : validSaved ? validSaved.xMax : 1;
+      const yMin = customYValid ? yAxisConfig!.min! : validSaved ? validSaved.yMin : 0;
+      const yMax = customYValid ? yAxisConfig!.max! : validSaved ? validSaved.yMax : 1;
+      provisionalUnknownX = !customXValid && !validSaved;
+      provisionalUnknownY = !customYValid && !validSaved;
+
+      const buildProvisionalTicks = (min: number, max: number, known: boolean) =>
+        known
+          ? [0, 0.25, 0.5, 0.75, 1].map((pos) => {
+            const value = min + pos * (max - min);
+            return { value, position: pos, label: String(Number(value.toPrecision(6))) };
+          })
+          : [];
+
+      const provisionalKind: GraphNewAxis["kind"] = xMode === "auto" ? "numeric" : xMode;
+      const provisionalDomain: CameraDomain = { xMin, xMax, yMin, yMax };
+      activeSnapshot = {
+        plotLeft,
+        plotTop,
+        plotWidth,
+        plotHeight,
+        hostWidth,
+        hostHeight,
+        xAxis: {
+          kind: provisionalKind,
+          utc: provisionalKind === "time",
+          ticks: provisionalKind === "numeric" ? buildProvisionalTicks(xMin, xMax, !provisionalUnknownX) : [],
+        },
+        yAxis: {
+          kind: "numeric",
+          utc: false,
+          ticks: buildProvisionalTicks(yMin, yMax, !provisionalUnknownY),
+        },
+        categoryLabels: new Map(),
+        presentedDomain: provisionalDomain,
+        liveDomain: provisionalDomain,
+      };
+    }
+
+    if (!activeSnapshot) return null;
     const {
       plotLeft, plotTop, plotWidth, plotHeight, hostWidth, hostHeight,
       xAxis, yAxis, categoryLabels, presentedDomain, liveDomain,
-    } = chromeSnapshot;
+    } = activeSnapshot;
     const xLayout = computeAxisLayout({
       axis: "x",
       axisMeta: xAxis,
@@ -715,9 +784,9 @@ export function GraphNewCanvas({
       currentMax: liveDomain.xMax,
       refMin: presentedDomain.xMin,
       refMax: presentedDomain.xMax,
-      config: xAxisConfig,
-      refLines: refLinesX,
-      autoSpecLines: autoSpecLinesX,
+      config: provisionalUnknownX ? { ...xAxisConfig, tickInterval: undefined } : xAxisConfig,
+      refLines: provisionalUnknownX ? [] : refLinesX,
+      autoSpecLines: provisionalUnknownX ? false : autoSpecLinesX,
       resolvedAutoSpec: resolvedAutoSpecX,
       categoryLabels,
       formatTick: formatGraphNewTick,
@@ -729,12 +798,18 @@ export function GraphNewCanvas({
       currentMax: liveDomain.yMax,
       refMin: presentedDomain.yMin,
       refMax: presentedDomain.yMax,
-      config: yAxisConfig,
-      refLines: refLinesY,
-      autoSpecLines: autoSpecLinesY,
+      config: provisionalUnknownY ? { ...yAxisConfig, tickInterval: undefined } : yAxisConfig,
+      refLines: provisionalUnknownY ? [] : refLinesY,
+      autoSpecLines: provisionalUnknownY ? false : autoSpecLinesY,
       resolvedAutoSpec: resolvedAutoSpecY,
       formatTick: formatGraphNewTick,
     });
+    if (provisionalUnknownX && xLayout.showMajorGrid && xLayout.majorGridPositions.length === 0) {
+      xLayout.majorGridPositions = [0, 0.25, 0.5, 0.75, 1];
+    }
+    if (provisionalUnknownY && yLayout.showMajorGrid && yLayout.majorGridPositions.length === 0) {
+      yLayout.majorGridPositions = [0, 0.25, 0.5, 0.75, 1];
+    }
     const context = canvas.current?.getContext("2d");
     const fontFamily = host.current ? getComputedStyle(host.current).fontFamily : "sans-serif";
     if (context) context.font = `11px ${fontFamily}`;
@@ -772,6 +847,9 @@ export function GraphNewCanvas({
     return { plotLeft, plotTop, plotWidth, plotHeight, hostWidth, hostHeight, xLayout, yLayout, xLabels, yLabels };
   }, [
     chromeSnapshot,
+    size,
+    xMode,
+    savedCamera,
     xAxisConfig,
     yAxisConfig,
     refLinesX,
