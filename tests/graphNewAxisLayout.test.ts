@@ -133,16 +133,16 @@ assert.ok(zoomedSingleTickLayout.minorPositions.some((p) => p > 0.8), "minor tic
 const betweenMultiplesLayout = computeAxisLayout({
   axis: "y",
   axisMeta: numericAxis,
-  currentMin: 4.02,
-  currentMax: 4.18,
+  currentMin: 3.42,
+  currentMax: 3.57,
   refMin: 3,
   refMax: 5,
-  config: { tickInterval: 0.2, minorTickCount: 3, showMajorGrid: true, showMinorGrid: true },
+  config: { tickInterval: 0.2, decimals: 2, minorTickCount: 2, showMajorGrid: true, showMinorGrid: true },
   formatTick: formatGraphNewTick,
 });
-assert.ok(betweenMultiplesLayout.majorTicks.length >= 2, `expected >= 2 major ticks on [4.02, 4.18], got ${betweenMultiplesLayout.majorTicks.length}`);
-assert.ok(betweenMultiplesLayout.minorPositions.length > 0, "minor ticks must remain visible between custom interval multiples");
-assert.ok(betweenMultiplesLayout.majorGridPositions.length >= 2, "major gridlines must remain visible");
+assert.equal(betweenMultiplesLayout.majorTicks.length, 0, "never fabricate sub-interval major ticks when 0 multiples of tickInterval fall in [3.42, 3.57]");
+assert.equal(betweenMultiplesLayout.minorPositions.length, 2, "exact minor ticks at 3.4667 and 3.5333 remain visible across [3.42, 3.57]");
+assert.equal(betweenMultiplesLayout.minorGridPositions.length, 2, "minor gridlines remain visible at exact tickInterval/(minorTickCount+1) spacing");
 
 // 4. Inverse flips screenPosition for ticks, minor ticks, gridlines, and reference lines.
 const invLayout = computeAxisLayout({
