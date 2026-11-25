@@ -831,7 +831,8 @@ export function GraphNewCanvas({
                     x2={chromeRender.plotLeft + pos * chromeRender.plotWidth}
                     y2={chromeRender.plotTop + chromeRender.plotHeight}
                     stroke={chromeRender.xLayout.minorGridStyle.color}
-                    strokeWidth={chromeRender.xLayout.minorGridStyle.width}
+                    strokeOpacity={0.5}
+                    strokeWidth={Math.max(0.4, chromeRender.xLayout.minorGridStyle.width * 0.6)}
                     strokeDasharray={strokeDashArrayForStyle(chromeRender.xLayout.minorGridStyle.style)}
                   />
                 ))}
@@ -844,7 +845,8 @@ export function GraphNewCanvas({
                     x2={chromeRender.plotLeft + chromeRender.plotWidth}
                     y2={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
                     stroke={chromeRender.yLayout.minorGridStyle.color}
-                    strokeWidth={chromeRender.yLayout.minorGridStyle.width}
+                    strokeOpacity={0.5}
+                    strokeWidth={Math.max(0.4, chromeRender.yLayout.minorGridStyle.width * 0.6)}
                     strokeDasharray={strokeDashArrayForStyle(chromeRender.yLayout.minorGridStyle.style)}
                   />
                 ))}
@@ -857,7 +859,8 @@ export function GraphNewCanvas({
                     x2={chromeRender.plotLeft + pos * chromeRender.plotWidth}
                     y2={chromeRender.plotTop + chromeRender.plotHeight}
                     stroke={chromeRender.xLayout.majorGridStyle.color}
-                    strokeWidth={chromeRender.xLayout.majorGridStyle.width}
+                    strokeOpacity={0.65}
+                    strokeWidth={Math.max(0.5, chromeRender.xLayout.majorGridStyle.width * 0.75)}
                     strokeDasharray={strokeDashArrayForStyle(chromeRender.xLayout.majorGridStyle.style)}
                   />
                 ))}
@@ -870,7 +873,8 @@ export function GraphNewCanvas({
                     x2={chromeRender.plotLeft + chromeRender.plotWidth}
                     y2={chromeRender.plotTop + (1 - pos) * chromeRender.plotHeight}
                     stroke={chromeRender.yLayout.majorGridStyle.color}
-                    strokeWidth={chromeRender.yLayout.majorGridStyle.width}
+                    strokeOpacity={0.65}
+                    strokeWidth={Math.max(0.5, chromeRender.yLayout.majorGridStyle.width * 0.75)}
                     strokeDasharray={strokeDashArrayForStyle(chromeRender.yLayout.majorGridStyle.style)}
                   />
                 ))}

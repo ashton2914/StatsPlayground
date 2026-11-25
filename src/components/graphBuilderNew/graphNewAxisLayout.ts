@@ -44,8 +44,8 @@ export interface AxisLayoutResult {
 }
 
 export function strokeDashArrayForStyle(style: RefLineStyle): string | undefined {
-  if (style === "dashed") return "4 4";
-  if (style === "dotted") return "1.5 3";
+  if (style === "dashed") return "3 2";
+  if (style === "dotted") return "1 2";
   return undefined;
 }
 

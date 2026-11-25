@@ -29,8 +29,8 @@ assert.equal(defaultLayout.majorGridStyle.style, "dashed");
 assert.equal(defaultLayout.majorGridStyle.width, 1);
 assert.equal(defaultLayout.minorGridStyle.color, "#e2e2e2");
 assert.equal(strokeDashArrayForStyle("solid"), undefined);
-assert.equal(strokeDashArrayForStyle("dashed"), "4 4");
-assert.equal(strokeDashArrayForStyle("dotted"), "1.5 3");
+assert.equal(strokeDashArrayForStyle("dashed"), "3 2");
+assert.equal(strokeDashArrayForStyle("dotted"), "1 2");
 
 // 2. Custom tickInterval + decimals + minorTickCount + minor grid gate.
 const customLayout = computeAxisLayout({
