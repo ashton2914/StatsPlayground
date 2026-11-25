@@ -1,6 +1,7 @@
 import { projectDocumentNames, createPersistedDocumentSetter, withoutDocumentPersistence } from "./documentStore";
 import { defaultLineOptions } from "@/components/graphBuilder/shared/graphLayerOptionContracts";
 import { createGraphNewLayer, migratedGraphNewLayers, normalizeGraphNewLayers, legacyRenderOptions } from "@/components/graphBuilderNew/graphNewLayers";
+import type { GridLineStyle, RefLineStyle, RefLineX, RefLineY, YAxisConfig } from "@/graphCore/types";
 import type { GraphNewLayer } from "@/types/graphBuilderNew";
 import { create } from "zustand";
 
@@ -42,6 +43,12 @@ interface GraphBuilderNewStore {
   setLayerOptions: (id: string, layerId: string, patch: Record<string, unknown>) => void;
   setMean: (id: string, showMean: boolean) => void;
   setModes: (id: string, xMode: GraphNewXMode, rawMode: GraphNewRawMode) => void;
+  setXAxisConfig: (id: string, config: YAxisConfig | undefined) => void;
+  setYAxisConfig: (id: string, config: YAxisConfig | undefined) => void;
+  setRefLinesX: (id: string, lines: RefLineX[]) => void;
+  setRefLinesY: (id: string, lines: RefLineY[]) => void;
+  setAutoSpecLinesX: (id: string, enabled: boolean) => void;
+  setAutoSpecLinesY: (id: string, enabled: boolean) => void;
 }
 
 function copyCamera(camera: GraphBuilderNewCamera | null): GraphBuilderNewCamera | null {
@@ -68,6 +75,82 @@ function normalizeHiddenOverlayGroupIds(
   return ids;
 }
 
+const VALID_LINE_STYLES: ReadonlySet<RefLineStyle> = new Set(["solid", "dashed", "dotted"]);
+
+function normalizeGridLineStyle(style: GridLineStyle | undefined): GridLineStyle | undefined {
+  if (!style || typeof style !== "object") return undefined;
+  const out: GridLineStyle = {};
+  if (typeof style.color === "string" && style.color.trim()) out.color = style.color.trim();
+  if (typeof style.width === "number" && Number.isFinite(style.width) && style.width > 0) {
+    out.width = Math.max(0.5, Math.min(5, style.width));
+  }
+  if (style.style && VALID_LINE_STYLES.has(style.style)) out.style = style.style;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeAxisConfig(config: YAxisConfig | undefined): YAxisConfig | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const out: YAxisConfig = {};
+  if (typeof config.min === "number" && Number.isFinite(config.min)) out.min = config.min;
+  if (typeof config.max === "number" && Number.isFinite(config.max)) out.max = config.max;
+  if (typeof config.tickInterval === "number" && Number.isFinite(config.tickInterval) && config.tickInterval > 0) {
+    out.tickInterval = config.tickInterval;
+  }
+  if (typeof config.decimals === "number" && Number.isFinite(config.decimals)) {
+    out.decimals = Math.max(0, Math.min(10, Math.round(config.decimals)));
+  }
+  if (config.inverse === true) out.inverse = true;
+  if (typeof config.minorTickCount === "number" && Number.isFinite(config.minorTickCount)) {
+    const count = Math.max(0, Math.min(20, Math.round(config.minorTickCount)));
+    if (count > 0) out.minorTickCount = count;
+  }
+  if (typeof config.showAxisLine === "boolean") out.showAxisLine = config.showAxisLine;
+  if (config.tickPosition === "inside" || config.tickPosition === "outside") out.tickPosition = config.tickPosition;
+  if (typeof config.showMajorGrid === "boolean") out.showMajorGrid = config.showMajorGrid;
+  if (typeof config.showMinorGrid === "boolean") out.showMinorGrid = config.showMinorGrid;
+  const majorGridStyle = normalizeGridLineStyle(config.majorGridStyle);
+  if (majorGridStyle) out.majorGridStyle = majorGridStyle;
+  const minorGridStyle = normalizeGridLineStyle(config.minorGridStyle);
+  if (minorGridStyle) out.minorGridStyle = minorGridStyle;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeRefLinesX(lines: readonly RefLineX[] | undefined): RefLineX[] | undefined {
+  if (!Array.isArray(lines) || lines.length === 0) return undefined;
+  const out: RefLineX[] = [];
+  for (const line of lines) {
+    if (!line || typeof line !== "object" || typeof line.id !== "string" || !line.id.trim()) continue;
+    if (typeof line.x !== "number" || !Number.isFinite(line.x)) continue;
+    out.push({
+      id: line.id,
+      x: line.x,
+      label: typeof line.label === "string" ? line.label : "",
+      style: VALID_LINE_STYLES.has(line.style) ? line.style : "dashed",
+      color: typeof line.color === "string" && line.color.trim() ? line.color.trim() : "#E60000",
+      width: typeof line.width === "number" && Number.isFinite(line.width) && line.width > 0 ? Math.min(10, line.width) : 1,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeRefLinesY(lines: readonly RefLineY[] | undefined): RefLineY[] | undefined {
+  if (!Array.isArray(lines) || lines.length === 0) return undefined;
+  const out: RefLineY[] = [];
+  for (const line of lines) {
+    if (!line || typeof line !== "object" || typeof line.id !== "string" || !line.id.trim()) continue;
+    if (typeof line.y !== "number" || !Number.isFinite(line.y)) continue;
+    out.push({
+      id: line.id,
+      y: line.y,
+      label: typeof line.label === "string" ? line.label : "",
+      style: VALID_LINE_STYLES.has(line.style) ? line.style : "dashed",
+      color: typeof line.color === "string" && line.color.trim() ? line.color.trim() : "#E60000",
+      width: typeof line.width === "number" && Number.isFinite(line.width) && line.width > 0 ? Math.min(10, line.width) : 1,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export function normalizeGraphNewDocument(
   item: PersistedGraphBuilderNewDocument,
 ): GraphBuilderNewDocument {
@@ -79,6 +162,13 @@ export function normalizeGraphNewDocument(
     overlayColumnId,
     item.version !== 1 ? item.hiddenOverlayGroupIds : [],
   );
+  const v3 = item.version === 3 ? item : undefined;
+  const xAxisConfig = normalizeAxisConfig(v3?.xAxisConfig);
+  const yAxisConfig = normalizeAxisConfig(v3?.yAxisConfig);
+  const refLinesX = normalizeRefLinesX(v3?.refLinesX);
+  const refLinesY = normalizeRefLinesY(v3?.refLinesY);
+  const autoSpecLinesX = v3?.autoSpecLinesX === true ? true : undefined;
+  const autoSpecLinesY = v3?.autoSpecLinesY === true ? true : undefined;
   return {
     version: 3,
     layers: migratedGraphNewLayers(item),
@@ -89,6 +179,12 @@ export function normalizeGraphNewDocument(
     datasetId: item.datasetId,
     xColumnId: item.xColumnId, yColumnId: item.yColumnId,
     xMode: item.xMode, camera: copyCamera(item.camera),
+    ...(xAxisConfig ? { xAxisConfig } : {}),
+    ...(yAxisConfig ? { yAxisConfig } : {}),
+    ...(refLinesX ? { refLinesX } : {}),
+    ...(refLinesY ? { refLinesY } : {}),
+    ...(autoSpecLinesX ? { autoSpecLinesX } : {}),
+    ...(autoSpecLinesY ? { autoSpecLinesY } : {}),
   };
 }
 
@@ -225,6 +321,24 @@ export const useGraphBuilderNewStore = create<GraphBuilderNewStore>((rawSet, get
         && item.camera.yMin === next.yMin && item.camera.yMax === next.yMax;
       return { camera: same ? item.camera : next };
     }),
+    setXAxisConfig: (id, config) => update(id, (item) => {
+      const next = normalizeAxisConfig(config);
+      return { xAxisConfig: JSON.stringify(next) === JSON.stringify(item.xAxisConfig) ? item.xAxisConfig : next };
+    }),
+    setYAxisConfig: (id, config) => update(id, (item) => {
+      const next = normalizeAxisConfig(config);
+      return { yAxisConfig: JSON.stringify(next) === JSON.stringify(item.yAxisConfig) ? item.yAxisConfig : next };
+    }),
+    setRefLinesX: (id, lines) => update(id, (item) => {
+      const next = normalizeRefLinesX(lines);
+      return { refLinesX: JSON.stringify(next) === JSON.stringify(item.refLinesX) ? item.refLinesX : next };
+    }),
+    setRefLinesY: (id, lines) => update(id, (item) => {
+      const next = normalizeRefLinesY(lines);
+      return { refLinesY: JSON.stringify(next) === JSON.stringify(item.refLinesY) ? item.refLinesY : next };
+    }),
+    setAutoSpecLinesX: (id, enabled) => update(id, () => ({ autoSpecLinesX: enabled ? true : undefined })),
+    setAutoSpecLinesY: (id, enabled) => update(id, () => ({ autoSpecLinesY: enabled ? true : undefined })),
   };
 });
 // Preserve documents across development module replacement; rebuild transports so
