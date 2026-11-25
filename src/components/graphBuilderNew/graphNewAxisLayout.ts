@@ -77,10 +77,12 @@ function computeCustomIntervalTicks(
     return { ticks: [], step: rawInterval };
   }
   let step = rawInterval;
-  let guard = 0;
-  while (span / step > MAX_CUSTOM_MAJOR_TICKS - 1 && guard < 128) {
-    step *= 2;
-    guard++;
+  if (span / step > MAX_CUSTOM_MAJOR_TICKS - 1) {
+    const minStep = span / (MAX_CUSTOM_MAJOR_TICKS - 1);
+    const pow = Math.pow(10, Math.floor(Math.log10(minStep)));
+    const normalizedStep = minStep / pow;
+    const niceMultiplier = normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10;
+    step = niceMultiplier * pow;
   }
   const start = Math.ceil(currentMin / step - 1e-9);
   const end = Math.floor(currentMax / step + 1e-9);

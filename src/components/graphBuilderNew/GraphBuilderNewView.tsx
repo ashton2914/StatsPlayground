@@ -59,6 +59,17 @@ function useRailSize(id: LayoutPanelId, defaultValue: number, min: number, max: 
   };
 }
 
+function parseFiniteSpecNumber(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 function resolveAutoSpecForColumn(
   columnId: string | null,
   descriptors: ColumnDescriptor[],
@@ -72,12 +83,12 @@ function resolveAutoSpecForColumn(
   const specExtra = extras?.spec as { lsl?: unknown; target?: unknown; usl?: unknown } | undefined;
   if (!specExtra) return undefined;
   const spec: AutoSpec = { colName: descriptors[colIndex].name };
-  const lsl = Number(specExtra.lsl);
-  const target = Number(specExtra.target);
-  const usl = Number(specExtra.usl);
-  if (Number.isFinite(lsl)) spec.lsl = lsl;
-  if (Number.isFinite(target)) spec.target = target;
-  if (Number.isFinite(usl)) spec.usl = usl;
+  const lsl = parseFiniteSpecNumber(specExtra.lsl);
+  const target = parseFiniteSpecNumber(specExtra.target);
+  const usl = parseFiniteSpecNumber(specExtra.usl);
+  if (lsl !== undefined) spec.lsl = lsl;
+  if (target !== undefined) spec.target = target;
+  if (usl !== undefined) spec.usl = usl;
   return spec.lsl !== undefined || spec.target !== undefined || spec.usl !== undefined ? spec : undefined;
 }
 

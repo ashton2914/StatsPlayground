@@ -1546,8 +1546,27 @@ test("Issue 322 opens X/Y AxisSettingsDialog via double-click and Style inspecto
   // Close with Escape, then open X Axis Settings from Style inspector button.
   await page.keyboard.press("Escape");
   await expect(component.locator(".sp-dialog-title")).toHaveCount(0);
+
+  // Zoom in while custom Range [10, 90] is active, then Reset view returns to custom Range (cameraDomain: null with axisBounds).
+  const plot = component.getByTestId("camera-plot");
+  const plotBox = (await plot.boundingBox())!;
+  await plot.dispatchEvent("wheel", { deltaY: -120, clientX: plotBox.x + plotBox.width / 2, clientY: plotBox.y + plotBox.height / 2 });
+  await expect(component.getByTestId("render-request")).not.toContainText('"cameraDomain":null');
+  await component.getByRole("button", { name: "Reset view", exact: true }).click();
+  await expect(component.getByTestId("render-request")).toContainText('"cameraDomain":null');
+  await expect(component.getByTestId("render-request")).toContainText('"axisBounds":{"yMin":10,"yMax":90}');
+
+  // Open X Axis Settings: column-x has { lsl: 10, target: null, usl: 90 } — Auto-show spec limits must draw only 2 lines (not a phantom Target at 0).
   await component.getByTestId("open-x-axis-settings").click();
   await expect(component.locator(".sp-dialog-title")).toHaveText("X Axis Settings");
+  await component.getByRole("button", { name: "Reference Lines", exact: true }).click();
+  await component.getByLabel("Auto-show spec limits").check();
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="x"]')).toHaveCount(2);
   await component.getByRole("button", { name: "Done" }).click();
   await expect(component.locator(".sp-dialog-title")).toHaveCount(0);
+
+  // Switching X to categorical column ignores numeric X ref lines/spec limits without corrupting category labels.
+  await component.getByTestId("graph-field-column-label").dragTo(component.getByTestId("graph-slot-x"));
+  await expect(component.getByTestId("render-request")).toContainText('"xMode":"category"');
+  await expect(component.getByTestId("graph-new-reflines-svg").locator('[data-refline-axis="x"]')).toHaveCount(0);
 });

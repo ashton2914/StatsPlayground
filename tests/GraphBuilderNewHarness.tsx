@@ -357,7 +357,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       ];
     };
     dataService.getColumnDisplayProps = async () => [
-      { colIndex: 0, extras: { spec: { lsl: 10, target: 40, usl: 90 } } },
+      { colIndex: 0, extras: { spec: { lsl: 10, target: null, usl: 90 } } },
       { colIndex: 1, extras: { spec: { lsl: 20, target: 50, usl: 80 } } },
     ] as any;
     setReady(true);

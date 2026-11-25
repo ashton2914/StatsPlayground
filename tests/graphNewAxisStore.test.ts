@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import { normalizeGraphNewDocument, useGraphBuilderNewStore } from "../src/stores/useGraphBuilderNewStore.ts";
 import { useProjectStore } from "../src/stores/useProjectStore.ts";
+import { graphNewDocumentBody } from "../src/projectPersistence/documentAdapters.ts";
 import type { PersistedGraphBuilderNewDocument } from "../src/types/graphBuilderNew.ts";
 
 // 1. Legacy v1/v2/v3 documents without axis settings normalize cleanly.
@@ -89,6 +90,15 @@ assert.deepEqual(normV3.refLinesY, [
 ]);
 assert.equal(normV3.autoSpecLinesX, undefined);
 assert.equal(normV3.autoSpecLinesY, true);
+
+// 2b. Persistence adapter body preserves all 6 optional axis fields and omits undefined ones.
+const persistedBody = graphNewDocumentBody(normV3);
+assert.deepEqual(persistedBody.xAxisConfig, normV3.xAxisConfig);
+assert.equal("yAxisConfig" in persistedBody, false);
+assert.deepEqual(persistedBody.refLinesX, normV3.refLinesX);
+assert.deepEqual(persistedBody.refLinesY, normV3.refLinesY);
+assert.equal("autoSpecLinesX" in persistedBody, false);
+assert.equal(persistedBody.autoSpecLinesY, true);
 
 // 3. Store actions mutate items + sessions, mark project dirty, preserve across setColumns, and enforce readOnly.
 useProjectStore.setState({ readOnly: false, dirty: false });

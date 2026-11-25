@@ -373,8 +373,10 @@
 .graph-new-axis-hit-band:hover {
   background: color-mix(in srgb, var(--gbn-control-tint) 45%, transparent);
 }
-.graph-builder-new-axis-btn {
-  width: 100%;
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn {
+  width: calc(100% - 20px);
+  box-sizing: border-box;
+  margin: 6px 10px 0;
   padding: 6px 8px;
   border: 1px solid var(--gbn-border);
   border-radius: 5px;
@@ -384,10 +386,10 @@
   text-align: left;
   cursor: pointer;
 }
-.graph-builder-new-axis-btn:hover:not(:disabled) {
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn:hover:not(:disabled) {
   background: var(--gbn-control-tint);
 }
-.graph-builder-new-axis-btn:disabled {
+.graph-builder-new-inspector .gb-shared-inspector-section > button.graph-builder-new-axis-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

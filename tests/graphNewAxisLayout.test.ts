@@ -86,6 +86,20 @@ const hugeLayout = computeAxisLayout({
 });
 assert.ok(hugeLayout.majorTicks.length >= 2 && hugeLayout.majorTicks.length <= 64, `got ${hugeLayout.majorTicks.length}`);
 
+// 3b. Extreme underflow/overflow tickInterval (span / interval > 63 * 2^128) must still emit valid ticks, never [].
+const extremeIntervalLayout = computeAxisLayout({
+  axis: "y",
+  axisMeta: numericAxis,
+  currentMin: 0,
+  currentMax: 1e40,
+  refMin: 0,
+  refMax: 1e40,
+  config: { tickInterval: 1e-40 },
+  formatTick: formatGraphNewTick,
+});
+assert.ok(extremeIntervalLayout.majorTicks.length >= 2 && extremeIntervalLayout.majorTicks.length <= 64,
+  `extreme tickInterval must cap gracefully instead of dropping all ticks, got ${extremeIntervalLayout.majorTicks.length}`);
+
 // 4. Inverse flips screenPosition for ticks, minor ticks, gridlines, and reference lines.
 const invLayout = computeAxisLayout({
   axis: "y",
