@@ -11,7 +11,7 @@ import {
   type GraphNewRenderRequest,
 } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, shouldPreviewCameraTransform, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, projectAxisTicks, projectGridPositions, shouldPreviewCameraTransform, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
 let activeJob: RenderJob | null = null;
@@ -89,6 +89,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     x: { label: string; left: number; top: number; width: number }[];
     y: { label: string; left: number; top: number; width: number }[];
   }>({ x: [], y: [] });
+  const [liveGrid, setLiveGrid] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const plotHost = useRef<HTMLDivElement>(null);
@@ -161,8 +162,11 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     const retained = cameraState.current;
     let disposed = false;
     let currentJob: RenderJob | null = null;
+    let overscanJob: { cancel: () => void } | null = null;
     let full: CameraDomain | null = retained.full;
     let presented: CameraDomain | null = null;
+    let previewDomain: CameraDomain | null = null;
+    let presentedAxes: { x: GraphNewAxis; y: GraphNewAxis; categoryLabels: Map<number, string> } | null = null;
     let current: CameraDomain | null = retained.desired;
     let plot: PlotRect | null = null;
     let frameWidth = 0;
@@ -172,6 +176,10 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     let retriedCameraGeneration: number | null = null;
     let pointer: { id: number; x: number; y: number } | null = null;
     let resetPending = retained.resetPending;
+    const cancelOverscan = () => {
+      overscanJob?.cancel();
+      overscanJob = null;
+    };
     setCameraAvailable(full !== null);
     setProvisional(false);
     plotElement.style.visibility = "hidden";
@@ -181,21 +189,83 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       const scale = Math.min(bounds.width / frameWidth, bounds.height / frameHeight);
       return { bounds, scale, left: (bounds.width - frameWidth * scale) / 2, top: (bounds.height - frameHeight * scale) / 2 };
     };
+    const layoutAxisLabels = (xAxis: GraphNewAxis, yAxis: GraphNewAxis) => {
+      const context = canvas.current?.getContext("2d");
+      if (!context || !plot || frameWidth === 0 || frameHeight === 0) return { x: [], y: [] };
+      const { scale, left, top } = geometry();
+      context.font = `11px ${getComputedStyle(element).fontFamily}`;
+      let previousEnd = -Infinity;
+      const x = xAxis.ticks.flatMap((tick) => {
+        const label = formatGraphNewTick(xAxis, tick);
+        const width = Math.min(xAxis.kind === "category" ? 170 : Infinity,
+          Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
+        const position = Math.max(0, Math.min(element.clientWidth - width, left + (plot!.x + tick.position * plot!.width) * scale - width / 2));
+        if (!label || position < previousEnd + 8) return [];
+        previousEnd = position + width;
+        return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
+      });
+      previousEnd = -Infinity;
+      const y = yAxis.ticks.map((tick) => {
+        const label = formatGraphNewTick(yAxis, tick);
+        const width = Math.min(Math.ceil(context.measureText(label).width) + 8, Math.max(0, left + plot!.x * scale - 4));
+        return {
+          label,
+          left: Math.max(0, left + plot!.x * scale - width - 4),
+          top: top + (plot!.y + (1 - tick.position) * plot!.height) * scale - 7,
+          width,
+        };
+      }).sort((a, b) => a.top - b.top).flatMap((tick) => {
+        if (!tick.label || tick.width === 0 || tick.top < previousEnd + 4) return [];
+        previousEnd = tick.top + 14;
+        return [tick];
+      });
+      return { x, y };
+    };
+    const updateLiveAxesAndGrid = (target: CameraDomain) => {
+      if (!presented || !presentedAxes) return;
+      const liveX: GraphNewAxis = {
+        ...presentedAxes.x,
+        ticks: projectAxisTicks(presentedAxes.x, target.xMin, target.xMax, presented.xMin, presented.xMax, presentedAxes.categoryLabels),
+      };
+      const liveY: GraphNewAxis = {
+        ...presentedAxes.y,
+        ticks: projectAxisTicks(presentedAxes.y, target.yMin, target.yMax, presented.yMin, presented.yMax),
+      };
+      setAxisLabels(layoutAxisLabels(liveX, liveY));
+      setLiveGrid({
+        x: projectGridPositions(presentedAxes.x, target.xMin, target.xMax, presented.xMin, presented.xMax),
+        y: projectGridPositions(presentedAxes.y, target.yMin, target.yMax, presented.yMin, presented.yMax),
+      });
+    };
     const drawPreview = () => {
       raf = null;
-      if (!presented || !current || !plot || !preview.current) return;
-      const { scale } = geometry();
-      const transform = cameraTransform(presented, current, plot);
-      preview.current.style.transform = `translate3d(${transform.x * scale}px, ${transform.y * scale}px, 0) scale(${transform.scale})`;
+      const source = previewDomain ?? presented;
+      if (!presented || !source || !current || !plot || !preview.current) return;
+      if (shouldPreviewCameraTransform(presented, current, plot, source)) {
+        const { scale } = geometry();
+        const transform = cameraTransform(source, current, plot);
+        preview.current.style.transform = `translate3d(${transform.x * scale}px, ${transform.y * scale}px, 0) scale(${transform.scale})`;
+      }
+      updateLiveAxesAndGrid(current);
     };
     const showPreview = () => {
-      if (!presented || !current || !plot || !preview.current) return;
-      if (!shouldPreviewCameraTransform(presented, current, plot)) {
-        if (raf !== null) cancelAnimationFrame(raf);
-        raf = null;
+      const source = previewDomain ?? presented;
+      if (!presented || !source || !current || !plot || !preview.current) return;
+      if (!shouldPreviewCameraTransform(presented, current, plot, source)) {
         preview.current.style.transform = "none";
         element.removeAttribute("data-provisional");
         setProvisional(false);
+        const delta = cameraTransform(presented, current, plot);
+        const changed = Number.isFinite(delta.scale) && Number.isFinite(delta.x) && Number.isFinite(delta.y)
+          && (Math.abs(delta.scale - 1) > 1e-8 || Math.abs(delta.x) > 1e-6 || Math.abs(delta.y) > 1e-6);
+        if (changed) {
+          if (raf === null) raf = requestAnimationFrame(drawPreview);
+        } else {
+          if (raf !== null) cancelAnimationFrame(raf);
+          raf = null;
+          if (presentedAxes) setAxisLabels(layoutAxisLabels(presentedAxes.x, presentedAxes.y));
+          setLiveGrid({ x: [], y: [] });
+        }
         return;
       }
       element.dataset.provisional = "true";
@@ -203,7 +273,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
       if (raf === null) raf = requestAnimationFrame(drawPreview);
     };
     const scheduler = createCameraScheduler({
-      invalidate: () => { currentJob?.cancel(!disposed); if (pendingJob === currentJob) pendingJob = null; },
+      invalidate: () => { cancelOverscan(); currentJob?.cancel(!disposed); if (pendingJob === currentJob) pendingJob = null; },
       settled: (generation) => {
         if (disposed || !current) return;
         if (persistence.current.readOnly) {
@@ -275,7 +345,87 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     plotElement.addEventListener("lostpointercapture", end);
     plotElement.addEventListener("wheel", wheel, { passive: false });
 
+    const launchOverscan = (basePresented: CameraDomain, baseFull: CameraDomain, basePlot: PlotRect, cameraGeneration: number) => {
+      if (disposed || persistence.current.readOnly || typeof graphNewService.renderOverscan !== "function") return;
+      const overscan = overscanCamera(basePresented, baseFull, layers !== undefined);
+      if (!overscan) return;
+      const viewport = overscanViewport(basePlot, size.devicePixelRatio, overscan.factor);
+      if (!viewport) return;
+      cancelOverscan();
+      let cancelled = false;
+      let controller: GraphNewRenderController | null = null;
+      let resolveFrame: (frame: GraphNewFrame | null) => void = () => {};
+      const frameReady = new Promise<GraphNewFrame | null>((resolve) => { resolveFrame = resolve; });
+      const handle = {
+        cancel: () => {
+          if (cancelled) return;
+          cancelled = true;
+          resolveFrame(null);
+          void controller?.cancel(true).catch(() => {});
+        },
+      };
+      overscanJob = handle;
+      void (async () => {
+        let bitmap: ImageBitmap | null = null;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const generation = ++rendererGeneration;
+          const request: GraphNewRenderRequest = {
+            sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, layers,
+            layerConfigurationId: layers === undefined ? undefined : JSON.stringify(layers),
+            showMean, pointRadius, xMode, rawMode, overlayColumnId,
+            hiddenOverlayGroupIds: [...hiddenOverlayGroupIds],
+            ...viewport,
+            ...(darkTheme ? { darkTheme } : {}),
+            plotOnly: true,
+            requestId: `${sessionId}:${generation}`,
+            rendererGeneration: generation,
+            cameraGeneration,
+            cameraDomain: overscan.domain,
+            referenceDomain: basePresented,
+          };
+          controller = graphNewService.renderOverscan(request, {
+            activeIdentity: () => ({ ...request, cameraGeneration: scheduler.generation() }),
+            onFrame: (frame) => { if (!cancelled) resolveFrame(frame); },
+            onError: () => { resolveFrame(null); },
+          });
+          const completion = await controller.completion;
+          if (cancelled || disposed || pointer) return;
+          timer = setTimeout(() => { resolveFrame(null); }, 5000);
+          const frame = await frameReady;
+          clearTimeout(timer);
+          if (cancelled || disposed || pointer || !frame
+            || completion.requestId !== request.requestId
+            || !scheduler.isCurrent(cameraGeneration)
+            || presented !== basePresented
+            || !controller.canPresent(frame.header)) return;
+          bitmap = frame.header.format === "rgba8"
+            ? await createImageBitmap(new ImageData(new Uint8ClampedArray(frame.payload), frame.header.width, frame.header.height))
+            : await createImageBitmap(new Blob([frame.payload], { type: "image/png" }));
+          if (cancelled || disposed || pointer || !scheduler.isCurrent(cameraGeneration)
+            || presented !== basePresented || !preview.current || !controller.canPresent(frame.header)) return;
+          preview.current.width = frame.header.width;
+          preview.current.height = frame.header.height;
+          preview.current.getContext("2d")?.drawImage(bitmap, 0, 0);
+          previewDomain = overscan.domain;
+          if (presentedAxes && completion.xAxis.kind === "category") {
+            for (const tick of completion.xAxis.ticks) {
+              if (tick.label !== null) presentedAxes.categoryLabels.set(tick.value, tick.label);
+            }
+          }
+          controller.markPresented(frame.header, performance.now());
+        } catch {
+          // Overscan is a best-effort background optimization; visible frame remains authoritative.
+        } finally {
+          clearTimeout(timer);
+          bitmap?.close();
+          if (overscanJob === handle) overscanJob = null;
+        }
+      })();
+    };
+
     const launch = (cameraDomain: CameraDomain | null, cameraGeneration: number) => {
+    cancelOverscan();
     let cancelled = false;
     let preserved = false;
     let controller: GraphNewRenderController | null = null;
@@ -345,34 +495,15 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
           retained.full = full;
           retained.desired = current;
           retained.presented = presented;
+          const categoryLabels = new Map<number, string>();
+          if (completion.xAxis.kind === "category") {
+            for (const tick of completion.xAxis.ticks) {
+              if (tick.label !== null) categoryLabels.set(tick.value, tick.label);
+            }
+          }
+          presentedAxes = { x: completion.xAxis, y: completion.yAxis, categoryLabels };
           const { scale, left, top } = geometry();
-          context.font = `11px ${getComputedStyle(element).fontFamily}`;
-          let previousEnd = -Infinity;
-          const xLabels = completion.xAxis.ticks.flatMap((tick) => {
-            const label = formatGraphNewTick(completion.xAxis, tick);
-            const width = Math.min(completion.xAxis.kind === "category" ? 170 : Infinity,
-              Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
-            const position = Math.max(0, Math.min(element.clientWidth - width, left + (plot!.x + tick.position * plot!.width) * scale - width / 2));
-            if (!label || position < previousEnd + 8) return [];
-            previousEnd = position + width;
-            return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
-          });
-          previousEnd = -Infinity;
-          const yLabels = completion.yAxis.ticks.map((tick) => {
-            const label = formatGraphNewTick(completion.yAxis, tick);
-            const width = Math.min(Math.ceil(context.measureText(label).width) + 8, Math.max(0, left + plot!.x * scale - 4));
-            return {
-              label,
-              left: Math.max(0, left + plot!.x * scale - width - 4),
-              top: top + (plot!.y + (1 - tick.position) * plot!.height) * scale - 7,
-              width,
-            };
-          }).sort((a, b) => a.top - b.top).flatMap((tick) => {
-            if (!tick.label || tick.width === 0 || tick.top < previousEnd + 4) return [];
-            previousEnd = tick.top + 14;
-            return [tick];
-          });
-          setAxisLabels({ x: xLabels, y: yLabels });
+          setAxisLabels(layoutAxisLabels(completion.xAxis, completion.yAxis));
           setRawAvailable(completion.rawLineAvailable !== false);
           setOverlayState({ active: completion.overlayActive, groups: completion.overlayGroups });
           plotElement.style.left = `${left + plot.x * scale}px`;
@@ -382,6 +513,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
           plotElement.style.visibility = current ? "visible" : "hidden";
           preview.current.width = plot.width; preview.current.height = plot.height;
           preview.current.getContext("2d")?.drawImage(bitmap, plot.x, plot.y, plot.width, plot.height, 0, 0, plot.width, plot.height);
+          previewDomain = presented;
           preview.current.style.transform = "none";
           if (raf !== null) cancelAnimationFrame(raf);
           raf = null; retained.resetPending = resetPending = false;
@@ -389,6 +521,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
           setProvisional(false); setCameraAvailable(current !== null);
           controller.markPresented(frame.header, performance.now());
           setHasFrame(true);
+          let willRestore = false;
           setMeanFrame({ available: completion.meanAvailable === true, visible: completion.meanVisible === true, groups: completion.meanGroups ?? null });
           setLayerWarning(completion.layerStates?.some(state => state.reason === "graph_new_jitter_budget") ? t("graphNew.jitterBudget") : null);
           retriedCameraGeneration = null;
@@ -407,6 +540,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
               modeCamera.xMax > full.xMin && modeCamera.xMin < full.xMax
               && modeCamera.yMax > full.yMin && modeCamera.yMin < full.yMax);
             if (saved && full && overlapsNewData && isRestorableCamera(saved, full, layers !== undefined)) {
+              willRestore = true;
               retained.desired = current = saved;
               if (modeCamera && !persistence.current.readOnly) persistence.current.onCameraChange?.(saved);
               launch(saved, scheduler.generation());
@@ -415,6 +549,9 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
             } else if (saved) {
               setCameraRestoreRejected(true);
             }
+          }
+          if (!willRestore && presented && full && plot && !pointer && scheduler.isCurrent(cameraGeneration)) {
+            launchOverscan(presented, full, plot, cameraGeneration);
           }
         } catch (error) {
           if (!cancelled) {
@@ -504,6 +641,7 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
     else launch(resetPending ? null : current, scheduler.generation());
     return () => {
       disposed = true;
+      cancelOverscan();
       scheduler.dispose(); currentJob?.cancel();
       if (pendingJob === currentJob) pendingJob = null;
       if (raf !== null) cancelAnimationFrame(raf);
@@ -550,6 +688,10 @@ export function GraphNewCanvas({ controlsHost, transportId: sessionId, datasetId
             style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
         </div>
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
+          <div className="graph-new-live-grid" data-testid="live-grid" aria-hidden="true">
+            {liveGrid.x.map((pos, index) => <span key={`x-${index}`} className="graph-new-live-grid-x" style={{ left: `${pos * 100}%` }} />)}
+            {liveGrid.y.map((pos, index) => <span key={`y-${index}`} className="graph-new-live-grid-y" style={{ top: `${(1 - pos) * 100}%` }} />)}
+          </div>
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
 

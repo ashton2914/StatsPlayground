@@ -767,6 +767,47 @@ test("camera transforms immediately, coalesces wheel and supports keyboard reset
   await testInfo.attach("camera-timing", { body: JSON.stringify({ ...timing, settleMs }), contentType: "application/json" });
 });
 
+test("Issue 319 overscan buffer covers panned plot edges during pointer drag", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overscan" />);
+  await component.getByTestId("legacy-x-field").selectOption("column-x");
+  await component.getByTestId("legacy-y-field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+  const plot = component.getByTestId("camera-plot");
+  const preview = component.getByTestId("camera-preview");
+  const xTicks = component.getByTestId("x-axis-ticks").locator("span");
+  const yTicks = component.getByTestId("y-axis-ticks").locator("span");
+  const box = (await plot.boundingBox())!;
+  await expect.poll(async () => preview.evaluate((canvas) => (canvas as HTMLCanvasElement).width)).toBeGreaterThan(Math.ceil(box.width * 1.5));
+  const beforeX = await xTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.left))}`));
+  const beforeY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 80, startY - 40, { steps: 4 });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const matrix = await preview.evaluate((element) => getComputedStyle(element).transform);
+  const match = /^matrix\(([^,]+),\s*0,\s*0,\s*([^,]+),\s*([^,]+),\s*([^)]+)\)$/.exec(matrix);
+  expect(match).not.toBeNull();
+  const scaleX = Number(match![1]);
+  const tx = Number(match![3]);
+  const ty = Number(match![4]);
+  expect(scaleX).toBeCloseTo(2, 3);
+  expect(tx).toBeLessThanOrEqual(0);
+  expect(tx + box.width * scaleX).toBeGreaterThanOrEqual(box.width);
+  expect(ty).toBeLessThanOrEqual(0);
+  expect(ty + box.height * scaleX).toBeGreaterThanOrEqual(box.height);
+  const duringX = await xTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.left))}`));
+  const duringY = await yTicks.evaluateAll((els) => els.map((el) => `${el.textContent}@${Math.round(parseFloat((el as HTMLElement).style.top))}`));
+  expect(duringX).not.toEqual(beforeX);
+  expect(duringY).not.toEqual(beforeY);
+  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-x").count()).toBeGreaterThan(0);
+  expect(await component.getByTestId("live-grid").locator(".graph-new-live-grid-y").count()).toBeGreaterThan(0);
+  await page.mouse.up();
+  await expect(metrics).toContainText('"presented":2');
+});
+
 test("Issue 261 keeps readable axes and a coherent frame while zooming out", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" axisFixture="compactNumeric" />);
   await component.getByTestId("legacy-x-field").selectOption("column-x");

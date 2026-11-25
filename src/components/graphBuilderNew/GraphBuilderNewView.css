@@ -349,10 +349,32 @@
   cursor: grab;
 }
 .graph-new-camera-plot:active { cursor: grabbing; }
-.graph-new-camera-preview { transform-origin: 0 0; opacity: 0; pointer-events: none; }
+.graph-new-live-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.graph-new-live-grid-x {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--gbn-border);
+}
+.graph-new-live-grid-y {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--gbn-border);
+}
+.graph-new-camera-preview { position: relative; z-index: 1; transform-origin: 0 0; opacity: 0; pointer-events: none; object-fit: fill; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
   background: var(--gbn-panel);
 }
+.graph-new-canvas-host[data-provisional] .graph-new-live-grid { opacity: 1; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
 .graph-new-reset {
   position: absolute;

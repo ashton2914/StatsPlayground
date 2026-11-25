@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, shouldPreviewCameraTransform, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, overscanCamera, overscanViewport, panCamera, projectAxisTicks, shouldPreviewCameraTransform, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
 
 const domain = { xMin: 0, xMax: 100, yMin: -50, yMax: 50 };
 const plot = { x: 60, y: 10, width: 400, height: 200 };
@@ -30,6 +30,35 @@ assert.equal(shouldPreviewCameraTransform(domain, zoomed, plot), true, "zooming 
 assert.equal(shouldPreviewCameraTransform(domain, zoomedAndPanned, plot), true, "zoomed-in pan previews smoothly");
 assert.equal(shouldPreviewCameraTransform(domain, zoomedOut, plot), false, "zooming out retains coherent frame without shrunk preview");
 assert.equal(shouldPreviewCameraTransform(domain, { xMin: 25, xMax: 75, yMin: -50, yMax: 50 }, plot), false, "non-uniform scale does not preview");
+
+const overscan = overscanCamera(domain, domain);
+assert.ok(overscan, "full domain produces a 2x overscan domain");
+assert.deepEqual(overscan.domain, { xMin: -50, xMax: 150, yMin: -100, yMax: 100 });
+assert.equal(overscan.factor, 2);
+assert.equal(shouldPreviewCameraTransform(domain, domain, plot, overscan.domain), false, "no-op with overscan still needs no preview");
+assert.equal(shouldPreviewCameraTransform(domain, panned, plot, overscan.domain), true, "panning uses overscan preview");
+assert.equal(shouldPreviewCameraTransform(domain, zoomedOut, plot, overscan.domain), true, "zooming out within overscan coverage previews smoothly");
+const overscanPanTransform = cameraTransform(overscan.domain, panned, plot);
+assert.equal(overscanPanTransform.scale, 2);
+assert.ok(overscanPanTransform.x <= 0 && overscanPanTransform.x + plot.width * overscanPanTransform.scale >= plot.width,
+  "panned viewport stays fully covered by overscan buffer without blank edges");
+assert.ok(overscanPanTransform.y <= 0 && overscanPanTransform.y + plot.height * overscanPanTransform.scale >= plot.height,
+  "vertical pan stays fully covered by overscan buffer without blank edges");
+const nearMaxZoomOut = { xMin: -145, xMax: 245, yMin: -195, yMax: 195 };
+assert.equal(overscanCamera(nearMaxZoomOut, domain), null, "skips overscan when already near 4x zoom-out limit");
+const vp1x = overscanViewport({ x: 64, y: 16, width: 800, height: 500 }, 1, 2);
+assert.deepEqual(vp1x, { width: 1600, height: 1000, devicePixelRatio: 1 });
+const vp2x = overscanViewport({ x: 128, y: 32, width: 1800, height: 1200 }, 2, 2);
+assert.ok(vp2x && Math.ceil(vp2x.width * vp2x.devicePixelRatio) <= 2560 && Math.ceil(vp2x.height * vp2x.devicePixelRatio) <= 1440,
+  "caps overscan physical dimensions within 2560x1440 budget");
+
+const baseNumericAxis = {
+  kind: "numeric",
+  ticks: [0, 25, 50, 75, 100].map((value, index) => ({ value, position: index / 4, label: String(value) })),
+};
+const livePannedTicks = projectAxisTicks(baseNumericAxis, panned.xMin, panned.xMax, domain.xMin, domain.xMax);
+assert.deepEqual(livePannedTicks.map((tick) => tick.value), [0, 25, 50, 75], "live pan preserves tick step and shifts labels with domain");
+assert.ok(Math.abs(livePannedTicks[0].position - 0.1) < 1e-12, "tick 0 moves from 0.0 to 0.1 when panning right by 10%");
 for (const extreme of [
   { xMin: 1e300, xMax: 1.01e300, yMin: -1e300, yMax: -0.99e300 },
   { xMin: 1e-280, xMax: 2e-280, yMin: -2e-280, yMax: -1e-280 },

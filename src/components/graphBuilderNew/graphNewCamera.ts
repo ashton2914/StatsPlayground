@@ -78,16 +78,186 @@ export function cameraTransform(presented: CameraDomain, current: CameraDomain, 
   };
 }
 
-export function shouldPreviewCameraTransform(presented: CameraDomain, current: CameraDomain, plot: PlotRect): boolean {
-  const transform = cameraTransform(presented, current, plot);
-  const scaleY = (presented.yMax - presented.yMin) / (current.yMax - current.yMin);
+export function shouldPreviewCameraTransform(
+  presented: CameraDomain,
+  current: CameraDomain,
+  plot: PlotRect,
+  previewDomain: CameraDomain = presented,
+): boolean {
+  const delta = cameraTransform(presented, current, plot);
+  const changed = Number.isFinite(delta.scale) && Number.isFinite(delta.x) && Number.isFinite(delta.y)
+    && (Math.abs(delta.scale - 1) > 1e-8 || Math.abs(delta.x) > 1e-6 || Math.abs(delta.y) > 1e-6);
+  if (!changed) return false;
+  const transform = cameraTransform(previewDomain, current, plot);
+  const scaleY = (previewDomain.yMax - previewDomain.yMin) / (current.yMax - current.yMin);
   const uniform = Number.isFinite(transform.scale) && Number.isFinite(scaleY)
     && transform.scale > 0 && scaleY > 0
     && Math.abs(transform.scale - scaleY) <= Math.max(transform.scale, scaleY) * 1e-8;
-  if (!uniform || transform.scale < 1 - 1e-8) return false;
-  return Math.abs(transform.scale - 1) > 1e-8
-    || Math.abs(transform.x) > 1e-6
-    || Math.abs(transform.y) > 1e-6;
+  return uniform && transform.scale >= 1 - 1e-8;
+}
+
+export const OVERSCAN_MARGIN = 0.5;
+export const MAX_OVERSCAN_WIDTH = 2560;
+export const MAX_OVERSCAN_HEIGHT = 1440;
+
+export function overscanCamera(
+  presented: CameraDomain,
+  full: CameraDomain,
+  independentLayers = false,
+  desiredMargin = OVERSCAN_MARGIN,
+): { domain: CameraDomain; factor: number } | null {
+  if (!isCameraDomain(presented) || !isCameraDomain(full) || !Number.isFinite(desiredMargin) || desiredMargin <= 0) {
+    return null;
+  }
+  const xRatio = (presented.xMax - presented.xMin) / (full.xMax - full.xMin);
+  const yRatio = (presented.yMax - presented.yMin) / (full.yMax - full.yMin);
+  if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio) || xRatio <= 0 || yRatio <= 0) return null;
+  const maxFactor = Math.min(3.99 / xRatio, 3.99 / yRatio);
+  const margin = Math.min(desiredMargin, (maxFactor - 1) / 2);
+  if (!Number.isFinite(margin) || margin < 0.05) return null;
+  const xPad = (presented.xMax - presented.xMin) * margin;
+  const yPad = (presented.yMax - presented.yMin) * margin;
+  const domain: CameraDomain = {
+    xMin: presented.xMin - xPad,
+    xMax: presented.xMax + xPad,
+    yMin: presented.yMin - yPad,
+    yMax: presented.yMax + yPad,
+  };
+  if (!isRestorableCamera(domain, full, independentLayers)) return null;
+  return { domain, factor: 1 + 2 * margin };
+}
+
+export function overscanViewport(
+  plot: PlotRect,
+  devicePixelRatio: number,
+  factor: number,
+): { width: number; height: number; devicePixelRatio: number } | null {
+  if (![plot.width, plot.height, devicePixelRatio, factor].every(Number.isFinite)
+    || plot.width < 16 || plot.height < 16 || devicePixelRatio < 0.5 || factor <= 1) {
+    return null;
+  }
+  const idealWidth = plot.width * factor;
+  const idealHeight = plot.height * factor;
+  const pixelScale = Math.min(1, MAX_OVERSCAN_WIDTH / idealWidth, MAX_OVERSCAN_HEIGHT / idealHeight);
+  const targetWidth = Math.max(96, Math.min(MAX_OVERSCAN_WIDTH, Math.round(idealWidth * pixelScale)));
+  const targetHeight = Math.max(64, Math.min(MAX_OVERSCAN_HEIGHT, Math.round(idealHeight * pixelScale)));
+  const dpr = Math.max(0.5, Math.min(8, Math.floor(devicePixelRatio * pixelScale * 1_000_000) / 1_000_000));
+  const width = Math.max(96, Math.min(Math.floor(MAX_OVERSCAN_WIDTH / dpr), Math.round(targetWidth / dpr)));
+  const height = Math.max(64, Math.min(Math.floor(MAX_OVERSCAN_HEIGHT / dpr), Math.round(targetHeight / dpr)));
+  if (Math.ceil(width * dpr) > 3840 || Math.ceil(height * dpr) > 2160) return null;
+  return { width, height, devicePixelRatio: dpr };
+}
+
+export function formatCompactNumericTick(value: number, spacing: number): string {
+  const normalizedValue = Object.is(value, -0) || Math.abs(value) <= spacing * 1e-12 ? 0 : value;
+  const tolerance = Number.isFinite(spacing) && spacing > 0 ? spacing * 0.01 : 0;
+  let best = normalizedValue.toExponential(12);
+  for (let precision = 0; precision <= 12; precision++) {
+    for (const candidate of [normalizedValue.toFixed(precision), normalizedValue.toExponential(precision)]) {
+      const cleaned = candidate === "-0" ? "0" : candidate;
+      if (cleaned.length < best.length) {
+        const parsed = Number(cleaned);
+        if (Number.isFinite(parsed) && Math.abs(parsed - normalizedValue) <= tolerance) {
+          best = cleaned;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+export interface ProjectedAxisTick {
+  value: number;
+  position: number;
+  label: string | null;
+}
+
+export function projectAxisTicks(
+  axis: { kind: string; ticks: ProjectedAxisTick[] },
+  currentMin: number,
+  currentMax: number,
+  refMin: number,
+  refMax: number,
+  categoryLabels?: Map<number, string>,
+): ProjectedAxisTick[] {
+  if (![currentMin, currentMax, refMin, refMax].every(Number.isFinite) || currentMax <= currentMin) {
+    return axis.ticks;
+  }
+  if (axis.kind === "category") {
+    const entries = categoryLabels && categoryLabels.size > 0
+      ? [...categoryLabels.entries()].sort((a, b) => a[0] - b[0])
+      : axis.ticks.map((tick): [number, string] => [tick.value, tick.label ?? ""]);
+    const projected: ProjectedAxisTick[] = [];
+    for (const [value, label] of entries) {
+      const position = normalizedAxisValue(value, currentMin, currentMax);
+      if (position >= 0 && position <= 1) {
+        projected.push({ value, position, label });
+      }
+    }
+    return projected;
+  }
+  const base = axis.ticks[0]?.value ?? refMin;
+  let step = axis.ticks.length >= 2 ? axis.ticks[1].value - axis.ticks[0].value : (refMax - refMin) / 4;
+  if (!Number.isFinite(step) || step <= 0) return axis.ticks;
+  const currentSpan = currentMax - currentMin;
+  let guard = 0;
+  while (currentSpan / step > 10 && guard < 32) { step *= 2; guard++; }
+  while (currentSpan / step < 2 && guard < 64) { step /= 2; guard++; }
+  if (!Number.isFinite(step) || step <= 0) return axis.ticks;
+  const start = Math.ceil((currentMin - base) / step - 1e-9);
+  const end = Math.floor((currentMax - base) / step + 1e-9);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > 16) {
+    return axis.ticks;
+  }
+  const projected: ProjectedAxisTick[] = [];
+  for (let index = start; index <= end; index++) {
+    const value = base + index * step;
+    const position = normalizedAxisValue(value, currentMin, currentMax);
+    if (position < -1e-9 || position > 1 + 1e-9) continue;
+    const clampedPos = Math.max(0, Math.min(1, position));
+    projected.push({
+      value,
+      position: clampedPos,
+      label: axis.kind === "numeric" ? formatCompactNumericTick(value, step) : null,
+    });
+  }
+  return projected;
+}
+
+export function projectGridPositions(
+  axis: { kind: string; ticks: ProjectedAxisTick[] },
+  currentMin: number,
+  currentMax: number,
+  refMin: number,
+  refMax: number,
+): number[] {
+  if (![currentMin, currentMax, refMin, refMax].every(Number.isFinite) || currentMax <= currentMin) {
+    return axis.ticks.map((tick) => tick.position);
+  }
+  const base = axis.ticks[0]?.value ?? refMin;
+  let step = axis.ticks.length >= 2 ? axis.ticks[1].value - axis.ticks[0].value : (refMax - refMin) / 4;
+  if (!Number.isFinite(step) || step <= 0) {
+    step = (currentMax - currentMin) / 4;
+  }
+  if (!Number.isFinite(step) || step <= 0) return [];
+  const currentSpan = currentMax - currentMin;
+  let guard = 0;
+  while (currentSpan / step > 10 && guard < 32) { step *= 2; guard++; }
+  while (currentSpan / step < 2 && guard < 64) { step /= 2; guard++; }
+  if (!Number.isFinite(step) || step <= 0) return [];
+  const start = Math.ceil((currentMin - base) / step - 1e-9);
+  const end = Math.floor((currentMax - base) / step + 1e-9);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > 16) {
+    return [];
+  }
+  const positions: number[] = [];
+  for (let index = start; index <= end; index++) {
+    const position = normalizedAxisValue(base + index * step, currentMin, currentMax);
+    if (position >= -1e-9 && position <= 1 + 1e-9) {
+      positions.push(Math.max(0, Math.min(1, position)));
+    }
+  }
+  return positions;
 }
 
 export function createCameraScheduler(options: {
