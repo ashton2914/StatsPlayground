@@ -100,8 +100,22 @@ const extremeIntervalLayout = computeAxisLayout({
 assert.ok(extremeIntervalLayout.majorTicks.length >= 2 && extremeIntervalLayout.majorTicks.length <= 64,
   `extreme tickInterval must cap gracefully instead of dropping all ticks, got ${extremeIntervalLayout.majorTicks.length}`);
 
-// 3c. Zooming/panning tighter than custom tickInterval (e.g. tickInterval=0.2 on [3.85, 4.15] or [4.02, 4.18])
-// must subdivide cleanly so major ticks and minor ticks never disappear or leave half the axis empty.
+// 3c. Strictly honor custom tickInterval whenever >= 1 multiple fits in view (e.g. 0.2 on [3.70, 4.07] -> 3.80, 4.00;
+// 0.2 on [3.85, 4.15] -> 4.00 with full-span minor ticks), and only subdivide when 0 multiples fit ([4.02, 4.18]).
+const exactIntervalZoomLayout = computeAxisLayout({
+  axis: "y",
+  axisMeta: numericAxis,
+  currentMin: 3.7,
+  currentMax: 4.07,
+  refMin: 3,
+  refMax: 5,
+  config: { tickInterval: 0.2, decimals: 2, minorTickCount: 2, showMajorGrid: true, showMinorGrid: true },
+  formatTick: formatGraphNewTick,
+});
+assert.deepEqual(exactIntervalZoomLayout.majorTicks.map((t) => t.label), ["3.80", "4.00"]);
+assert.ok(exactIntervalZoomLayout.minorPositions.some((p) => p < 0.2), "minor ticks must cover lower edge below 3.80");
+assert.ok(exactIntervalZoomLayout.minorPositions.some((p) => p > 0.85), "minor ticks must cover upper edge above 4.00");
+
 const zoomedSingleTickLayout = computeAxisLayout({
   axis: "y",
   axisMeta: numericAxis,
@@ -109,10 +123,10 @@ const zoomedSingleTickLayout = computeAxisLayout({
   currentMax: 4.15,
   refMin: 3,
   refMax: 5,
-  config: { tickInterval: 0.2, minorTickCount: 3, showMajorGrid: true, showMinorGrid: true },
+  config: { tickInterval: 0.2, decimals: 2, minorTickCount: 3, showMajorGrid: true, showMinorGrid: true },
   formatTick: formatGraphNewTick,
 });
-assert.ok(zoomedSingleTickLayout.majorTicks.length >= 2, `expected >= 2 major ticks on [3.85, 4.15], got ${zoomedSingleTickLayout.majorTicks.length}`);
+assert.deepEqual(zoomedSingleTickLayout.majorTicks.map((t) => t.label), ["4.00"]);
 assert.ok(zoomedSingleTickLayout.minorPositions.some((p) => p < 0.2), "minor ticks must cover lower edge of plot");
 assert.ok(zoomedSingleTickLayout.minorPositions.some((p) => p > 0.8), "minor ticks must cover upper edge of plot");
 

@@ -86,13 +86,17 @@ function computeCustomIntervalTicks(
   let step = rawInterval;
   if (span / step > MAX_CUSTOM_MAJOR_TICKS - 1) {
     step = niceStepAtLeast(span / (MAX_CUSTOM_MAJOR_TICKS - 1));
-  } else if (span / step < 2) {
-    // Subdivide cleanly when zoomed in tighter than the configured tickInterval
-    // so at least 2 world-anchored major ticks remain visible at every zoom/pan position.
-    step = niceStepAtLeast(span / 5);
   }
-  const start = Math.ceil(currentMin / step - 1e-9);
-  const end = Math.floor(currentMax / step + 1e-9);
+  let start = Math.ceil(currentMin / step - 1e-9);
+  let end = Math.floor(currentMax / step + 1e-9);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    // Only subdivide when literally 0 multiples of the user's tickInterval fall inside
+    // the visible range (e.g., zoomed in tighter than tickInterval between two multiples),
+    // so the user's configured tickInterval is strictly honored whenever >= 1 tick fits.
+    step = niceStepAtLeast(span / 5);
+    start = Math.ceil(currentMin / step - 1e-9);
+    end = Math.floor(currentMax / step + 1e-9);
+  }
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > MAX_CUSTOM_MAJOR_TICKS) {
     return { ticks: [], step };
   }
@@ -196,7 +200,7 @@ export function computeAxisLayout(params: {
 
   if (customInterval !== undefined) {
     const custom = computeCustomIntervalTicks(currentMin, currentMax, customInterval);
-    if (custom.ticks.length >= 2) {
+    if (custom.ticks.length > 0) {
       rawMajorTicks = custom.ticks;
       majorGridNorms = custom.ticks.map((tick) => tick.position);
       activeMajorStep = custom.step;
