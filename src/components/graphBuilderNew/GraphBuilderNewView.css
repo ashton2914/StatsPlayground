@@ -373,6 +373,24 @@
 .graph-new-axis-hit-band:hover {
   background: color-mix(in srgb, var(--gbn-control-tint) 45%, transparent);
 }
+.graph-builder-new-axis-btn {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--gbn-border);
+  border-radius: 5px;
+  background: var(--gbn-panel);
+  color: var(--gbn-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.graph-builder-new-axis-btn:hover:not(:disabled) {
+  background: var(--gbn-control-tint);
+}
+.graph-builder-new-axis-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .graph-new-camera-preview { position: relative; z-index: 1; transform-origin: 0 0; opacity: 0; pointer-events: none; object-fit: fill; }
 .graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
   background: var(--gbn-panel);

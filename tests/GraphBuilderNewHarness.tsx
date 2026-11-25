@@ -99,6 +99,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
 
   useEffect(() => {
     const previousGetColumnDescriptors = dataService.getColumnDescriptors;
+    const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
     const previousStoreState = useGraphBuilderNewStore.getState();
     const previousProjectState = useProjectStore.getState();
     const previousRender = graphNewService.render;
@@ -210,7 +211,14 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
           if (mode === "summaryDomain" && request.layers?.some(layer => layer.options.summaryStat === "sum")) {
             typedDomain.yMin = 10000; typedDomain.yMax = 20000;
           }
-          const domain = request.cameraDomain ?? (fixtureAxis ? { xMin: fixtureAxis.ticks[0].value, xMax: fixtureAxis.ticks[1].value, yMin: 0, yMax: 100 } : typedDomain);
+          const baseDomain = fixtureAxis ? { xMin: fixtureAxis.ticks[0].value, xMax: fixtureAxis.ticks[1].value, yMin: 0, yMax: 100 } : typedDomain;
+          const boundedDomain = request.axisBounds ? {
+            xMin: request.xMode !== "category" && request.xMode !== "time" && request.axisBounds.xMin !== undefined ? request.axisBounds.xMin : baseDomain.xMin,
+            xMax: request.xMode !== "category" && request.xMode !== "time" && request.axisBounds.xMax !== undefined ? request.axisBounds.xMax : baseDomain.xMax,
+            yMin: request.axisBounds.yMin !== undefined ? request.axisBounds.yMin : baseDomain.yMin,
+            yMax: request.axisBounds.yMax !== undefined ? request.axisBounds.yMax : baseDomain.yMax,
+          } : baseDomain;
+          const domain = request.cameraDomain ?? boundedDomain;
           const overlayGroups = mode === "overlayMany"
             ? createOverlayGroups(64)
             : (mode === "overlay" || mode === "overlayMean") && request.overlayColumnId === "lot-column"
@@ -348,10 +356,15 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         { columnId: "column-label", name: "Cavity", sqlType: "VARCHAR" },
       ];
     };
+    dataService.getColumnDisplayProps = async () => [
+      { colIndex: 0, extras: { spec: { lsl: 10, target: 40, usl: 90 } } },
+      { colIndex: 1, extras: { spec: { lsl: 20, target: 50, usl: 80 } } },
+    ] as any;
     setReady(true);
 
     return () => {
       dataService.getColumnDescriptors = previousGetColumnDescriptors;
+      dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
       graphNewService.render = previousRender;
       graphNewService.renderOverscan = previousRenderOverscan;
       graphNewService.close = previousClose;

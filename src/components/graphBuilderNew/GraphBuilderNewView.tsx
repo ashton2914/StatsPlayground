@@ -5,11 +5,13 @@ import { PanelSplitter } from "@/components/layout";
 import { useLayoutPreferencesStore, type LayoutPanelId } from "@/stores/useLayoutPreferencesStore";
 
 import { inferFieldType } from "@/graphCore";
+import type { AutoSpec, RefLineX, RefLineY } from "@/graphCore/types";
+import { AxisSettingsDialog } from "@/components/graphBuilder/AxisSettingsDialog";
 import { dataService } from "@/services/dataService";
 import { graphNewService, type GraphNewOverlayGroup } from "@/services/graphNewService";
 import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
 import { useProjectStore } from "@/stores/useProjectStore";
-import type { ColumnDescriptor, DatasetMeta } from "@/types/data";
+import type { ColumnDescriptor, ColumnDisplayProps, DatasetMeta } from "@/types/data";
 import type { GraphNewXMode } from "@/types/graphBuilderNew";
 import {
   GraphBuilderRailSection,
@@ -57,6 +59,28 @@ function useRailSize(id: LayoutPanelId, defaultValue: number, min: number, max: 
   };
 }
 
+function resolveAutoSpecForColumn(
+  columnId: string | null,
+  descriptors: ColumnDescriptor[],
+  displayProps: ColumnDisplayProps[],
+): AutoSpec | undefined {
+  if (!columnId) return undefined;
+  const colIndex = descriptors.findIndex((column) => column.columnId === columnId);
+  if (colIndex < 0) return undefined;
+  const prop = displayProps.find((candidate) => candidate.colIndex === colIndex);
+  const extras = prop?.extras as Record<string, unknown> | undefined;
+  const specExtra = extras?.spec as { lsl?: unknown; target?: unknown; usl?: unknown } | undefined;
+  if (!specExtra) return undefined;
+  const spec: AutoSpec = { colName: descriptors[colIndex].name };
+  const lsl = Number(specExtra.lsl);
+  const target = Number(specExtra.target);
+  const usl = Number(specExtra.usl);
+  if (Number.isFinite(lsl)) spec.lsl = lsl;
+  if (Number.isFinite(target)) spec.target = target;
+  if (Number.isFinite(usl)) spec.usl = usl;
+  return spec.lsl !== undefined || spec.target !== undefined || spec.usl !== undefined ? spec : undefined;
+}
+
 interface GraphBuilderNewViewProps {
   sessionId: string;
   dataset: DatasetMeta | undefined;
@@ -78,13 +102,21 @@ export function GraphBuilderNewView({
   const setOverlay = useGraphBuilderNewStore((state) => state.setOverlay);
   const setHiddenOverlayGroups = useGraphBuilderNewStore((state) => state.setHiddenOverlayGroups);
   const setCamera = useGraphBuilderNewStore((state) => state.setCamera);
+  const setXAxisConfig = useGraphBuilderNewStore((state) => state.setXAxisConfig);
+  const setYAxisConfig = useGraphBuilderNewStore((state) => state.setYAxisConfig);
+  const setRefLinesX = useGraphBuilderNewStore((state) => state.setRefLinesX);
+  const setRefLinesY = useGraphBuilderNewStore((state) => state.setRefLinesY);
+  const setAutoSpecLinesX = useGraphBuilderNewStore((state) => state.setAutoSpecLinesX);
+  const setAutoSpecLinesY = useGraphBuilderNewStore((state) => state.setAutoSpecLinesY);
   const readOnly = useProjectStore((state) => state.readOnly);
+  const [openAxisDialog, setOpenAxisDialog] = useState<"x" | "y" | null>(null);
   const [columnMetadata, setColumnMetadata] = useState<{
     dataset: DatasetMeta;
     sessionId: string;
     transportId: string;
     runtimeEpoch: number | undefined;
     descriptors: ColumnDescriptor[];
+    displayProps: ColumnDisplayProps[];
   } | null>(null);
   const [pointRadius, setPointRadius] = useState(1);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
@@ -107,6 +139,11 @@ export function GraphBuilderNewView({
   const columns = !missingDataset && !stale
     && columnMetadata?.dataset === dataset && columnMetadata?.sessionId === sessionId && columnMetadata?.transportId === transportId && columnMetadata?.runtimeEpoch === runtimeEpoch
     ? columnMetadata.descriptors : [];
+  const displayProps = !missingDataset && !stale
+    && columnMetadata?.dataset === dataset && columnMetadata?.sessionId === sessionId && columnMetadata?.transportId === transportId && columnMetadata?.runtimeEpoch === runtimeEpoch
+    ? columnMetadata.displayProps : [];
+  const resolvedAutoSpecX = resolveAutoSpecForColumn(session?.xColumnId ?? null, columns, displayProps);
+  const resolvedAutoSpecY = resolveAutoSpecForColumn(session?.yColumnId ?? null, columns, displayProps);
   const numericColumns = columns.filter(({ sqlType }) => inferFieldType(sqlType) === "continuous");
   const numericColumnIds = new Set(numericColumns.map(({ columnId }) => columnId));
   const xColumn = columns.find(({ columnId }) => columnId === session?.xColumnId);
@@ -147,10 +184,13 @@ export function GraphBuilderNewView({
     }
 
     setLoading(true);
-    void dataService.getColumnDescriptors(datasetId)
-      .then((descriptors) => {
+    void Promise.all([
+      dataService.getColumnDescriptors(datasetId),
+      dataService.getColumnDisplayProps(datasetId).catch(() => [] as ColumnDisplayProps[]),
+    ])
+      .then(([descriptors, nextDisplayProps]) => {
         if (!cancelled) {
-          setColumnMetadata({ dataset, sessionId, transportId, runtimeEpoch, descriptors });
+          setColumnMetadata({ dataset, sessionId, transportId, runtimeEpoch, descriptors, displayProps: nextDisplayProps });
         }
       })
       .catch(() => {
@@ -166,6 +206,19 @@ export function GraphBuilderNewView({
       cancelled = true;
     };
   }, [dataset, datasetId, datasetGeneration, missingDataset, sessionId, transportId, runtimeEpoch, stale]);
+
+  useEffect(() => {
+    if (readOnly && openAxisDialog !== null) setOpenAxisDialog(null);
+  }, [readOnly, openAxisDialog]);
+
+  useEffect(() => {
+    if (openAxisDialog === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenAxisDialog(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openAxisDialog]);
 
   if (!session) {
     return (
@@ -314,6 +367,16 @@ export function GraphBuilderNewView({
               rawMode="scatter"
               savedCamera={legacyModeConflict ? null : session.camera ?? null}
               readOnly={readOnly}
+              xAxisConfig={session.xAxisConfig}
+              yAxisConfig={session.yAxisConfig}
+              refLinesX={session.refLinesX}
+              refLinesY={session.refLinesY}
+              autoSpecLinesX={session.autoSpecLinesX}
+              autoSpecLinesY={session.autoSpecLinesY}
+              resolvedAutoSpecX={resolvedAutoSpecX}
+              resolvedAutoSpecY={resolvedAutoSpecY}
+              onXAxisDblClick={readOnly ? undefined : () => setOpenAxisDialog("x")}
+              onYAxisDblClick={readOnly ? undefined : () => setOpenAxisDialog("y")}
               onOverlayStateChange={setOverlayState}
               onCameraChange={(camera) => {
                 const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
@@ -385,7 +448,24 @@ export function GraphBuilderNewView({
             <GraphPlaceholderButton label={t("graphNewUi.styleOptions")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.styleOptions") })} />
             <GraphPlaceholderButton label={t("graphNewUi.groupByX")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.groupByX") })} />
             <GraphPlaceholderButton label={t("graphNewUi.groupByY")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.groupByY") })} />
-            <GraphPlaceholderButton label={t("graphNewUi.axisSettings")} unavailableTitle={t("graphNewUi.unavailable", { feature: t("graphNewUi.axisSettings") })} />
+            <button
+              type="button"
+              className="graph-builder-new-axis-btn"
+              data-testid="open-x-axis-settings"
+              disabled={controlsDisabled || !session.xColumnId || !session.yColumnId}
+              onClick={() => setOpenAxisDialog("x")}
+            >
+              {t("graph.xAxisSettings.title", { defaultValue: "X Axis Settings" })}
+            </button>
+            <button
+              type="button"
+              className="graph-builder-new-axis-btn"
+              data-testid="open-y-axis-settings"
+              disabled={controlsDisabled || !session.xColumnId || !session.yColumnId}
+              onClick={() => setOpenAxisDialog("y")}
+            >
+              {t("graph.yAxisSettings.title", { defaultValue: "Y Axis Settings" })}
+            </button>
           </GraphInspectorSection>
         </aside>
 
@@ -440,6 +520,34 @@ export function GraphBuilderNewView({
           ? "Tauri host detected; native point renderer"
           : "Tauri host not detected; raw-frame transport unavailable"}
       </footer>
+      {!readOnly && openAxisDialog === "y" && (
+        <AxisSettingsDialog
+          axis="y"
+          refLines={session.refLinesY ?? []}
+          setRefLines={(next: RefLineY[]) => setRefLinesY(session.id, next)}
+          autoSpecLines={!!session.autoSpecLinesY}
+          setAutoSpecLines={(next) => setAutoSpecLinesY(session.id, next)}
+          resolvedAutoSpec={resolvedAutoSpecY}
+          autoSpecColName={columns.find((c) => c.columnId === session.yColumnId)?.name}
+          axisConfig={session.yAxisConfig}
+          setAxisConfig={(next) => setYAxisConfig(session.id, next)}
+          onClose={() => setOpenAxisDialog(null)}
+        />
+      )}
+      {!readOnly && openAxisDialog === "x" && (
+        <AxisSettingsDialog
+          axis="x"
+          refLines={session.refLinesX ?? []}
+          setRefLines={(next: RefLineX[]) => setRefLinesX(session.id, next)}
+          autoSpecLines={!!session.autoSpecLinesX}
+          setAutoSpecLines={(next) => setAutoSpecLinesX(session.id, next)}
+          resolvedAutoSpec={resolvedAutoSpecX}
+          autoSpecColName={columns.find((c) => c.columnId === session.xColumnId)?.name}
+          axisConfig={session.xAxisConfig}
+          setAxisConfig={(next) => setXAxisConfig(session.id, next)}
+          onClose={() => setOpenAxisDialog(null)}
+        />
+      )}
     </main>
   );
 }
